@@ -5,6 +5,7 @@ import {
   EMA,
   StochasticRSI,
   ADX,
+  ATR,
 } from "technicalindicators";
 import type { Candle } from "./binance.js";
 
@@ -17,11 +18,14 @@ export interface IndicatorResult {
   emaCrossSignal: "buy" | "sell" | "neutral";
   ema20: number | null;
   ema50: number | null;
+  ema200: number | null;
   stochRsi: number | null;
   stochSignal: "buy" | "sell" | "neutral";
   adxValue: number | null;
   trendStrength: "strong" | "moderate" | "weak";
   volumeSignal: "above_avg" | "below_avg";
+  atr: number | null;
+  atrPercent: number | null;
 }
 
 export function calcIndicators(candles: Candle[]): IndicatorResult {
@@ -50,30 +54,16 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
 
   if (lastMacd?.histogram != null) {
     macdHistogram = lastMacd.histogram;
-    if (
-      prevMacd?.histogram != null &&
-      prevMacd.histogram < 0 &&
-      lastMacd.histogram >= 0
-    ) {
+    if (prevMacd?.histogram != null && prevMacd.histogram < 0 && lastMacd.histogram >= 0) {
       macdSignal = "buy";
-    } else if (
-      prevMacd?.histogram != null &&
-      prevMacd.histogram > 0 &&
-      lastMacd.histogram <= 0
-    ) {
+    } else if (prevMacd?.histogram != null && prevMacd.histogram > 0 && lastMacd.histogram <= 0) {
       macdSignal = "sell";
-    } else if (lastMacd.histogram > 0) {
-      macdSignal = "buy";
-    } else if (lastMacd.histogram < 0) {
-      macdSignal = "sell";
+    } else {
+      macdSignal = lastMacd.histogram > 0 ? "buy" : "sell";
     }
   }
 
-  const bbValues = BollingerBands.calculate({
-    values: closes,
-    period: 20,
-    stdDev: 2,
-  });
+  const bbValues = BollingerBands.calculate({ values: closes, period: 20, stdDev: 2 });
   const lastBb = bbValues.length ? bbValues[bbValues.length - 1]! : null;
   let bbSignal: "buy" | "sell" | "neutral" = "neutral";
   let bbPercent: number | null = null;
@@ -89,13 +79,14 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
 
   const ema20Values = EMA.calculate({ values: closes, period: 20 });
   const ema50Values = EMA.calculate({ values: closes, period: 50 });
+  const ema200Values = EMA.calculate({ values: closes, period: 200 });
   const ema20 = ema20Values.length ? ema20Values[ema20Values.length - 1]! : null;
   const ema50 = ema50Values.length ? ema50Values[ema50Values.length - 1]! : null;
+  const ema200 = ema200Values.length ? ema200Values[ema200Values.length - 1]! : null;
 
   let emaCrossSignal: "buy" | "sell" | "neutral" = "neutral";
   if (ema20 != null && ema50 != null) {
-    if (ema20 > ema50) emaCrossSignal = "buy";
-    else if (ema20 < ema50) emaCrossSignal = "sell";
+    emaCrossSignal = ema20 > ema50 ? "buy" : "sell";
   }
 
   const stochValues = StochasticRSI.calculate({
@@ -108,32 +99,27 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   const lastStoch = stochValues.length ? stochValues[stochValues.length - 1]! : null;
   const stochRsi = lastStoch?.k != null ? lastStoch.k : null;
   let stochSignal: "buy" | "sell" | "neutral" = "neutral";
-
   if (stochRsi != null) {
     if (stochRsi < 20) stochSignal = "buy";
     else if (stochRsi > 80) stochSignal = "sell";
   }
 
-  const adxValues = ADX.calculate({
-    close: closes,
-    high: highs,
-    low: lows,
-    period: 14,
-  });
+  const adxValues = ADX.calculate({ close: closes, high: highs, low: lows, period: 14 });
   const lastAdx = adxValues.length ? adxValues[adxValues.length - 1]! : null;
   const adxValue = lastAdx?.adx != null ? lastAdx.adx : null;
-
   let trendStrength: "strong" | "moderate" | "weak" = "weak";
   if (adxValue != null) {
     if (adxValue > 25) trendStrength = "strong";
     else if (adxValue > 15) trendStrength = "moderate";
   }
 
-  const avgVolume =
-    volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
+  const atr = atrValues.length ? atrValues[atrValues.length - 1]! : null;
+  const atrPercent = atr != null ? (atr / currentClose) * 100 : null;
+
+  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const lastVolume = volumes[volumes.length - 1]!;
-  const volumeSignal: "above_avg" | "below_avg" =
-    lastVolume > avgVolume ? "above_avg" : "below_avg";
+  const volumeSignal: "above_avg" | "below_avg" = lastVolume > avgVolume ? "above_avg" : "below_avg";
 
   return {
     rsi,
@@ -144,10 +130,13 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
     emaCrossSignal,
     ema20,
     ema50,
+    ema200,
     stochRsi,
     stochSignal,
     adxValue,
     trendStrength,
     volumeSignal,
+    atr,
+    atrPercent,
   };
 }
