@@ -1,0 +1,9 @@
+{
+  "steps": {
+    "install": {
+      "cmds": [
+        "pnpm install --no-frozen-lockfile --prefer-offline"
+      ]
+    }
+  }
+}
