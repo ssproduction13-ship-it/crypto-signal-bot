@@ -3,7 +3,7 @@ FROM node:22-alpine AS builder
 
   RUN npm install -g pnpm
 
-  COPY package.json ./
+  COPY package.json pnpm-workspace.yaml ./
   RUN pnpm install --no-frozen-lockfile
 
   COPY tsconfig.json build.mjs ./
