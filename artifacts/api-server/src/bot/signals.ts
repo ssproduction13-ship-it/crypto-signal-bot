@@ -6,6 +6,7 @@ import { calcScore, type ScoreBreakdown } from "./scoring.js";
 import { calcRisk, formatPrice, type RiskParams } from "./risk.js";
 import { assessMarket, type MarketCondition } from "./chaos-filter.js";
 import { loadWeights, loadSettings, addJournalEntry, genId } from "./storage.js";
+import { analyzWithLLM, formatLLMAnalysis, isLLMAvailable, type LLMAnalysis } from "./llm-hook.js";
 import type { Interval } from "./binance.js";
 import type { SupportResistance } from "./levels.js";
 import type { PatternResult } from "./patterns.js";
@@ -22,6 +23,7 @@ export interface TradeSignal {
   timestamp: Date;
   filtered: boolean;
   filterReason: string | null;
+  llmAnalysis?: LLMAnalysis | null;
 }
 
 export async function generateSignal(
@@ -87,6 +89,23 @@ export async function generateSignal(
     });
   }
 
+  let llmAnalysis: LLMAnalysis | null = null;
+  if (!filtered && isLLMAvailable()) {
+    llmAnalysis = await analyzWithLLM({
+      symbol: symbol.toUpperCase(),
+      price,
+      interval,
+      score: scoreResult,
+      risk,
+      market,
+      levels,
+      pattern,
+      timestamp: new Date(),
+      filtered,
+      filterReason,
+    }).catch(() => null);
+  }
+
   return {
     symbol: symbol.toUpperCase(),
     price,
@@ -99,6 +118,7 @@ export async function generateSignal(
     timestamp: new Date(),
     filtered,
     filterReason,
+    llmAnalysis,
   };
 }
 
@@ -160,6 +180,7 @@ export function formatSignal(sig: TradeSignal): string {
     `  Паттерн: ${sig.score.patternScore}/100`,
     ``,
     `⏱ ${sig.timestamp.toUTCString()}`,
+    ...(sig.llmAnalysis ? [``, formatLLMAnalysis(sig.llmAnalysis)] : []),
     ``,
     `⚠️ _Не является финансовой рекомендацией. Используйте stop-loss._`,
   ];
