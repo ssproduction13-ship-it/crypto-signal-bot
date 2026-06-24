@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { registerLLMProvider, type LLMAnalysis, type NewsItem } from "./llm-hook.js";
+import { fetchNews, summarizeNewsSentiment } from "./news.js";
 import type { TradeSignal } from "./signals.js";
 import { logger } from "../lib/logger.js";
 
@@ -49,8 +50,12 @@ export async function setupGeminiProvider(): Promise<boolean> {
 
   const ai = new GoogleGenAI({ apiKey });
 
-  registerLLMProvider(async (signal: TradeSignal, news: NewsItem[]): Promise<LLMAnalysis> => {
-    const prompt = buildPrompt(signal, news);
+  registerLLMProvider(async (signal: TradeSignal, _passedNews: NewsItem[]): Promise<LLMAnalysis> => {
+    const freshNews = await fetchNews(signal.symbol, 5);
+    const newsSummary = summarizeNewsSentiment(freshNews);
+    logger.info({ symbol: signal.symbol, newsCount: freshNews.length, sentiment: newsSummary.overall }, "News fetched for LLM");
+
+    const prompt = buildPrompt(signal, freshNews);
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
