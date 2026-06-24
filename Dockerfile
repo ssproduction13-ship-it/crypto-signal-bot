@@ -1,15 +1,13 @@
 FROM node:22-alpine AS builder
   WORKDIR /app
 
-  RUN npm install -g pnpm
-
-  COPY package.json pnpm-workspace.yaml ./
-  RUN pnpm install --no-frozen-lockfile
+  COPY package.json ./
+  RUN npm install
 
   COPY tsconfig.json build.mjs ./
   COPY src/ ./src/
 
-  RUN pnpm run build
+  RUN npm run build
 
   FROM node:22-alpine
   WORKDIR /app
