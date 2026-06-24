@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE_URL = "https://api.binance.com";
+const BASE_URL = "https://api.kucoin.com";
 
 export interface Candle {
   openTime: number;
@@ -12,36 +12,66 @@ export interface Candle {
   closeTime: number;
 }
 
-export type Interval = "15m" | "1h" | "4h" | "1d";
+export type Interval = "5m" | "15m" | "1h" | "4h" | "1d";
+
+const INTERVAL_MAP: Record<Interval, string> = {
+  "5m": "5min",
+  "15m": "15min",
+  "1h": "1hour",
+  "4h": "4hour",
+  "1d": "1day",
+};
+
+function toKucoinSymbol(symbol: string): string {
+  const s = symbol.toUpperCase();
+  if (s.endsWith("USDT")) return s.slice(0, -4) + "-USDT";
+  if (s.endsWith("BTC")) return s.slice(0, -3) + "-BTC";
+  return s;
+}
 
 export async function getCandles(
   symbol: string,
   interval: Interval = "1h",
   limit = 200
 ): Promise<Candle[]> {
-  const url = `${BASE_URL}/api/v3/klines`;
-  const res = await axios.get(url, {
-    params: { symbol: symbol.toUpperCase(), interval, limit },
+  const kucoinSymbol = toKucoinSymbol(symbol);
+  const kucoinInterval = INTERVAL_MAP[interval];
+
+  const endAt = Math.floor(Date.now() / 1000);
+  const secondsPerCandle: Record<Interval, number> = {
+    "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400,
+  };
+  const startAt = endAt - secondsPerCandle[interval] * limit;
+
+  const res = await axios.get(`${BASE_URL}/api/v1/market/candles`, {
+    params: { symbol: kucoinSymbol, type: kucoinInterval, startAt, endAt },
     timeout: 10000,
   });
 
-  return (res.data as unknown[][]).map((k) => ({
-    openTime: k[0] as number,
-    open: parseFloat(k[1] as string),
-    high: parseFloat(k[2] as string),
-    low: parseFloat(k[3] as string),
-    close: parseFloat(k[4] as string),
-    volume: parseFloat(k[5] as string),
-    closeTime: k[6] as number,
-  }));
+  const list: string[][] = res.data?.data ?? [];
+
+  return list
+    .reverse()
+    .map((k) => ({
+      openTime: parseInt(k[0]!) * 1000,
+      open: parseFloat(k[1]!),
+      close: parseFloat(k[2]!),
+      high: parseFloat(k[3]!),
+      low: parseFloat(k[4]!),
+      volume: parseFloat(k[5]!),
+      closeTime: (parseInt(k[0]!) + secondsPerCandle[interval]) * 1000,
+    }));
 }
 
 export async function getPrice(symbol: string): Promise<number> {
-  const res = await axios.get(`${BASE_URL}/api/v3/ticker/price`, {
-    params: { symbol: symbol.toUpperCase() },
+  const kucoinSymbol = toKucoinSymbol(symbol);
+  const res = await axios.get(`${BASE_URL}/api/v1/market/orderbook/level1`, {
+    params: { symbol: kucoinSymbol },
     timeout: 5000,
   });
-  return parseFloat((res.data as { price: string }).price);
+  const price = res.data?.data?.price;
+  if (!price) throw new Error(`No price data for ${symbol}`);
+  return parseFloat(price);
 }
 
 export async function validateSymbol(symbol: string): Promise<boolean> {

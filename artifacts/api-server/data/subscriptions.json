@@ -1,0 +1,107 @@
+[
+  {
+    "chatId": 499403104,
+    "symbol": "BTCUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "ETHUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "SOLUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "BNBUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "XRPUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "DOGEUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "ADAUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "AVAXUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "LINKUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "NEARUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "SUIUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "APTUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "OPUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "ARBUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "ATOMUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "DOTUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "LTCUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "TRXUSDT",
+    "interval": "1h"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "PEPEUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "WIFUSDT",
+    "interval": "15m"
+  },
+  {
+    "chatId": 499403104,
+    "symbol": "SHIBUSDT",
+    "interval": "15m"
+  }
+]
