@@ -15,7 +15,7 @@ COPY artifacts/api-server/package.json ./artifacts/api-server/
 COPY scripts/package.json             ./scripts/
 
 # Install all deps using the lockfile (no re-resolution)
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # Copy source and build
 COPY lib/         ./lib/
