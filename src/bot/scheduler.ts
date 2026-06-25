@@ -75,7 +75,13 @@ export function listSubscriptions(chatId: number): Sub[] {
 }
 
 // ── Signal analysis ────────────────────────────────────────────────────────
-const AUTO_MIN_SCORE = 45; // lowered from 48 — more signals while filtering noise
+// Dynamic score threshold — adjusts automatically based on market activity
+  function dynamicMinScore(marketIndex: number): number {
+    if (marketIndex >= 70) return 40; // 🔥 Очень активный рынок — ловим больше движений
+    if (marketIndex >= 50) return 45; // 📈 Активный рынок
+    if (marketIndex >= 30) return 50; // 😐 Нейтральный рынок
+    return 58;                         // 😴 Слабый/хаотичный — только сильные сигналы
+  }
 
 async function analyzeAndTrade(sub: Sub): Promise<void> {
   const debounceKey = `${sub.chatId}:${sub.symbol}`;
@@ -88,7 +94,8 @@ async function analyzeAndTrade(sub: Sub): Promise<void> {
 
     if (sig.market.isChaotic) return;
     if (sig.score.direction === "NEUTRAL") return;
-    if (sig.score.total < AUTO_MIN_SCORE) return;
+    const minScore = dynamicMinScore(sig.marketRating.index);
+      if (sig.score.total < minScore) return;
     if (sig.confidence.score < 20) return;  // Confidence Engine gate (мягкий)
 
     const settings = await loadSettings(sub.chatId);
@@ -125,7 +132,7 @@ async function analyzeAndTrade(sub: Sub): Promise<void> {
         `🤖 *Новая позиция*\n\n` +
         `${dir} *${sub.symbol}*\n` +
         `Стратегия: ${stratNames[strat] ?? strat}\n` +
-        `Score: ${sig.score.total}/100 | Conf: ${sig.confidence.score}%\n` +
+        `Score: ${sig.score.total}/100 | Min: ${dynamicMinScore(sig.marketRating.index)} | Conf: ${sig.confidence.score}%\n` +
         `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
         `Вход: \`${sig.risk.entryPrice.toPrecision(6)}\`\n` +
         `Стоп: \`${sig.risk.stopLoss.toPrecision(6)}\`\n` +
