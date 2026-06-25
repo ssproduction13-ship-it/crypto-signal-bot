@@ -34,7 +34,6 @@ import { pool } from "../lib/db.js";
     if (s.lastResetDate !== todayKey()) {
       s.dailyPnlPct = 0; s.lastResetDate = todayKey();
       if (s.stopReason === "DAILY_LIMIT") { s.tradingEnabled = true; s.stopReason = null; }
-      if (s.stopReason === "3 убытка подряд") { s.tradingEnabled = true; s.stopReason = null; s.consecutiveLosses = 0; dirty = true; }
       dirty = true;
     }
     if (s.lastWeekKey !== weekKey()) {
@@ -42,6 +41,8 @@ import { pool } from "../lib/db.js";
       if (s.stopReason === "WEEKLY_LIMIT") { s.tradingEnabled = true; s.stopReason = null; }
       dirty = true;
     }
+    // Always clear "3 убытка подряд" stop — removed feature, reset any lingering DB state
+    if (s.stopReason === "3 убытка подряд") { s.tradingEnabled = true; s.stopReason = null; s.consecutiveLosses = 0; dirty = true; }
     if (dirty) await saveRiskState(s);
     return s;
   }
