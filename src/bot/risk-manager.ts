@@ -101,7 +101,7 @@ import { pool } from "../lib/db.js";
     } else if (s.weeklyPnlPct <= -7 && s.tradingEnabled) {
       s.tradingEnabled = false; s.stopReason = "WEEKLY_LIMIT";
       alert = "🛑 Недельный лимит -7% достигнут. Торговля возобновится на след. неделе.";
-
+    }
     await saveRiskState(s);
     return alert;
   }
