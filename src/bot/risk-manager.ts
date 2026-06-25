@@ -95,13 +95,13 @@ import { pool } from "../lib/db.js";
     s.consecutiveLosses  = isWin ? 0 : s.consecutiveLosses + 1;
     let alert: string | null = null;
     // Consecutive losses tracked for analytics only — no trading stop (paper trading mode)
-    } else if (s.dailyPnlPct <= -3 && s.tradingEnabled) {
+    if (s.dailyPnlPct <= -3 && s.tradingEnabled) {
       s.tradingEnabled = false; s.stopReason = "DAILY_LIMIT";
       alert = "🛑 Дневной лимит -3% достигнут. Торговля возобновится завтра.";
     } else if (s.weeklyPnlPct <= -7 && s.tradingEnabled) {
       s.tradingEnabled = false; s.stopReason = "WEEKLY_LIMIT";
       alert = "🛑 Недельный лимит -7% достигнут. Торговля возобновится на след. неделе.";
-    }
+
     await saveRiskState(s);
     return alert;
   }
