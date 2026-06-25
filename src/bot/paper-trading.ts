@@ -1,6 +1,6 @@
 import { getPrice } from "./binance.js";
 import {
-  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, loadSettings, genId,
+  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened, canOpenTrade } from "./risk-manager.js";
@@ -117,6 +117,7 @@ export async function checkPaperPositions(
         };
         account.balance += pnl;
         account.closedTrades.unshift(trade);
+        await insertClosedTrade(chatId, trade);
 
         // Record strategy stat
         recordStrategyTrade(pos.strategy ?? "TREND", pnlPct, pnl > 0).catch(() => {});
