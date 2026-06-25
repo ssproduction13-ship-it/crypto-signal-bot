@@ -141,7 +141,7 @@ async function buildAccountStats(chatId: number): Promise<string> {
     `📅 Сегодня: ${pnlD >= 0 ? "+" : ""}$${pnlD.toFixed(2)}`,
     `📆 Неделя: ${pnlW >= 0 ? "+" : ""}$${pnlW.toFixed(2)}`,
     `🗓 Месяц: ${pnlM >= 0 ? "+" : ""}$${pnlM.toFixed(2)}`, "",
-    `📂 Открытых (${account.positions.length}/3):`,
+    `📂 Открытых (${account.positions.length}/10):`,
     ...posLines,
   ].join("\n");
 }
@@ -563,7 +563,7 @@ export function createBot(): Telegraf {
       `📊 *Статус бота*\n\n` +
       `📡 Подписок: *${subs.length}* монет\n` +
       `🤖 Авто-торговля: *${s.autoPaperTrade ? "ВКЛ ✅" : "ВЫКЛ ❌"}*\n` +
-      `📂 Открыто позиций: *${account.positions.length}/3*\n` +
+      `📂 Открыто позиций: *${account.positions.length}/10*\n` +
       `💰 Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
       (subs.length === 0
         ? `⚠️ Нажми /start → 🚀 Запустить автоторговлю`
