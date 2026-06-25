@@ -17,7 +17,7 @@ let _bot: Telegraf | null = null;
 
 // Debounce: prevent opening the same symbol twice within one candle
 const recentlyProcessed = new Map<string, number>();
-const DEBOUNCE_MS = 60_000; // 1 minute per symbol
+const DEBOUNCE_MS = 30_000; // 30s per symbol — faster response for learning mode
 
 function key(chatId: number, symbol: string) { return `${chatId}:${symbol}`; }
 
@@ -75,7 +75,7 @@ export function listSubscriptions(chatId: number): Sub[] {
 }
 
 // ── Signal analysis ────────────────────────────────────────────────────────
-const AUTO_MIN_SCORE = 48;
+const AUTO_MIN_SCORE = 45; // lowered from 48 — more signals while filtering noise
 
 async function analyzeAndTrade(sub: Sub): Promise<void> {
   const debounceKey = `${sub.chatId}:${sub.symbol}`;
