@@ -213,6 +213,15 @@ export async function saveSettings(chatId: number, s: UserSettings): Promise<voi
     );
   }
 
+export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
+  await pool.query(
+    `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`,
+    [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
+     t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt]
+  );
+}
+
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 
 logger.info("PostgreSQL storage initialized");
