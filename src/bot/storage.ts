@@ -85,12 +85,13 @@ function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
 export async function loadJournal(): Promise<JournalEntry[]> {
   const {rows} = await pool.query("SELECT * FROM journal_entries ORDER BY timestamp DESC");
   return rows.map(r=>toJE(r as Record<string,unknown>));
+}
+
 export async function loadClosedTrades(chatId?: number): Promise<ClosedPaperTrade[]> {
-    const {rows} = chatId != null
-      ? await pool.query("SELECT * FROM paper_closed_trades WHERE chat_id=$1 ORDER BY closed_at DESC", [chatId])
-      : await pool.query("SELECT * FROM paper_closed_trades ORDER BY closed_at DESC");
-    return rows.map(r => toTrade(r as Record<string,unknown>));
-  }
+  const {rows} = chatId != null
+    ? await pool.query("SELECT * FROM paper_closed_trades WHERE chat_id=$1 ORDER BY closed_at DESC", [chatId])
+    : await pool.query("SELECT * FROM paper_closed_trades ORDER BY closed_at DESC");
+  return rows.map(r => toTrade(r as Record<string,unknown>));
 }
 export async function addJournalEntry(e: JournalEntry): Promise<void> {
   await pool.query(
