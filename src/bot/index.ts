@@ -35,12 +35,17 @@ import { Telegraf, Markup } from "telegraf";
 
   // ── Menus ─────────────────────────────────────────────────────────────────
   function mainMenu() {
-    return Markup.inlineKeyboard([
+    const dashUrl = process.env["DASHBOARD_URL"];
+    const rows: Parameters<typeof Markup.inlineKeyboard>[0] = [
       [Markup.button.callback("📊 Сигнал",    "menu_signal"),
        Markup.button.callback("💰 Счёт",      "menu_account")],
       [Markup.button.callback("🧠 Анализ",    "menu_analysis"),
        Markup.button.callback("⚙️ Настройки", "menu_settings")],
-    ]);
+    ];
+    if (dashUrl) {
+      rows.push([Markup.button.url("🖥 Live Дашборд", dashUrl)]);
+    }
+    return Markup.inlineKeyboard(rows);
   }
   function accountMenu() {
     return Markup.inlineKeyboard([
