@@ -67,7 +67,7 @@ import { pool } from "../lib/db.js";
   export async function canOpenTrade(symbol: string, openSymbols: string[]): Promise<{ allowed: boolean; reason: string }> {
     const s = await loadRiskState();
     if (!s.tradingEnabled)             return { allowed: false, reason: s.stopReason ?? "Торговля остановлена" };
-    if (s.openPositions >= 3)          return { allowed: false, reason: "Лимит: 3 открытые позиции" };
+    if (s.openPositions >= 10)         return { allowed: false, reason: "Лимит: 10 открытых позиций" };
     if (openSymbols.includes(symbol))  return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
     if (s.dailyPnlPct <= -3) {
       await saveRiskState({ ...s, tradingEnabled: false, stopReason: "DAILY_LIMIT" });
