@@ -37,10 +37,11 @@ import { Telegraf, Markup } from "telegraf";
   function mainMenu() {
     const dashUrl = process.env["DASHBOARD_URL"];
     const rows: Parameters<typeof Markup.inlineKeyboard>[0] = [
-      [Markup.button.callback("📊 Сигнал",    "menu_signal"),
+      [Markup.button.callback("📂 Позиции",   "menu_positions"),
        Markup.button.callback("💰 Счёт",      "menu_account")],
-      [Markup.button.callback("🧠 Анализ",    "menu_analysis"),
-       Markup.button.callback("⚙️ Настройки", "menu_settings")],
+      [Markup.button.callback("📊 Сигнал",    "menu_signal"),
+       Markup.button.callback("🧠 Анализ",    "menu_analysis")],
+      [Markup.button.callback("⚙️ Настройки", "menu_settings")],
     ];
     if (dashUrl) {
       rows.push([Markup.button.url("🖥 Live Дашборд", dashUrl)]);
@@ -182,6 +183,61 @@ import { Telegraf, Markup } from "telegraf";
         await ctx.reply(`✅ Подписка *${pair}* добавлена.`, { parse_mode:"Markdown", ...mainMenu() });
       });
     }
+
+    // ── Позиции ────────────────────────────────────────────────────────────
+    bot.action("menu_positions", async (ctx) => {
+      await ctx.answerCbQuery();
+      const chatId  = ctx.chat!.id;
+      const account = await loadPaperAccount(chatId);
+      const posMenu = Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Обновить", "menu_positions"),
+         Markup.button.callback("◀️ Меню",     "menu_main")],
+      ]);
+
+      if (account.positions.length === 0) {
+        await ctx.reply(
+          `📂 *Открытых позиций нет*\n\n_Бот следит за 21 монетой и откроет сделку при сигнале._`,
+          { parse_mode: "Markdown", ...posMenu }
+        );
+        return;
+      }
+
+      const { getPrice } = await import("./binance.js");
+      const lines: string[] = [`📂 *Позиции (${account.positions.length}/10)*\n`];
+
+      for (const pos of account.positions) {
+        const dir = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+        const be  = pos.breakevenMoved ? " \\[BE✓\\]" : "";
+        try {
+          const price  = await getPrice(pos.symbol);
+          const pnl    = pos.direction === "LONG"
+            ? (price - pos.entryPrice) * pos.size
+            : (pos.entryPrice - price) * pos.size;
+          const pnlPct = pos.direction === "LONG"
+            ? ((price - pos.entryPrice) / pos.entryPrice) * 100
+            : ((pos.entryPrice - price) / pos.entryPrice) * 100;
+          const pnlSign = pnl >= 0 ? "+" : "";
+          const pnlIcon = pnl >= 0 ? "📈" : "📉";
+          lines.push(
+            `${dir} *${pos.symbol}*${be}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Сейчас: \`${formatPrice(price)}\`\n` +
+            `${pnlIcon} P&L: *${pnlSign}${pnl.toFixed(2)}* (${pnlSign}${pnlPct.toFixed(2)}%)\n` +
+            `SL: \`${formatPrice(pos.stopLoss)}\` | TP1: \`${formatPrice(pos.tp1)}\``
+          );
+        } catch {
+          lines.push(
+            `${dir} *${pos.symbol}*${be}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\`\n` +
+            `SL: \`${formatPrice(pos.stopLoss)}\` | TP1: \`${formatPrice(pos.tp1)}\``
+          );
+        }
+      }
+
+      const ret = ((account.balance - account.initialBalance) / account.initialBalance * 100);
+      lines.push(`\n💰 Баланс: *${account.balance.toFixed(2)}* (${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%)`);
+
+      await ctx.reply(lines.join("\n\n"), { parse_mode: "Markdown", ...posMenu });
+    });
 
     // ── Счёт ───────────────────────────────────────────────────────────────
     bot.action("menu_account", async (ctx) => {

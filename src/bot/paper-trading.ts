@@ -122,12 +122,32 @@ export async function checkPaperPositions(
         // Record strategy stat
         recordStrategyTrade(pos.strategy ?? "TREND", pnlPct, pnl > 0).catch(() => {});
 
-        const em = pnl>0 ? (closeReason==="TP2"?"🚀":"✅") : (closeReason==="BE"?"🟡":"❌");
-        const closeMsg =
-          `${em} *${pos.symbol} закрыта (${closeReason})*\n` +
-          `P&L: ${pnl>=0?"+":""}${pnl.toFixed(2)} (${pnlPct>=0?"+":""}${pnlPct.toFixed(2)}%)\n` +
-          `Стратегия: ${pos.strategy ?? "TREND"}\n` +
-          `Баланс: $${account.balance.toFixed(2)}`;
+        const isProfit = pnl > 0;
+        const isBreakeven = closeReason === "BE";
+        const header = isBreakeven
+          ? `🟡 БЕЗУБЫТОК — ${pos.symbol}`
+          : closeReason === "TP2"
+          ? `🚀 ПРОФИТ — ${pos.symbol}`
+          : isProfit
+          ? `✅ ПРОФИТ — ${pos.symbol}`
+          : `❌ УБЫТОК — ${pos.symbol}`;
+        const stratNames: Record<string, string> = {
+          TREND:"Тренд", BREAKOUT:"Пробой",
+          VOLUME_IMPULSE:"Импульс", MEAN_REVERSION:"Возврат к ср.",
+        };
+        const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
+        const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+        const closeMsg = isBreakeven
+          ? `*${header}*\n` +
+            `${dirLabel} | ${stratLabel}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(closePrice)}\`\n` +
+            `P&L: *≈$0* (стоп был в точке входа)\n` +
+            `💰 Баланс: *${account.balance.toFixed(2)}*`
+          : `*${header}*\n` +
+            `${dirLabel} | ${closeReason} | ${stratLabel}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(closePrice)}\`\n` +
+            `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
+            `💰 Баланс: *${account.balance.toFixed(2)}*`;
         msgs.push(closeMsg);
 
         const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0);
