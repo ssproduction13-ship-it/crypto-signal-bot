@@ -25,7 +25,7 @@ export async function openPaperPosition(
 
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
-  if (account.positions.length >= 3) return {success:false,message:"⚠️ Макс. 3 позиции открыто"};
+  if (account.positions.length >= 10) return {success:false,message:"⚠️ Макс. 10 позиций открыто"};
 
   const pos: PaperPosition = {
     id:genId(), symbol, direction, entryPrice, size,
