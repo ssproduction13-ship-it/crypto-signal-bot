@@ -125,7 +125,7 @@ import { pool } from "../lib/db.js";
       `📅 Дневной P&L: ${s.dailyPnlPct >= 0 ? "+" : ""}${s.dailyPnlPct.toFixed(2)}% (лимит -3%)`,
       `📆 Недельный P&L: ${s.weeklyPnlPct >= 0 ? "+" : ""}${s.weeklyPnlPct.toFixed(2)}% (лимит -7%)`,
       `🔴 Убытков подряд: ${s.consecutiveLosses}/3`,
-      `📂 Открытых позиций: ${s.openPositions}/3`,
+      `📂 Открытых позиций: ${s.openPositions}/10`,
       ...(!s.tradingEnabled ? ["", "Используй /resume для возобновления"] : []),
     ].join("\n");
   }
