@@ -197,7 +197,7 @@ async function sendStartupSummary(): Promise<void> {
 
       await safeSend(chatId,
         `🤖 *Бот перезапущен* — слежу за рынком 24/7\n\n` +
-        `${statusIcon} Позиций: *${pos.length}/3* | Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
+        `${statusIcon} Позиций: *${pos.length}/10* | Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
         (pos.length > 0
           ? `📂 *Открытые позиции:*\n${posLines.join("\n")}\n\n_Уведомлю когда закроются_ 🔔`
           : `_Жду сигнал ≥48/100 по 21 монете_ 👀`)
