@@ -182,6 +182,37 @@ export async function saveSettings(chatId: number, s: UserSettings): Promise<voi
     [chatId,s.noTradeMode,s.minScore,s.riskPercent,s.accountSize,s.autoPaperTrade]
   );
 }
-export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
+
+  export async function saveBalance(chatId: number, balance: number, initialBalance: number, peakBalance: number): Promise<void> {
+    const peak = Math.max(balance, peakBalance);
+    await pool.query(
+      `INSERT INTO paper_accounts(chat_id,balance,initial_balance,peak_balance) VALUES($1,$2,$3,$4)
+       ON CONFLICT(chat_id) DO UPDATE SET balance=EXCLUDED.balance, peak_balance=EXCLUDED.peak_balance`,
+      [chatId, balance, initialBalance, peak]
+    );
+  }
+
+  export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
+    await pool.query(
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`,
+      [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
+       pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr]
+    );
+  }
+
+  export async function deletePosition(chatId: number, posId: string): Promise<void> {
+    await pool.query("DELETE FROM paper_positions WHERE chat_id=$1 AND id=$2", [chatId, posId]);
+  }
+
+  export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
+    await pool.query(
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3
+       WHERE chat_id=$4 AND id=$5`,
+      [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, chatId, pos.id]
+    );
+  }
+
+  export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 
 logger.info("PostgreSQL storage initialized");
