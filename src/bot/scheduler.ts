@@ -75,7 +75,7 @@ export function listSubscriptions(chatId: number): Sub[] {
 }
 
 // ── Signal analysis ────────────────────────────────────────────────────────
-const AUTO_MIN_SCORE = 55;
+const AUTO_MIN_SCORE = 48;
 
 async function analyzeAndTrade(sub: Sub): Promise<void> {
   const debounceKey = `${sub.chatId}:${sub.symbol}`;
@@ -89,7 +89,7 @@ async function analyzeAndTrade(sub: Sub): Promise<void> {
     if (sig.market.isChaotic) return;
     if (sig.score.direction === "NEUTRAL") return;
     if (sig.score.total < AUTO_MIN_SCORE) return;
-    if (sig.confidence.score < 30) return;  // Confidence Engine gate
+    if (sig.confidence.score < 20) return;  // Confidence Engine gate (мягкий)
 
     const settings = await loadSettings(sub.chatId);
     if (!settings.autoPaperTrade) return;

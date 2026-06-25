@@ -26,7 +26,8 @@ export async function calcConfidence(
   signalScore?: number
 ): Promise<ConfidenceResult> {
   // 1. Recent performance (0-100)
-  let recentPerformance = 50;
+  // На старте без истории — нейтральный балл 55 (чуть выше 50 чтобы не блокировать)
+  let recentPerformance = 55;
   try {
     const { rows } = await pool.query(
       "SELECT pnl_percent FROM journal_entries WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 20"
