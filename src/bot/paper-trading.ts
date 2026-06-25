@@ -181,7 +181,7 @@ export async function getPaperStats(chatId: number): Promise<string> {
     `📊 Сделок: ${trades.length} | WR: ${trades.length?(wins.length/trades.length*100).toFixed(1):0}%`,
     `Win avg: +${avgW.toFixed(2)}% | Loss avg: -${avgL.toFixed(2)}%`,
     `Profit Factor: ${pf===999?"∞":pf.toFixed(2)}`, "",
-    `📂 Открытых позиций (${account.positions.length}/3):`,
+    `📂 Открытых позиций (${account.positions.length}/10):`,
     ...posLines,
   ].join("\n");
 }
