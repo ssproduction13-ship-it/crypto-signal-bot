@@ -193,7 +193,7 @@ async function sendStartupSummary(): Promise<void> {
             return `  ${dir} ${p.symbol} @ ${formatPrice(p.entryPrice)}${be}\n     SL: ${formatPrice(p.stopLoss)} | TP1: ${formatPrice(p.tp1)}`;
           });
 
-      const statusIcon = pos.length === 3 ? "🔴" : pos.length > 0 ? "🟡" : "🟢";
+      const statusIcon = pos.length >= 10 ? "🔴" : pos.length > 0 ? "🟡" : "🟢";
 
       await safeSend(chatId,
         `🤖 *Бот перезапущен* — слежу за рынком 24/7\n\n` +
