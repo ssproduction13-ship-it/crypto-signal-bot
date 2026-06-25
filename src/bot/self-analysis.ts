@@ -31,7 +31,10 @@ import { loadClosedTrades, loadWeights } from "./storage.js";
       const gW     = wins.reduce((a,e)=>a+e.pnlPercent,0);
       const gL     = Math.abs(losses.reduce((a,e)=>a+e.pnlPercent,0));
       const pf     = gL>0 ? gW/gL : gW>0 ? 999 : 0;
-      const ret    = recent.map(e=>e.pnlPercent);
+      // DB returns trades newest-first (ORDER BY closed_at DESC).
+      // Time-series calcs (drawdown, Sharpe) need chronological order.
+      const chronological = [...recent].reverse();
+      const ret    = chronological.map(e=>e.pnlPercent);
       const sp     = sharpe(ret);
 
       let eq=1000; const curve=[1000];
