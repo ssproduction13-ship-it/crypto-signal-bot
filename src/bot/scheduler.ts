@@ -95,7 +95,8 @@ async function analyzeAndTrade(sub: Sub): Promise<void> {
     if (sig.market.isChaotic) return;
     if (sig.score.direction === "NEUTRAL") return;
     const minScore = dynamicMinScore(sig.marketRating.index);
-      if (sig.score.total < minScore) return;
+    if (sig.score.total < minScore) return;
+    if (!sig.risk.isRRViable) return;        // R/R must be at least 1:1.5
     if (sig.confidence.score < 20) return;  // Confidence Engine gate (мягкий)
 
     const settings = await loadSettings(sub.chatId);

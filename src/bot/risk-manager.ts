@@ -84,7 +84,7 @@ import { pool } from "../lib/db.js";
 
   export async function recordPositionOpened(): Promise<void> {
     const s = await loadRiskState();
-    s.openPositions = Math.min(3, s.openPositions + 1);
+    s.openPositions = s.openPositions + 1;
     await saveRiskState(s);
   }
 
