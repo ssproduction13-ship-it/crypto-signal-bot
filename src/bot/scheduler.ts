@@ -170,6 +170,44 @@ async function runABEvaluation(): Promise<void> {
   }
 }
 
+// ── Startup summary — sent once after bot restarts ─────────────────────────
+async function sendStartupSummary(): Promise<void> {
+  // Wait a bit for subscriptions to load
+  await new Promise(r => setTimeout(r, 3000));
+  if (!chatIds.size) return;
+
+  const { loadPaperAccount } = await import("./storage.js");
+  const { formatPrice } = await import("./risk.js");
+
+  for (const chatId of chatIds) {
+    try {
+      const account = await loadPaperAccount(chatId);
+      const pos = account.positions;
+      const ret = ((account.balance - account.initialBalance) / account.initialBalance * 100).toFixed(2);
+
+      const posLines = pos.length === 0
+        ? ["  нет открытых позиций"]
+        : pos.map(p => {
+            const dir = p.direction === "LONG" ? "🟢" : "🔴";
+            const be  = p.breakevenMoved ? " [BE✓]" : "";
+            return `  ${dir} ${p.symbol} @ ${formatPrice(p.entryPrice)}${be}\n     SL: ${formatPrice(p.stopLoss)} | TP1: ${formatPrice(p.tp1)}`;
+          });
+
+      const statusIcon = pos.length === 3 ? "🔴" : pos.length > 0 ? "🟡" : "🟢";
+
+      await safeSend(chatId,
+        `🤖 *Бот перезапущен* — слежу за рынком 24/7\n\n` +
+        `${statusIcon} Позиций: *${pos.length}/3* | Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
+        (pos.length > 0
+          ? `📂 *Открытые позиции:*\n${posLines.join("\n")}\n\n_Уведомлю когда закроются_ 🔔`
+          : `_Жду сигнал ≥48/100 по 21 монете_ 👀`)
+      );
+    } catch (err) {
+      logger.error({ err, chatId }, "sendStartupSummary failed");
+    }
+  }
+}
+
 // ── Start ──────────────────────────────────────────────────────────────────
 export function startScheduler(bot: Telegraf): void {
   _bot = bot;
@@ -177,7 +215,9 @@ export function startScheduler(bot: Telegraf): void {
   // Real-time WebSocket — triggers on each completed candle
   kuCoinWs.onNewCandle((sym, iv) => void onNewCandle(sym, iv));
   kuCoinWs.start().catch(err => logger.error({ err }, "KuCoin WS start error"));
-  initSubscriptions().catch(err => logger.error({ err }, "initSubscriptions error"));
+  initSubscriptions()
+    .then(() => sendStartupSummary())
+    .catch(err => logger.error({ err }, "initSubscriptions error"));
 
   // Position monitor every 30 seconds — checks TP/SL, trailing stop, breakeven + notifications
   setInterval(() => { void checkPositions(); }, 30_000);
