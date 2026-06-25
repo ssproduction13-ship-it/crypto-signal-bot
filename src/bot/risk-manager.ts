@@ -34,6 +34,7 @@ import { pool } from "../lib/db.js";
     if (s.lastResetDate !== todayKey()) {
       s.dailyPnlPct = 0; s.lastResetDate = todayKey();
       if (s.stopReason === "DAILY_LIMIT") { s.tradingEnabled = true; s.stopReason = null; }
+      if (s.stopReason === "3 убытка подряд") { s.tradingEnabled = true; s.stopReason = null; s.consecutiveLosses = 0; dirty = true; }
       dirty = true;
     }
     if (s.lastWeekKey !== weekKey()) {
@@ -93,10 +94,7 @@ import { pool } from "../lib/db.js";
     s.weeklyPnlPct      += pnlPct;
     s.consecutiveLosses  = isWin ? 0 : s.consecutiveLosses + 1;
     let alert: string | null = null;
-    if (s.consecutiveLosses >= 3 && s.tradingEnabled) {
-      s.tradingEnabled = false; s.stopReason = "3 убытка подряд";
-      alert = "🛑 *3 убытка подряд!* Авто-торговля остановлена.\nИспользуй /resume для возобновления.";
-      logger.warn("Trading paused: 3 consecutive losses");
+    // Consecutive losses tracked for analytics only — no trading stop (paper trading mode)
     } else if (s.dailyPnlPct <= -3 && s.tradingEnabled) {
       s.tradingEnabled = false; s.stopReason = "DAILY_LIMIT";
       alert = "🛑 Дневной лимит -3% достигнут. Торговля возобновится завтра.";
@@ -124,7 +122,7 @@ import { pool } from "../lib/db.js";
       ...(!s.tradingEnabled && s.stopReason ? [`Причина: ${s.stopReason}`] : []), "",
       `📅 Дневной P&L: ${s.dailyPnlPct >= 0 ? "+" : ""}${s.dailyPnlPct.toFixed(2)}% (лимит -3%)`,
       `📆 Недельный P&L: ${s.weeklyPnlPct >= 0 ? "+" : ""}${s.weeklyPnlPct.toFixed(2)}% (лимит -7%)`,
-      `🔴 Убытков подряд: ${s.consecutiveLosses}/3`,
+      `📊 Убытков подряд: ${s.consecutiveLosses} (без лимита — режим обучения)`,
       `📂 Открытых позиций: ${s.openPositions}/10`,
       ...(!s.tradingEnabled ? ["", "Используй /resume для возобновления"] : []),
     ].join("\n");
