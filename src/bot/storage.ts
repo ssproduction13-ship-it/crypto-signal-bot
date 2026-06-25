@@ -34,7 +34,7 @@ import { pool } from "../lib/db.js";
   }
 
   const DEF_W: FactorWeights = {trend:0.30,volume:0.25,momentum:0.20,levels:0.15,pattern:0.10};
-  const DEF_S: UserSettings  = {noTradeMode:false,minScore:70,riskPercent:1,accountSize:1000,autoPaperTrade:true};
+  const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:1,accountSize:1000,autoPaperTrade:true};
 
   function toJE(r: Record<string,unknown>): JournalEntry {
     return {
