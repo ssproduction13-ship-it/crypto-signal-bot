@@ -501,6 +501,77 @@ export function createBot(): Telegraf {
     );
   });
 
+  // /scan — live diagnosis of all 21 pairs
+  bot.command("scan", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const subs   = listSubscriptions(chatId);
+    const settings = await loadSettings(chatId);
+
+    if (subs.length === 0) {
+      await ctx.reply(
+        `⚠️ *Нет активных подписок!*\n\nНажми /start → 🚀 Запустить автоторговлю`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+    if (!settings.autoPaperTrade) {
+      await ctx.reply(`⚠️ Авто-торговля выключена! Зайди в ⚙️ Настройки → включи.`, { parse_mode: "Markdown" });
+      return;
+    }
+
+    const msg = await ctx.reply(`🔍 Сканирую ${AUTO_PAIRS.length} монет... (~30 сек)`, { parse_mode: "Markdown" });
+
+    const results: string[] = [];
+    let tradeable = 0;
+
+    for (const { symbol, interval } of AUTO_PAIRS.slice(0, 10)) {
+      try {
+        const sig = await generateSignal(symbol, interval, chatId);
+        const score = sig.score.total;
+        const dir   = sig.score.direction;
+        const conf  = sig.confidence.score;
+        let status: string;
+        if (sig.market.isChaotic)         status = `🌪 Хаос`;
+        else if (dir === "NEUTRAL")        status = `⚪ Нейтраль`;
+        else if (score < 48)               status = `📉 Score ${score}<48`;
+        else if (conf < 20)                status = `🔴 Conf ${conf}%<20`;
+        else { status = `✅ ${dir} Score ${score} Conf ${conf}%`; tradeable++; }
+        results.push(`${symbol}: ${status}`);
+      } catch {
+        results.push(`${symbol}: ❌ ошибка`);
+      }
+    }
+
+    await ctx.telegram.editMessageText(chatId, msg.message_id, undefined,
+      `🔍 *Скан рынка (топ-10 монет)*\n\n` +
+      results.join("\n") + `\n\n` +
+      `✅ Готовы к сделке: *${tradeable}*\n` +
+      `📡 Подписок: ${subs.length} | Авто: ${settings.autoPaperTrade ? "ВКЛ" : "ВЫКЛ"}\n` +
+      `_Сделка откроется при закрытии следующей свечи_`,
+      { parse_mode: "Markdown" }
+    );
+  });
+
+  // /status — quick bot status
+  bot.command("status", async (ctx) => {
+    const chatId  = ctx.chat.id;
+    const subs    = listSubscriptions(chatId);
+    const s       = await loadSettings(chatId);
+    const account = await loadPaperAccount(chatId);
+    const ret = ((account.balance - account.initialBalance) / account.initialBalance * 100).toFixed(2);
+    await ctx.reply(
+      `📊 *Статус бота*\n\n` +
+      `📡 Подписок: *${subs.length}* монет\n` +
+      `🤖 Авто-торговля: *${s.autoPaperTrade ? "ВКЛ ✅" : "ВЫКЛ ❌"}*\n` +
+      `📂 Открыто позиций: *${account.positions.length}/3*\n` +
+      `💰 Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
+      (subs.length === 0
+        ? `⚠️ Нажми /start → 🚀 Запустить автоторговлю`
+        : `🟢 Бот активен, жду сигнал ≥48/100`),
+      { parse_mode: "Markdown", ...mainMenu() }
+    );
+  });
+
   // Text fallback
   bot.on("text", async (ctx) => {
     const text = ctx.message.text.trim();
