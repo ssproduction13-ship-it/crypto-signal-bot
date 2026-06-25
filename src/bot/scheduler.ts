@@ -1,12 +1,9 @@
 import cron from "node-cron";
   import type { Telegraf } from "telegraf";
-  import { generateSignal, formatSignal } from "./signals.js";
-  import { checkOpenSignals } from "./journal.js";
-  import { checkPaperPositions, openPaperPosition } from "./paper-trading.js";
+  import { generateSignal } from "./signals.js";
+  import { checkPaperPositions, openPaperPosition, getPaperStats } from "./paper-trading.js";
   import { canOpenTrade } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount } from "./storage.js";
-  import { checkMissedTrades } from "./missed-trades.js";
-  import { checkAndProtect } from "./strategy-guard.js";
   import { kuCoinWs } from "./websocket.js";
   import { pool } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
@@ -16,6 +13,10 @@ import cron from "node-cron";
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
   let _bot: Telegraf | null = null;
+
+  // Debounce: prevent opening the same symbol twice within one candle
+  const recentlyProcessed = new Map<string, number>();
+  const DEBOUNCE_MS = 60_000; // 1 minute per symbol
 
   function key(chatId: number, symbol: string) { return `${chatId}:${symbol}`; }
 
@@ -35,7 +36,7 @@ import cron from "node-cron";
       chatIds.add(chatId);
       kuCoinWs.addSubscription(sym, intv);
     }
-    logger.info({ count: subs.size }, "Subscriptions restored from DB");
+    logger.info({ count: subs.size }, "Subscriptions restored");
   }
 
   export function subscribe(chatId: number, symbol: string, interval: Interval = "1h"): void {
@@ -72,58 +73,79 @@ import cron from "node-cron";
     return [...subs.values()].filter(s => s.chatId === chatId);
   }
 
-  // ── Auto paper trade threshold — lower than user alert threshold ──────────
-  const AUTO_TRADE_MIN_SCORE = 55;
+  // ── Signal analysis — SILENT, only notifies when trade opens ─────────────
+  const AUTO_MIN_SCORE = 55;
 
-  // ── Process one subscription signal ──────────────────────────────────────
-  async function processSignal(sub: Sub): Promise<void> {
+  async function analyzeAndTrade(sub: Sub): Promise<void> {
+    // Debounce: skip if this symbol was processed recently
+    const debounceKey = `${sub.chatId}:${sub.symbol}`;
+    const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
+    if (Date.now() - lastRun < DEBOUNCE_MS) return;
+    recentlyProcessed.set(debounceKey, Date.now());
+
     try {
+      // Silent analysis — no messages regardless of result
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
 
-      // Send alert to user only for high-quality signals (respects their minScore setting)
-      if (!sig.filtered && sig.score.direction !== "NEUTRAL") {
-        await safeSend(sub.chatId, `🔔 *Авто-сигнал*\n\n${formatSignal(sig)}`);
-      }
+      if (sig.market.isChaotic) return;
+      if (sig.score.direction === "NEUTRAL") return;
+      if (sig.score.total < AUTO_MIN_SCORE) return;
 
-      // ── Auto paper trade: more permissive threshold (55) ──────────────────
       const settings = await loadSettings(sub.chatId);
       if (!settings.autoPaperTrade) return;
-      if (sig.market.isChaotic) return;                             // skip chaotic markets
-      if (sig.score.direction === "NEUTRAL") return;                // need clear direction
-      if (sig.score.total < AUTO_TRADE_MIN_SCORE) return;           // minimum quality gate
 
-      const account   = await loadPaperAccount(sub.chatId);
-      const openSyms  = account.positions.map(p => p.symbol);
+      const account  = await loadPaperAccount(sub.chatId);
+      const openSyms = account.positions.map(p => p.symbol);
       const { allowed, reason } = await canOpenTrade(sub.symbol, openSyms);
+
       if (!allowed) {
-        // Only notify about risk stops (not routine "already open" messages)
-        if (!reason.includes("уже открыта") && !reason.includes("Лимит")) {
-          await safeSend(sub.chatId, `⚠️ Авто-сделка заблокирована: ${reason}`);
+        // Only log risk stops — no spam messages for routine limits
+        if (reason.includes("DAILY_LIMIT") || reason.includes("WEEKLY_LIMIT") || reason.includes("3 убытка")) {
+          await safeSend(sub.chatId, `🛑 *Торговля остановлена*\n${reason}`);
         }
         return;
       }
 
+      // Open the trade
       const res = await openPaperPosition(
         sub.chatId, sub.symbol, sig.score.direction,
         sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
         settings.riskPercent, sig.risk.atr
       );
+
       if (res.success) {
-        logger.info({ symbol: sub.symbol, score: sig.score.total, dir: sig.score.direction }, "Auto paper trade opened");
+        const dir   = sig.score.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+        const score = sig.score.total;
+        logger.info({ symbol: sub.symbol, score, dir: sig.score.direction }, "Auto trade opened");
+
+        // ONE message only — when trade opens
         await safeSend(sub.chatId,
-          `🤖 *Авто-сделка открыта*\n${res.message}\n\n_Оценка: ${sig.score.total}/100 | ${sig.score.direction}_`
+          `🤖 *Новая позиция*\n\n` +
+          `${dir} *${sub.symbol}*\n` +
+          `Оценка: ${score}/100\n` +
+          `Вход: \`${sig.risk.entryPrice.toPrecision(6)}\`\n` +
+          `Стоп: \`${sig.risk.stopLoss.toPrecision(6)}\`\n` +
+          `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\``
         );
       }
     } catch (err) {
-      logger.error({ err, sub }, "processSignal error");
+      logger.error({ err, symbol: sub.symbol }, "analyzeAndTrade error");
     }
   }
 
-  // ── WebSocket: fire on every completed candle ─────────────────────────────
+  // ── WebSocket: new candle completed → analyze ─────────────────────────────
   async function onNewCandle(symbol: string, interval: string): Promise<void> {
     for (const sub of subs.values()) {
       if (sub.symbol === symbol && sub.interval === interval)
-        await processSignal(sub);
+        void analyzeAndTrade(sub);   // fire-and-forget, non-blocking
+    }
+  }
+
+  // ── Position monitor: check TP/SL every 30 seconds ───────────────────────
+  async function checkPositions(): Promise<void> {
+    for (const chatId of chatIds) {
+      const msgs = await checkPaperPositions(chatId).catch(() => []);
+      for (const m of msgs) await safeSend(chatId, m);   // only fires on close
     }
   }
 
@@ -131,34 +153,23 @@ import cron from "node-cron";
   export function startScheduler(bot: Telegraf): void {
     _bot = bot;
 
-    // Real-time WebSocket for each completed candle
+    // Real-time WebSocket — triggers on each completed candle
     kuCoinWs.onNewCandle((sym, iv) => void onNewCandle(sym, iv));
     kuCoinWs.start().catch(err => logger.error({ err }, "KuCoin WS start error"));
     initSubscriptions().catch(err => logger.error({ err }, "initSubscriptions error"));
 
-    // Position monitor every 5 min: trailing stop, TP/SL, missed trades
-    cron.schedule("*/5 * * * *", async () => {
-      for (const chatId of chatIds) {
-        const msgs = await checkPaperPositions(chatId).catch(() => []);
-        for (const m of msgs) await safeSend(chatId, m);
-      }
-      const results = await checkOpenSignals().catch(() => []);
-      for (const { message } of results)
-        for (const chatId of chatIds) await safeSend(chatId, message);
-      const missedMsgs = await checkMissedTrades().catch(() => []);
-      for (const m of missedMsgs)
-        for (const chatId of chatIds) await safeSend(chatId, m);
-      const alert = await checkAndProtect().catch(() => null);
-      if (alert) for (const chatId of chatIds) await safeSend(chatId, alert);
-    });
+    // Position monitor every 30 seconds — checks TP/SL, trailing stop, breakeven
+    // Only sends message when position actually closes
+    setInterval(() => { void checkPositions(); }, 30_000);
 
-    // Fallback cron every 15 min (redundancy if WS misses candles)
-    cron.schedule("*/15 * * * *", async () => {
+    // Silent fallback: re-analyze all subscriptions every 30 min
+    // (catches candles WebSocket might miss — NO messages, only opens trades)
+    cron.schedule("*/30 * * * *", async () => {
       if (!subs.size) return;
-      logger.info({ count: subs.size }, "Cron fallback scan");
-      for (const sub of subs.values()) await processSignal(sub);
+      logger.debug({ count: subs.size }, "Silent fallback scan");
+      for (const sub of subs.values()) void analyzeAndTrade(sub);
     });
 
-    logger.info("Scheduler started — WS real-time + 5min monitor + 15min fallback");
+    logger.info("Scheduler started — silent 24/7 mode (WS + 30s position check + 30min fallback)");
   }
   
