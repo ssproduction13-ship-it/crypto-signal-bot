@@ -33,7 +33,8 @@ export async function openPaperPosition(
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
   };
   account.positions.push(pos);
-  await savePaperAccount(chatId, account);
+  await insertPosition(chatId, pos);
+    await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   await recordPositionOpened();
 
   const stratNames: Record<string, string> = {
@@ -149,8 +150,14 @@ export async function checkPaperPositions(
     }
   }
 
-  account.positions = remaining;
-  await savePaperAccount(chatId, account);
+  // Atomic: remove closed positions individually, update modified ones (no race condition)
+    const remainingIds = new Set(remaining.map(p => p.id));
+    for (const p of account.positions) {
+      if (!remainingIds.has(p.id)) await deletePosition(chatId, p.id);
+      else await updatePosition(chatId, p);
+    }
+    account.positions = remaining;
+  await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   return msgs;
 }
 
