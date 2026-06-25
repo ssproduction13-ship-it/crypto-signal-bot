@@ -1,6 +1,6 @@
 import { getPrice } from "./binance.js";
 import {
-  loadPaperAccount, savePaperAccount, loadSettings, genId,
+  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, loadSettings, genId,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened, canOpenTrade } from "./risk-manager.js";
