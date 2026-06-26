@@ -192,17 +192,17 @@ const MIGRATIONS = [
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_sentiment TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk TEXT",
-  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PREC,
-    "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
-    "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS version_label TEXT",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS total_return DOUBLE PRECISION NOT NULL DEFAULT 0",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS sharpe_ratio DOUBLE PRECISION NOT NULL DEFAULT 0",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS recovery_factor DOUBLE PRECISION NOT NULL DEFAULT 0",
-    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS notes TEXT",
-ISION",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS version_label TEXT",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS total_return DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS sharpe_ratio DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS recovery_factor DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS notes TEXT",
 ];
+
 
 export async function initDb(): Promise<void> {
   if (!process.env["DATABASE_URL"])
