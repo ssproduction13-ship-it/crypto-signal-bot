@@ -271,7 +271,47 @@ import { Telegraf, Markup } from "telegraf";
       await ctx.reply(analysis, { parse_mode:"Markdown", ...analysisMenu() });
     });
 
-    bot.action("menu_marketrating", async (ctx) => {
+    bot.action("menu_learning", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю историю обучения...");
+        try {
+          const history = await getLearningHistory();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(history, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка загрузки истории"); }
+      });
+      bot.action("menu_aireport", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Генерирую AI отчёт...");
+        try {
+          const report = await generateLearningReport();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(report, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка генерации отчёта"); }
+      });
+      bot.action("menu_timeanalytics", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Считаю статистику по времени...");
+        try {
+          const stats = await getTimeAnalytics();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(stats, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка загрузки аналитики"); }
+      });
+      bot.action("menu_instruments", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю аналитику по инструментам...");
+        try {
+          const stats = await getInstrumentAnalytics();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(stats, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка загрузки аналитики"); }
+      });
+      bot.action("menu_marketrating", async (ctx) => {
       await ctx.answerCbQuery();
       const loading = await ctx.reply("⏳ Анализирую рынок...");
       try {
