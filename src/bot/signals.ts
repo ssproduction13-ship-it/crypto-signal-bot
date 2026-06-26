@@ -53,7 +53,10 @@ export async function generateSignal(
   const strategies   = evalAllStrategies(ind, levels, pattern, candles);
   const bestStrategy = getBestStrategy(strategies);
   const marketRating = calcMarketRating(ind, market, candles);
-  const confidence   = await calcConfidence(ind, market, bestStrategy?.strategy, score.total);
+  // Detect regime for Confidence Engine v2
+    const { detectMarketRegime } = await import("./learning-engine.js").catch(() => ({ detectMarketRegime: () => "sideways" as const }));
+    const regime = detectMarketRegime(market, rating);
+    const confidence   = await calcConfidence(ind, market, bestStrategy?.strategy, score.total, symbol, regime);
 
   let filtered = false, filterReason: string | null = null;
 
