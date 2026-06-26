@@ -234,8 +234,8 @@ export async function selectBestStrategy(
     const weight = wRow ? Number(wRow["weight"]) : 1;
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
 
-    // Quarantine: only allow high-confidence signals (≥60%)
-    if (isQuarantine && sig.confidence < 60) continue;
+    // Quarantine: only allow moderate-confidence signals (≥35%) — lower bar in RC/learning phase
+    if (isQuarantine && sig.confidence < 35) continue;
 
     const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
     const trades = statRow ? Number(statRow["trades"]) : 0;

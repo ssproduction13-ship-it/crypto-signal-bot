@@ -111,12 +111,23 @@ import cron from "node-cron";
     try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
 
-      if (sig.market.isChaotic) return;
-      if (sig.score.direction === "NEUTRAL") return;
+      if (sig.market.isChaotic) {
+        logger.info({ symbol: sub.symbol, atrPct: sig.market.atrPercent, adx: sig.market.warnings }, "Trade blocked: chaotic market");
+        return;
+      }
+      if (sig.score.direction === "NEUTRAL") {
+        logger.debug({ symbol: sub.symbol, score: sig.score.total }, "Trade blocked: NEUTRAL direction");
+        return;
+      }
       const minScore = dynamicMinScore(sig.marketRating.index);
-      if (sig.score.total < minScore) return;
-      // isRRViable check disabled in learning mode
-      if (sig.confidence.score < 10) return;
+      if (sig.score.total < minScore) {
+        logger.debug({ symbol: sub.symbol, score: sig.score.total, minScore }, "Trade blocked: score below threshold");
+        return;
+      }
+      if (sig.confidence.score < 10) {
+        logger.debug({ symbol: sub.symbol, confidence: sig.confidence.score }, "Trade blocked: low confidence");
+        return;
+      }
 
       // ── Self Learning Engine v2 gates ──────────────────────────────────────
       const regime = detectMarketRegime(sig.market, sig.marketRating);

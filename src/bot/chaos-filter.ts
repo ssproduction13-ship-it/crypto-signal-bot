@@ -36,15 +36,15 @@ export function assessMarket(
   let isSideways = false;
   let isLowVolume = false;
 
-  if (atrPercent != null && atrPercent > 4) {
+  if (atrPercent != null && atrPercent > 5) {
     isHighVolatility = true;
     warnings.push(`⚡ ATR ${atrPercent.toFixed(1)}% — экстремальная волатильность`);
-  } else if (atrPercent != null && atrPercent > 3) {
+  } else if (atrPercent != null && atrPercent > 4) {
     isHighVolatility = true;
     warnings.push(`⚡ ATR ${atrPercent.toFixed(1)}% — высокая волатильность`);
   }
 
-  if (ind.adxValue != null && ind.adxValue < 15) {
+  if (ind.adxValue != null && ind.adxValue < 10) {
     isSideways = true;
     warnings.push(`↔️ ADX ${ind.adxValue.toFixed(1)} — боковой рынок, тренда нет`);
   }
@@ -57,7 +57,7 @@ export function assessMarket(
   const isChaotic =
     (isHighVolatility && isSideways) ||
     (isHighVolatility && isLowVolume) ||
-    (atrPercent != null && atrPercent > 5);
+    (atrPercent != null && atrPercent > 6);
 
   let recommendation: string;
   if (isChaotic) {
