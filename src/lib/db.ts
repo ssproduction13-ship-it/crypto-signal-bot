@@ -122,6 +122,60 @@ CREATE TABLE IF NOT EXISTS notifications_log (
   message TEXT NOT NULL,
   sent_at TEXT NOT NULL
 );
+  CREATE TABLE IF NOT EXISTS strategy_weights (
+    strategy TEXT PRIMARY KEY,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    disabled BOOLEAN NOT NULL DEFAULT false,
+    disabled_until TEXT,
+    cycles_below_threshold INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT '2000-01-01'
+  );
+  INSERT INTO strategy_weights(strategy) VALUES('TREND'),('BREAKOUT'),('VOLUME_IMPULSE'),('MEAN_REVERSION')
+  ON CONFLICT DO NOTHING;
+  CREATE TABLE IF NOT EXISTS strategy_regime_stats (
+    strategy TEXT NOT NULL, regime TEXT NOT NULL,
+    trades INTEGER NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
+    win_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    loss_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    PRIMARY KEY (strategy, regime)
+  );
+  CREATE TABLE IF NOT EXISTS shadow_positions (
+    id TEXT PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT NOT NULL,
+    entry_price DOUBLE PRECISION NOT NULL, size DOUBLE PRECISION NOT NULL,
+    stop_loss DOUBLE PRECISION NOT NULL, tp1 DOUBLE PRECISION NOT NULL, tp2 DOUBLE PRECISION NOT NULL,
+    strategy TEXT NOT NULL, challenger_weights JSONB NOT NULL DEFAULT '{}',
+    market_regime TEXT NOT NULL DEFAULT 'unknown', opened_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS shadow_closed_trades (
+    id TEXT PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT NOT NULL,
+    entry_price DOUBLE PRECISION NOT NULL, close_price DOUBLE PRECISION NOT NULL,
+    pnl_percent DOUBLE PRECISION NOT NULL, outcome TEXT NOT NULL,
+    strategy TEXT NOT NULL, opened_at TEXT NOT NULL, closed_at TEXT NOT NULL,
+    is_win BOOLEAN NOT NULL DEFAULT false
+  );
+  CREATE TABLE IF NOT EXISTS time_analytics (
+    hour_of_day INTEGER NOT NULL, day_of_week INTEGER NOT NULL,
+    trades INTEGER NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
+    win_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    loss_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour_of_day, day_of_week)
+  );
+  CREATE TABLE IF NOT EXISTS instrument_analytics (
+    symbol TEXT PRIMARY KEY,
+    trades INTEGER NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
+    win_pnl DOUBLE PRECISION NOT NULL DEFAULT 0, loss_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    priority_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    best_strategy TEXT NOT NULL DEFAULT 'TREND',
+    updated_at TEXT NOT NULL DEFAULT '2000-01-01'
+  );
+  CREATE TABLE IF NOT EXISTS learning_reports (
+    id SERIAL PRIMARY KEY, version_label TEXT NOT NULL,
+    created_at TEXT NOT NULL, trade_count_at_report INTEGER NOT NULL,
+    summary TEXT NOT NULL, report_json JSONB NOT NULL DEFAULT '{}'
+  );
 `;
 
 const MIGRATIONS = [
@@ -138,7 +192,16 @@ const MIGRATIONS = [
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_sentiment TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk TEXT",
-  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PREC,
+    "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS version_label TEXT",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS total_return DOUBLE PRECISION NOT NULL DEFAULT 0",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS sharpe_ratio DOUBLE PRECISION NOT NULL DEFAULT 0",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS recovery_factor DOUBLE PRECISION NOT NULL DEFAULT 0",
+    "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS notes TEXT",
+ISION",
 ];
 
 export async function initDb(): Promise<void> {
