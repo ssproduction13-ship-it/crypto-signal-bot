@@ -122,6 +122,13 @@ export async function checkPaperPositions(
         // Record strategy stat
         recordStrategyTrade(pos.strategy ?? "TREND", pnlPct, pnl > 0).catch(() => {});
 
+          // Self Learning Engine v2: record analytics
+          const regime = positionRegimes.get(pos.id) ?? "sideways";
+          positionRegimes.delete(pos.id);
+          recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlPct, pnl > 0).catch(() => {});
+          recordTimeTrade(pos.openedAt, pnlPct, pnl > 0).catch(() => {});
+          recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlPct, pnl > 0).catch(() => {});
+
         const isProfit = pnl > 0;
         const isBreakeven = closeReason === "BE";
         const header = isBreakeven
