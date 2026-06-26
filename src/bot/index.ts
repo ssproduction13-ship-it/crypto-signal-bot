@@ -54,45 +54,17 @@ import { Telegraf, Markup } from "telegraf";
 
   // ── Menus ─────────────────────────────────────────────────────────────────
   function mainMenu() {
-    const dashUrl = process.env["DASHBOARD_URL"];
-    const rows: Parameters<typeof Markup.inlineKeyboard>[0] = [
-      [Markup.button.callback("📂 Позиции",   "menu_positions"),
-       Markup.button.callback("💰 Счёт",      "menu_account")],
-      [Markup.button.callback("📊 Сигнал",    "menu_signal"),
-       Markup.button.callback("🧠 Анализ",    "menu_analysis")],
-      [Markup.button.callback("⚙️ Настройки", "menu_settings")],
-    ];
-    if (dashUrl) {
-      rows.push([Markup.button.url("🖥 Live Дашборд", dashUrl)]);
-    }
-    return Markup.inlineKeyboard(rows);
-  }
-  function accountMenu() {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("🔄 Обновить",  "menu_account"),
-       Markup.button.callback("🗑 Сбросить",  "paperreset_confirm")],
-      [Markup.button.callback("◀️ Меню",      "menu_main")],
+      [Markup.button.callback("💰 Заработок",  "menu_earnings"),
+       Markup.button.callback("🧠 Обучение",   "menu_learning")],
+      [Markup.button.callback("⚙️ Настройки",  "menu_settings")],
     ]);
+  }
+  function backMenu() {
+    return Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]);
   }
   function analysisMenu() {
-    return Markup.inlineKeyboard([
-      [Markup.button.callback("📊 Рейтинг рынка", "menu_marketrating"),
-       Markup.button.callback("🏆 Стратегии",     "menu_strategies")],
-      [Markup.button.callback("🔬 Важность факторов", "menu_feature_importance"),
-       Markup.button.callback("🔭 AI Исследования",   "menu_ai_research")],
-      [Markup.button.callback("📡 Похожие сделки",   "menu_similar_trades")],
-      [Markup.button.callback("🎯 Readiness Index",  "menu_readiness"),
-       Markup.button.callback("❤️ Здоровье AI",      "menu_health")],
-      [Markup.button.callback("📅 Эволюция",         "menu_evolution"),
-       Markup.button.callback("🧪 Walk-Forward",     "menu_walkforward")],
-      [Markup.button.callback("📐 Стат. тесты",      "menu_stat_sig"),
-       Markup.button.callback("📉 Дрейф рынка",      "menu_drift")],
-      [Markup.button.callback("🏗 Стабильность",     "menu_stability"),
-       Markup.button.callback("❄️ Cooldown",         "menu_cooldown")],
-      [Markup.button.callback("📋 Weekly Research",  "menu_weekly"),
-       Markup.button.callback("📊 Корреляция",       "menu_correlation")],
-      [Markup.button.callback("◀️ Меню",              "menu_main")],
-    ]);
+    return backMenu();
   }
   function pairsMenu(action: string, back = "menu_main") {
     return Markup.inlineKeyboard([
@@ -205,10 +177,130 @@ import { Telegraf, Markup } from "telegraf";
       await ctx.reply("Главное меню:", mainMenu());
     });
 
-    // ── Сигнал ─────────────────────────────────────────────────────────────
-    bot.action("menu_signal", async (ctx) => {
+    // ── Заработок ──────────────────────────────────────────────────────────
+    bot.action("menu_earnings", async (ctx) => {
       await ctx.answerCbQuery();
-      await ctx.reply("📊 *Выбери монету:*", { parse_mode:"Markdown", ...pairsMenu("signal") });
+      const chatId  = ctx.chat!.id;
+      const account = await loadPaperAccount(chatId);
+      const trades  = account.closedTrades;
+      const wins    = trades.filter(t => t.pnl > 0);
+      const ret     = ((account.balance - account.initialBalance) / account.initialBalance) * 100;
+      const dd      = (account.peakBalance ?? account.balance) > 0
+        ? (((account.peakBalance ?? account.balance) - account.balance) / (account.peakBalance ?? account.balance)) * 100
+        : 0;
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const weekStart  = new Date(todayStart);
+      weekStart.setDate(todayStart.getDate() - ((todayStart.getDay() + 6) % 7));
+      const pnlD = trades.filter(t => new Date(t.closedAt) >= todayStart).reduce((a, t) => a + t.pnl, 0);
+      const pnlW = trades.filter(t => new Date(t.closedAt) >= weekStart).reduce((a, t) => a + t.pnl, 0);
+      const gW   = wins.reduce((a, t) => a + t.pnl, 0);
+      const gL   = Math.abs(trades.filter(t => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
+      const pf   = gL > 0 ? gW / gL : gW > 0 ? 999 : 0;
+
+      const posLines = account.positions.length === 0
+        ? ["_нет открытых позиций_"]
+        : await Promise.all(account.positions.map(async p => {
+            const dir = p.direction === "LONG" ? "🟢" : "🔴";
+            try {
+              const { getPrice } = await import("./binance.js");
+              const price = await getPrice(p.symbol);
+              const pnlVal = p.direction === "LONG"
+                ? (price - p.entryPrice) * p.size
+                : (p.entryPrice - price) * p.size;
+              const sign = pnlVal >= 0 ? "+" : "";
+              return `${dir} *${p.symbol}* ${sign}$${pnlVal.toFixed(2)}`;
+            } catch {
+              return `${dir} *${p.symbol}* @ ${formatPrice(p.entryPrice)}`;
+            }
+          }));
+
+      const lines = [
+        `💰 *Заработок*`, ``,
+        `Баланс: *$${account.balance.toFixed(2)}*  (${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%)`,
+        `📉 Просадка: ${dd.toFixed(2)}%`,
+        ``,
+        `📅 Сегодня: *${pnlD >= 0 ? "+" : ""}$${pnlD.toFixed(2)}*`,
+        `📆 Неделя: *${pnlW >= 0 ? "+" : ""}$${pnlW.toFixed(2)}*`,
+        ``,
+        `📊 Сделок: ${trades.length} | WR: ${trades.length ? (wins.length / trades.length * 100).toFixed(1) : 0}% | PF: ${pf >= 999 ? "∞" : pf.toFixed(2)}`,
+        ``,
+        `📂 Открыто (${account.positions.length}):`,
+        ...posLines,
+      ];
+
+      await ctx.reply(lines.join("\n"), {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Обновить", "menu_earnings")],
+          [Markup.button.callback("🗑 Сбросить счёт", "paperreset_confirm"), Markup.button.callback("◀️ Меню", "menu_main")],
+        ]),
+      });
+    });
+
+    // ── Обучение ───────────────────────────────────────────────────────────
+    bot.action("menu_learning", async (ctx) => {
+      await ctx.answerCbQuery();
+      const loading = await ctx.reply("⏳ Загружаю...");
+      try {
+        const chatId = ctx.chat!.id;
+
+        // Gather learning data in parallel
+        const [statuses, health, readiness] = await Promise.all([
+          getAllStrategyStatuses().catch(() => []),
+          checkLearningHealth(chatId).catch(() => null),
+          calcReadinessIndex(chatId).catch(() => null),
+        ]);
+
+        const totalTrades = statuses.reduce((a: number, s: any) => a + (s.trades ?? 0), 0);
+        const best = statuses.sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0))[0];
+
+        const statusIcons: Record<string, string> = { active: "✅", quarantine: "⚠️", disabled: "🔴" };
+        const healthIcon = health?.overall === "healthy" ? "✅" : health?.overall === "warning" ? "⚠️" : "🔴";
+        const trendIcon  = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "→";
+
+        const lines = [
+          `🧠 *Обучение AI*`, ``,
+          `📊 Сделок накоплено: *${totalTrades}*`,
+          `${trendIcon} Тренд: *${health?.trend === "improving" ? "Улучшается" : health?.trend === "degrading" ? "Ухудшается" : "Стабильно"}*`,
+          `${healthIcon} Состояние: *${health?.overall === "healthy" ? "Норма" : health?.overall === "warning" ? "Внимание" : health ? "Критично" : "Нет данных"}*`,
+          ``,
+        ];
+
+        if (best && best.trades > 0) {
+          const wr = (best.winRate * 100).toFixed(1);
+          const pf = best.profitFactor >= 99 ? "∞" : best.profitFactor.toFixed(2);
+          lines.push(
+            `🏆 Лучшая стратегия: *${best.strategy}*`,
+            `   WR ${wr}% | PF ${pf} | Trust ${best.trustScore}/100`,
+            ``,
+          );
+        } else {
+          lines.push(`🏆 Лучшая стратегия: _накапливаю данные..._`, ``);
+        }
+
+        if (readiness) {
+          const ri = readiness.score;
+          const riIcon = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
+          lines.push(`${riIcon} Готовность: *${ri}/100*`);
+        }
+
+        const needMore = totalTrades < 50;
+        if (needMore) {
+          lines.push(``, `_💡 Нужно ≥50 сделок для уверенных выводов — ${50 - totalTrades} осталось_`);
+        }
+
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply(lines.join("\n"), {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Обновить", "menu_learning")],
+            [Markup.button.callback("◀️ Меню", "menu_main")],
+          ]),
+        });
+      } catch {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("⏳ Данных ещё мало — бот только начал обучение.", backMenu());
+      }
     });
 
     for (const pair of ALL_PAIRS) {
@@ -221,13 +313,13 @@ import { Telegraf, Markup } from "telegraf";
       });
     }
 
-    // ── Позиции ────────────────────────────────────────────────────────────
+    // ── Позиции (редирект) ────────────────────────────────────────────────
     bot.action("menu_positions", async (ctx) => {
       await ctx.answerCbQuery();
       const chatId  = ctx.chat!.id;
       const account = await loadPaperAccount(chatId);
       const posMenu = Markup.inlineKeyboard([
-        [Markup.button.callback("🔄 Обновить", "menu_positions"),
+        [Markup.button.callback("🔄 Обновить", "menu_earnings"),
          Markup.button.callback("◀️ Меню",     "menu_main")],
       ]);
 
@@ -276,16 +368,16 @@ import { Telegraf, Markup } from "telegraf";
       await ctx.reply(lines.join("\n\n"), { parse_mode: "Markdown", ...posMenu });
     });
 
-    // ── Счёт ───────────────────────────────────────────────────────────────
+    // ── Счёт (редирект на earnings) ────────────────────────────────────────
     bot.action("menu_account", async (ctx) => {
       await ctx.answerCbQuery();
-      await ctx.reply(await buildAccountStats(ctx.chat!.id), { parse_mode:"Markdown", ...accountMenu() });
+      await ctx.reply(await buildAccountStats(ctx.chat!.id), { parse_mode:"Markdown", ...backMenu() });
     });
 
     bot.action("paperreset_confirm", async (ctx) => {
       await ctx.answerCbQuery();
       await ctx.reply("⚠️ Сбросить счёт до $10,000?",
-        Markup.inlineKeyboard([[Markup.button.callback("✅ Да","paperreset_do"), Markup.button.callback("❌ Отмена","menu_account")]]));
+        Markup.inlineKeyboard([[Markup.button.callback("✅ Да","paperreset_do"), Markup.button.callback("❌ Отмена","menu_earnings")]]));
     });
     bot.action("paperreset_do", async (ctx) => {
       await ctx.answerCbQuery();
@@ -294,13 +386,13 @@ import { Telegraf, Markup } from "telegraf";
       await ctx.reply("✅ Счёт сброшен до $10,000", mainMenu());
     });
 
-    // ── Анализ ─────────────────────────────────────────────────────────────
+    // ── Анализ (редирект на обучение) ──────────────────────────────────────
     bot.action("menu_analysis", async (ctx) => {
       await ctx.answerCbQuery();
-      const loading = await ctx.reply("⏳ Анализирую сделки...");
-      const analysis = await buildSelfAnalysis(ctx.chat!.id);
-      await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-      await ctx.reply(analysis, { parse_mode:"Markdown", ...analysisMenu() });
+      // Redirect to new simplified learning screen
+      const chatId = ctx.chat!.id;
+      const analysis = await buildSelfAnalysis(chatId);
+      await ctx.reply(analysis, { parse_mode:"Markdown", ...backMenu() });
     });
 
     bot.action("menu_learning", async (ctx) => {
@@ -310,7 +402,7 @@ import { Telegraf, Markup } from "telegraf";
           const history = await getLearningHistory();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(history, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка загрузки истории"); }
       });
       bot.action("menu_aireport", async (ctx) => {
@@ -320,7 +412,7 @@ import { Telegraf, Markup } from "telegraf";
           const report = await generateLearningReport();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(report, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка генерации отчёта"); }
       });
       bot.action("menu_timeanalytics", async (ctx) => {
@@ -330,7 +422,7 @@ import { Telegraf, Markup } from "telegraf";
           const stats = await getTimeAnalytics();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(stats, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка загрузки аналитики"); }
       });
       bot.action("menu_instruments", async (ctx) => {
@@ -340,7 +432,7 @@ import { Telegraf, Markup } from "telegraf";
           const stats = await getInstrumentAnalytics();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(stats, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка загрузки аналитики"); }
       });
 
@@ -353,7 +445,7 @@ import { Telegraf, Markup } from "telegraf";
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           const text = formatFeatureImportance(importances);
           await ctx.reply(text, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка загрузки данных о факторах");
@@ -367,7 +459,7 @@ import { Telegraf, Markup } from "telegraf";
           const history = await getResearchHistory();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(history, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка загрузки исследований");
@@ -381,7 +473,7 @@ import { Telegraf, Markup } from "telegraf";
           const stats = await getSimilarTradesStats();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(stats, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка загрузки данных");
@@ -397,7 +489,7 @@ import { Telegraf, Markup } from "telegraf";
           const result = await calcReadinessIndex(ctx.chat!.id);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatReadinessReport(result), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка вычисления Readiness Index");
@@ -411,7 +503,7 @@ import { Telegraf, Markup } from "telegraf";
           const health = await checkLearningHealth(ctx.chat!.id);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatHealthReport(health), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка проверки здоровья");
@@ -425,7 +517,7 @@ import { Telegraf, Markup } from "telegraf";
           const snapshots = await getEvolutionTimeline(10);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatTimeline(snapshots), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка загрузки эволюции");
@@ -440,7 +532,7 @@ import { Telegraf, Markup } from "telegraf";
           const results = await Promise.all(strategies.map(s => runWalkForwardTest(s)));
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatWalkForwardReport(results), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка Walk-Forward теста");
@@ -455,7 +547,7 @@ import { Telegraf, Markup } from "telegraf";
           const tests = await Promise.all(strategies.map(s => testStrategyChange(s)));
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatSignificanceReport(tests), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка статистической проверки");
@@ -469,7 +561,7 @@ import { Telegraf, Markup } from "telegraf";
           const drift = await detectMarketDrift();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatDriftReport(drift), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка анализа дрейфа");
@@ -483,7 +575,7 @@ import { Telegraf, Markup } from "telegraf";
           const results = await getAllStrategyStabilities();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(formatStabilityReport(results), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка вычисления стабильности");
@@ -495,7 +587,7 @@ import { Telegraf, Markup } from "telegraf";
         try {
           const state = await evaluateCooldown(ctx.chat!.id);
           await ctx.reply(formatCooldownStatus(state), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка проверки Cooldown"); }
       });
 
@@ -512,7 +604,7 @@ import { Telegraf, Markup } from "telegraf";
           await ctx.reply(text, { parse_mode: "Markdown",
             ...Markup.inlineKeyboard([
               [Markup.button.callback("🔄 Обновить","menu_weekly_refresh")],
-              [Markup.button.callback("◀️ Анализ","menu_analysis")],
+              [Markup.button.callback("◀️ Меню","menu_main")],
             ]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
@@ -527,7 +619,7 @@ import { Telegraf, Markup } from "telegraf";
           const report = await generateWeeklyResearch();
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply(report.fullText.slice(0, 4000), { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch {
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка генерации отчёта");
@@ -539,7 +631,7 @@ import { Telegraf, Markup } from "telegraf";
         try {
           const report = await getPortfolioCorrelationReport(ctx.chat!.id);
           await ctx.reply(report, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
         } catch { await ctx.reply("❌ Ошибка анализа корреляций"); }
       });
       bot.action("menu_marketrating", async (ctx) => {
@@ -555,7 +647,7 @@ import { Telegraf, Markup } from "telegraf";
         const rating = calcMarketRating(ind, market, candles);
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply(`📊 *Рейтинг рынка* (BTC 1h)\n\n` + formatMarketRating(rating),
-          { parse_mode:"Markdown", ...analysisMenu() });
+          { parse_mode:"Markdown", ...backMenu() });
       } catch {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("⚠️ Ошибка получения данных рынка.");
@@ -605,13 +697,13 @@ import { Telegraf, Markup } from "telegraf";
           parse_mode:"Markdown",
           ...Markup.inlineKeyboard([
             [Markup.button.callback("📈 История изменений","menu_strat_history")],
-            [Markup.button.callback("◀️ Анализ","menu_analysis")],
+            [Markup.button.callback("◀️ Меню","menu_main")],
           ]),
         });
       } catch {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         const stats = await loadStrategyStats();
-        await ctx.reply(formatStrategyStats(stats), { parse_mode:"Markdown", ...analysisMenu() });
+        await ctx.reply(formatStrategyStats(stats), { parse_mode:"Markdown", ...backMenu() });
       }
     });
 
