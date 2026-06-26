@@ -8,12 +8,21 @@ import { pool } from "../lib/db.js";
     lastResetDate: string; lastWeekKey: string;
   }
 
-  function todayKey() { return new Date().toISOString().slice(0, 10); }
-  function weekKey() {
-    const d = new Date(), j = new Date(d.getFullYear(), 0, 1);
-    const w = Math.ceil(((d.getTime() - j.getTime()) / 864e5 + j.getDay() + 1) / 7);
-    return `${d.getFullYear()}-W${w}`;
-  }
+  // toISOString() always returns UTC, ignoring TZ env var.
+    // localDateStr() uses Date getFullYear/Month/Date which respect TZ (Asia/Yekaterinburg).
+    function localDateStr(d = new Date()): string {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dy = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dy}`;
+    }
+    function todayKey() { return localDateStr(); }
+    function weekKey() {
+      const d = new Date();
+      const dow = (d.getDay() + 6) % 7; // 0=Mon…6=Sun
+      const mon = new Date(d); mon.setDate(d.getDate() - dow); mon.setHours(0, 0, 0, 0);
+      return `week-${localDateStr(mon)}`;
+    }
 
   export async function loadRiskState(): Promise<RiskState> {
     const { rows } = await pool.query("SELECT * FROM risk_state WHERE id=1");
