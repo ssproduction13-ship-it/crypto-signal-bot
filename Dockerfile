@@ -1,22 +1,23 @@
 FROM node:22-alpine AS builder
-  WORKDIR /app
+WORKDIR /app
 
-  COPY package.json ./
-  RUN npm install
+RUN npm install -g pnpm
 
-  COPY tsconfig.json build.mjs ./
-  COPY src/ ./src/
+COPY package.json ./
+RUN pnpm install --no-frozen-lockfile
 
-  RUN npm run build
+COPY tsconfig.json build.mjs ./
+COPY src/ ./src/
 
-  FROM node:22-alpine
-  WORKDIR /app
+RUN node build.mjs
 
-  COPY --from=builder /app/node_modules ./node_modules
-  COPY --from=builder /app/dist ./dist
+FROM node:22-alpine
+WORKDIR /app
 
-  ENV NODE_ENV=production
-  ENV PORT=8080
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
 
-  CMD ["node", "--enable-source-maps", "dist/index.mjs"]
-  
+ENV NODE_ENV=production
+ENV PORT=8080
+
+CMD ["node", "--enable-source-maps", "dist/index.mjs"]
