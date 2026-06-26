@@ -8,8 +8,11 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
+  import { recordRegimeTrade, type MarketRegime } from "./learning-engine.js";
+  import { recordTimeTrade } from "./time-analytics.js";
+  import { recordInstrumentTrade } from "./instrument-analytics.js";
 // Position → market regime map (populated at open, consumed at close)
-const positionRegimes = new Map<string, string>();
+const positionRegimes = new Map<string, MarketRegime>();
 
 
 export async function openPaperPosition(
