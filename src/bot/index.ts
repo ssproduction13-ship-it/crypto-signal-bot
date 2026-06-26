@@ -26,6 +26,16 @@ import { Telegraf, Markup } from "telegraf";
   import { loadFeatureImportance, formatFeatureImportance } from "./feature-importance.js";
   import { getResearchHistory } from "./ai-researcher.js";
   import { getSimilarTradesStats } from "./similar-trades.js";
+  import { formatWalkForwardReport, getLatestWalkForwardResults, runWalkForwardTest } from "./walk-forward.js";
+  import { testStrategyChange, formatSignificanceReport } from "./stat-significance.js";
+  import { detectMarketDrift, formatDriftReport } from "./market-drift.js";
+  import { getPortfolioCorrelationReport } from "./correlation-risk.js";
+  import { checkLearningHealth, formatHealthReport } from "./health-monitor.js";
+  import { getAllStrategyStabilities, formatStabilityReport } from "./stability-index.js";
+  import { getEvolutionTimeline, formatTimeline } from "./evolution-timeline.js";
+  import { evaluateCooldown, formatCooldownStatus } from "./auto-cooldown.js";
+  import { generateWeeklyResearch, getLastWeeklyReport } from "./weekly-research.js";
+  import { calcReadinessIndex, formatReadinessReport } from "./readiness-index.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     { symbol: "BTCUSDT",  interval: "1h"  }, { symbol: "ETHUSDT",  interval: "1h"  },
@@ -71,6 +81,16 @@ import { Telegraf, Markup } from "telegraf";
       [Markup.button.callback("🔬 Важность факторов", "menu_feature_importance"),
        Markup.button.callback("🔭 AI Исследования",   "menu_ai_research")],
       [Markup.button.callback("📡 Похожие сделки",   "menu_similar_trades")],
+      [Markup.button.callback("🎯 Readiness Index",  "menu_readiness"),
+       Markup.button.callback("❤️ Здоровье AI",      "menu_health")],
+      [Markup.button.callback("📅 Эволюция",         "menu_evolution"),
+       Markup.button.callback("🧪 Walk-Forward",     "menu_walkforward")],
+      [Markup.button.callback("📐 Стат. тесты",      "menu_stat_sig"),
+       Markup.button.callback("📉 Дрейф рынка",      "menu_drift")],
+      [Markup.button.callback("🏗 Стабильность",     "menu_stability"),
+       Markup.button.callback("❄️ Cooldown",         "menu_cooldown")],
+      [Markup.button.callback("📋 Weekly Research",  "menu_weekly"),
+       Markup.button.callback("📊 Корреляция",       "menu_correlation")],
       [Markup.button.callback("◀️ Меню",              "menu_main")],
     ]);
   }
@@ -366,6 +386,161 @@ import { Telegraf, Markup } from "telegraf";
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("❌ Ошибка загрузки данных");
         }
+      });
+
+      // ── Release Candidate: 10 new module handlers ──────────────────────
+
+      bot.action("menu_readiness", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Вычисляю Readiness Index...");
+        try {
+          const result = await calcReadinessIndex(ctx.chat!.id);
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatReadinessReport(result), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка вычисления Readiness Index");
+        }
+      });
+
+      bot.action("menu_health", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Проверяю здоровье обучения...");
+        try {
+          const health = await checkLearningHealth(ctx.chat!.id);
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatHealthReport(health), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка проверки здоровья");
+        }
+      });
+
+      bot.action("menu_evolution", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю историю эволюции...");
+        try {
+          const snapshots = await getEvolutionTimeline(10);
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatTimeline(snapshots), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка загрузки эволюции");
+        }
+      });
+
+      bot.action("menu_walkforward", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Запускаю Walk-Forward тесты...");
+        try {
+          const strategies: Array<"TREND"|"BREAKOUT"|"VOLUME_IMPULSE"|"MEAN_REVERSION"> = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"];
+          const results = await Promise.all(strategies.map(s => runWalkForwardTest(s)));
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatWalkForwardReport(results), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка Walk-Forward теста");
+        }
+      });
+
+      bot.action("menu_stat_sig", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Проверяю изменения статистически...");
+        try {
+          const strategies = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"];
+          const tests = await Promise.all(strategies.map(s => testStrategyChange(s)));
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatSignificanceReport(tests), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка статистической проверки");
+        }
+      });
+
+      bot.action("menu_drift", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Анализирую дрейф рынка...");
+        try {
+          const drift = await detectMarketDrift();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatDriftReport(drift), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка анализа дрейфа");
+        }
+      });
+
+      bot.action("menu_stability", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Вычисляю индексы стабильности...");
+        try {
+          const results = await getAllStrategyStabilities();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(formatStabilityReport(results), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка вычисления стабильности");
+        }
+      });
+
+      bot.action("menu_cooldown", async (ctx) => {
+        await ctx.answerCbQuery();
+        try {
+          const state = await evaluateCooldown(ctx.chat!.id);
+          await ctx.reply(formatCooldownStatus(state), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка проверки Cooldown"); }
+      });
+
+      bot.action("menu_weekly", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю недельный отчёт...");
+        try {
+          let report = await getLastWeeklyReport();
+          if (!report) {
+            report = await generateWeeklyResearch();
+          }
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          const text = report.fullText.slice(0, 4000);
+          await ctx.reply(text, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Обновить","menu_weekly_refresh")],
+              [Markup.button.callback("◀️ Анализ","menu_analysis")],
+            ]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка генерации отчёта");
+        }
+      });
+
+      bot.action("menu_weekly_refresh", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Генерирую свежий недельный отчёт...");
+        try {
+          const report = await generateWeeklyResearch();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(report.fullText.slice(0, 4000), { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка генерации отчёта");
+        }
+      });
+
+      bot.action("menu_correlation", async (ctx) => {
+        await ctx.answerCbQuery();
+        try {
+          const report = await getPortfolioCorrelationReport(ctx.chat!.id);
+          await ctx.reply(report, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch { await ctx.reply("❌ Ошибка анализа корреляций"); }
       });
       bot.action("menu_marketrating", async (ctx) => {
       await ctx.answerCbQuery();

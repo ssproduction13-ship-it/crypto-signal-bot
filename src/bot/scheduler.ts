@@ -21,6 +21,13 @@ import cron from "node-cron";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
+  import { detectMarketDrift } from "./market-drift.js";
+  import { checkLearningHealth } from "./health-monitor.js";
+  import { runWalkForwardTest } from "./walk-forward.js";
+  import { evaluateCooldown } from "./auto-cooldown.js";
+  import { generateWeeklyResearch } from "./weekly-research.js";
+  import { autoSnapshotAfterLearning } from "./evolution-timeline.js";
+  import { calcReadinessIndex } from "./readiness-index.js";
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
   const subs    = new Map<string, Sub>();
@@ -126,8 +133,8 @@ import cron from "node-cron";
 
       // Build strategy signal inputs from all available strategies
       const strategySignals: StrategySignalInput[] = [];
-      if (sig.strategySignals) {
-        for (const s of sig.strategySignals) {
+      if (sig.strategies?.length) {
+        for (const s of sig.strategies) {
           strategySignals.push({
             strategy: s.strategy,
             score: s.score ?? sig.score.total,
@@ -232,7 +239,7 @@ import cron from "node-cron";
 
         // Open shadow position in parallel for comparison
         loadWeights().then(w =>
-          openShadowPosition(sub.symbol, sig.score.direction,
+          openShadowPosition(sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
             sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
             strat, w, regime
           ).catch(() => {})
@@ -399,6 +406,57 @@ import cron from "node-cron";
       } catch (err) { logger.debug({ err }, "Market rating broadcast error"); }
     });
 
-    logger.info("Scheduler started — Self Learning Engine v2 active");
+    // ── Release Candidate: New module cron jobs ──────────────────────────
+    // Market Drift Detection — every 6 hours
+    cron.schedule("0 */6 * * *", async () => {
+      try {
+        const drift = await detectMarketDrift();
+        if (drift.hasDrift && (drift.severity === "moderate" || drift.severity === "severe")) {
+          const icon = drift.severity === "severe" ? "🚨" : "⚠️";
+          const msg = `${icon} *Market Drift обнаружен!*\n\n${drift.message}\n\nConfidence снижен на ${drift.confidenceReduction}%`;
+          for (const chatId of chatIds) await safeSend(chatId, msg);
+        }
+      } catch (err) { logger.warn({ err }, "Market drift check error"); }
+    });
+
+    // Learning Health Monitor + Auto Cooldown — every hour
+    cron.schedule("0 * * * *", async () => {
+      try {
+        const health = await checkLearningHealth();
+        if (health.overall === "critical" && health.alerts.length) {
+          const msg = `🔴 *Learning Health Critical!*\n\n${health.alerts.join("\n")}\n\nПроверь раздел Анализ → Здоровье обучения`;
+          for (const chatId of chatIds) await safeSend(chatId, msg);
+        }
+        // Auto cooldown check per chat
+        for (const chatId of chatIds) {
+          const cooldown = await evaluateCooldown(chatId);
+          if (cooldown.level === "severe") {
+            const msg = `🚨 *Auto Cooldown активирован!*\n\nПозиции сокращены до ${Math.round(cooldown.sizeMultiplier * 100)}%\nПричина: ${cooldown.reason}`;
+            await safeSend(chatId, msg);
+          }
+        }
+      } catch (err) { logger.warn({ err }, "Health monitor / cooldown error"); }
+    });
+
+    // Walk-Forward Testing — after every adaptation cycle (every 12 hours)
+    cron.schedule("0 */12 * * *", async () => {
+      try {
+        const strategies: Array<"TREND" | "BREAKOUT" | "VOLUME_IMPULSE" | "MEAN_REVERSION"> = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
+        for (const st of strategies) await runWalkForwardTest(st).catch(() => {});
+        await autoSnapshotAfterLearning();
+        await calcReadinessIndex().catch(() => {});
+      } catch (err) { logger.warn({ err }, "Walk-forward / snapshot error"); }
+    });
+
+    // AI Weekly Research — every 7 days at Monday 09:00
+    cron.schedule("0 9 * * 1", async () => {
+      try {
+        const report = await generateWeeklyResearch();
+        const msg = report.fullText.slice(0, 4000);
+        for (const chatId of chatIds) await safeSend(chatId, msg);
+      } catch (err) { logger.warn({ err }, "Weekly research error"); }
+    });
+
+    logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");
   }
   

@@ -21,7 +21,7 @@ export async function openPaperPosition(
   entryPrice: number, stopLoss: number, tp1: number, tp2: number,
   riskPercent?: number, atr?: number,
   strategy: StrategyName = "TREND",
-  marketRegime = "sideways"
+  marketRegime: MarketRegime = "sideways"
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
