@@ -82,13 +82,13 @@ import cron from "node-cron";
   }
 
   // ── Dynamic score threshold ─────────────────────────────────────────────────
+  // Learning mode: lower thresholds to collect more trade data
   function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 40;
-    if (marketIndex >= 50) return 45;
-    if (marketIndex >= 30) return 50;
-    return 58;
+    if (marketIndex >= 70) return 30;
+    if (marketIndex >= 50) return 33;
+    if (marketIndex >= 30) return 36;
+    return 40;
   }
-
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
   async function analyzeAndTrade(sub: Sub): Promise<void> {
     const debounceKey = `${sub.chatId}:${sub.symbol}`;
@@ -103,8 +103,8 @@ import cron from "node-cron";
       if (sig.score.direction === "NEUTRAL") return;
       const minScore = dynamicMinScore(sig.marketRating.index);
       if (sig.score.total < minScore) return;
-      if (!sig.risk.isRRViable) return;
-      if (sig.confidence.score < 20) return;
+      // isRRViable check disabled in learning mode
+      if (sig.confidence.score < 10) return;
 
       // ── Self Learning Engine v2 gates ──────────────────────────────────────
       const regime = detectMarketRegime(sig.market, sig.marketRating);
