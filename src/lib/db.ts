@@ -201,6 +201,26 @@ const MIGRATIONS = [
   "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS sharpe_ratio DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS recovery_factor DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE strategy_versions ADD COLUMN IF NOT EXISTS notes TEXT",
+  // Strategy Management Engine v2
+  "ALTER TABLE strategy_weights ADD COLUMN IF NOT EXISTS quarantine BOOLEAN NOT NULL DEFAULT false",
+  "ALTER TABLE strategy_weights ADD COLUMN IF NOT EXISTS trust_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+  `CREATE TABLE IF NOT EXISTS strategy_history (
+    id SERIAL PRIMARY KEY,
+    strategy TEXT NOT NULL,
+    changed_at TEXT NOT NULL,
+    prev_weight DOUBLE PRECISION NOT NULL DEFAULT 1,
+    new_weight  DOUBLE PRECISION NOT NULL DEFAULT 1,
+    prev_pf     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    new_pf      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    trust_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS strategy_loss_reasons (
+    strategy TEXT NOT NULL,
+    reason   TEXT NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (strategy, reason)
+  )`,
 ];
 
 

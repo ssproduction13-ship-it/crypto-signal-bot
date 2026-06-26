@@ -1,267 +1,704 @@
 import { pool } from "../lib/db.js";
-  import { logger } from "../lib/logger.js";
-  import type { StrategyName } from "./strategies.js";
-  import type { MarketCondition } from "./chaos-filter.js";
-  import type { MarketRating } from "./market-rating.js";
+import { logger } from "../lib/logger.js";
+import type { StrategyName } from "./strategies.js";
+import type { MarketCondition } from "./chaos-filter.js";
+import type { MarketRating } from "./market-rating.js";
 
-  export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol";
+export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol";
+export type StrategyStatus = "active"|"quarantine"|"disabled";
 
-  export function detectMarketRegime(market: MarketCondition, rating: MarketRating): MarketRegime {
-    if ((market.atrPercent ?? 0) > 3.5 && !market.isSideways) return "high_vol";
-    if (market.isLowVolume && (market.atrPercent ?? 1) < 0.8) return "low_vol";
-    if (market.isSideways) return "sideways";
-    if (rating.state === "strong_growth" || rating.state === "moderate_growth") return "trend_up";
-    if (rating.state === "decline") return "trend_down";
-    return "sideways";
+export interface StrategyTrustResult {
+  strategy: StrategyName;
+  trustScore: number;
+  status: StrategyStatus;
+  weight: number;
+  trades: number;
+  winRate: number;
+  profitFactor: number;
+}
+
+export function detectMarketRegime(market: MarketCondition, rating: MarketRating): MarketRegime {
+  if ((market.atrPercent ?? 0) > 3.5 && !market.isSideways) return "high_vol";
+  if (market.isLowVolume && (market.atrPercent ?? 1) < 0.8) return "low_vol";
+  if (market.isSideways) return "sideways";
+  if (rating.state === "strong_growth" || rating.state === "moderate_growth") return "trend_up";
+  if (rating.state === "decline") return "trend_down";
+  return "sideways";
+}
+
+export async function recordRegimeTrade(
+  strategy: StrategyName, regime: MarketRegime, pnlPercent: number, isWin: boolean
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO strategy_regime_stats(strategy,regime,trades,wins,win_pnl,loss_pnl,total_pnl)
+     VALUES($1,$2,1,$3,$4,$5,$6)
+     ON CONFLICT(strategy,regime) DO UPDATE SET
+       trades=strategy_regime_stats.trades+1,
+       wins=strategy_regime_stats.wins+$3,
+       win_pnl=strategy_regime_stats.win_pnl+$4,
+       loss_pnl=strategy_regime_stats.loss_pnl+$5,
+       total_pnl=strategy_regime_stats.total_pnl+$6`,
+    [strategy,regime,isWin?1:0,isWin?Math.abs(pnlPercent):0,isWin?0:Math.abs(pnlPercent),pnlPercent]
+  );
+}
+
+export async function isStrategyBlockedInRegime(
+  strategy: StrategyName, regime: MarketRegime
+): Promise<{blocked:boolean;reason:string}> {
+  const {rows} = await pool.query(
+    "SELECT trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
+    [strategy,regime]
+  );
+  if (!rows.length) return {blocked:false,reason:""};
+  const r = rows[0] as Record<string,unknown>;
+  const trades=Number(r["trades"]),wins=Number(r["wins"]);
+  const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
+  if (trades<10) return {blocked:false,reason:""};
+  const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 99 : 0;
+  const wr = wins/trades;
+  if (pf<0.7 && wr<0.38) {
+    const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
+    return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}" (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};
   }
+  return {blocked:false,reason:""};
+}
 
-  export async function recordRegimeTrade(
-    strategy: StrategyName, regime: MarketRegime, pnlPercent: number, isWin: boolean
-  ): Promise<void> {
-    await pool.query(
-      `INSERT INTO strategy_regime_stats(strategy,regime,trades,wins,win_pnl,loss_pnl,total_pnl)
-       VALUES($1,$2,1,$3,$4,$5,$6)
-       ON CONFLICT(strategy,regime) DO UPDATE SET
-         trades=strategy_regime_stats.trades+1,
-         wins=strategy_regime_stats.wins+$3,
-         win_pnl=strategy_regime_stats.win_pnl+$4,
-         loss_pnl=strategy_regime_stats.loss_pnl+$5,
-         total_pnl=strategy_regime_stats.total_pnl+$6`,
-      [strategy,regime,isWin?1:0,isWin?Math.abs(pnlPercent):0,isWin?0:Math.abs(pnlPercent),pnlPercent]
+// ── Trust Score (0–100) ───────────────────────────────────────────────────────
+// Weights: PF 35%, WR 25%, DD 15%, stability 10%, sample size 10%, regime fit 5%
+export async function calcTrustScore(
+  strategy: StrategyName,
+  trades: number,
+  wins: number,
+  winPnl: number,
+  lossPnl: number,
+  _totalPnl: number,
+  regime: MarketRegime
+): Promise<number> {
+  if (trades === 0) return 0;
+
+  const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 5 : 0;
+  const wr = wins / trades;
+
+  // PF score (0–35)
+  let pfScore = 0;
+  if (pf >= 2.0) pfScore = 35;
+  else if (pf >= 1.5) pfScore = 28;
+  else if (pf >= 1.2) pfScore = 22;
+  else if (pf >= 1.0) pfScore = 16;
+  else if (pf >= 0.8) pfScore = 8;
+  else pfScore = 0;
+
+  // WR score (0–25)
+  let wrScore = 0;
+  if (wr >= 0.65) wrScore = 25;
+  else if (wr >= 0.55) wrScore = 20;
+  else if (wr >= 0.45) wrScore = 14;
+  else if (wr >= 0.38) wrScore = 8;
+  else wrScore = 0;
+
+  // Drawdown score (0–15) — estimated from avg loss magnitude
+  const avgLoss = (trades - wins) > 0 ? lossPnl / (trades - wins) : 0;
+  let ddScore = 15;
+  if (avgLoss > 5) ddScore = 0;
+  else if (avgLoss > 3) ddScore = 5;
+  else if (avgLoss > 2) ddScore = 10;
+
+  // Stability of recent trades (0–10)
+  let stabilityScore = 0;
+  try {
+    const {rows} = await pool.query(
+      `SELECT pnl_percent FROM paper_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 20`,
+      [strategy]
     );
-  }
+    if (rows.length >= 10) {
+      const pnls = (rows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
+      const recentWins = pnls.filter(p => p > 0).length;
+      const recentWR = recentWins / pnls.length;
+      if (recentWR >= 0.55) stabilityScore = 10;
+      else if (recentWR >= 0.45) stabilityScore = 7;
+      else if (recentWR >= 0.35) stabilityScore = 4;
+      else stabilityScore = 0;
+    } else { stabilityScore = 5; }
+  } catch { stabilityScore = 5; }
 
-  export async function isStrategyBlockedInRegime(
-    strategy: StrategyName, regime: MarketRegime
-  ): Promise<{blocked:boolean;reason:string}> {
+  // Sample size score (0–10)
+  let sampleScore = 0;
+  if (trades >= 100) sampleScore = 10;
+  else if (trades >= 50) sampleScore = 7;
+  else if (trades >= 30) sampleScore = 4;
+  else sampleScore = 1;
+
+  // Regime fit score (0–5)
+  let regimeFit = 3;
+  try {
     const {rows} = await pool.query(
       "SELECT trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
-      [strategy,regime]
+      [strategy, regime]
     );
-    if (!rows.length) return {blocked:false,reason:""};
-    const r = rows[0] as Record<string,unknown>;
-    const trades=Number(r["trades"]),wins=Number(r["wins"]);
-    const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-    if (trades<10) return {blocked:false,reason:""};
-    const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 99 : 0;
-    const wr = wins/trades;
-    if (pf<0.7 && wr<0.38) {
-      const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
-      return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}" (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};
-    }
-    return {blocked:false,reason:""};
-  }
-
-  export async function loadStrategyWeights(): Promise<Record<StrategyName,number>> {
-    const {rows} = await pool.query("SELECT strategy,weight,disabled,disabled_until FROM strategy_weights");
-    const weights:Record<string,number>={TREND:1,BREAKOUT:1,VOLUME_IMPULSE:1,MEAN_REVERSION:1};
-    const now = new Date().toISOString();
-    for (const r of rows as Record<string,unknown>[]) {
-      const strat=r["strategy"] as string;
-      let w=Number(r["weight"]);
-      const disabled=Boolean(r["disabled"]);
-      const until=r["disabled_until"] as string|null;
-      if (disabled && until && until>now) { w=0; }
-      else if (disabled && (!until||until<=now)) {
-        await pool.query("UPDATE strategy_weights SET disabled=false,disabled_until=NULL WHERE strategy=$1",[strat]);
+    if (rows.length) {
+      const r = rows[0] as Record<string,unknown>;
+      const rt=Number(r["trades"]),rw=Number(r["wins"]),rwp=Number(r["win_pnl"]),rlp=Number(r["loss_pnl"]);
+      if (rt >= 5) {
+        const rpf = rlp > 0 ? rwp / rlp : rwp > 0 ? 5 : 0;
+        regimeFit = rpf >= 1.3 ? 5 : rpf >= 1.0 ? 3 : rpf >= 0.8 ? 1 : 0;
       }
-      weights[strat]=w;
     }
-    return weights as Record<StrategyName,number>;
+  } catch { regimeFit = 3; }
+
+  const raw = pfScore + wrScore + ddScore + stabilityScore + sampleScore + regimeFit;
+  return Math.min(100, Math.max(0, Math.round(raw)));
+}
+
+// ── Loss Reason Recording ──────────────────────────────────────────────────────
+export type LossReason =
+  | "sideways_market" | "fake_breakout" | "low_volume"
+  | "high_volatility" | "trend_reversal" | "other";
+
+export function classifyLossReason(
+  strategy: StrategyName,
+  regime: MarketRegime,
+  _outcome: string
+): LossReason {
+  if (regime === "sideways") return "sideways_market";
+  if (regime === "low_vol") return "low_volume";
+  if (regime === "high_vol") return "high_volatility";
+  if (strategy === "BREAKOUT" && (regime === "sideways" || regime === "low_vol")) return "fake_breakout";
+  if (regime === "trend_down" && strategy === "TREND") return "trend_reversal";
+  if (regime === "trend_up" && strategy === "MEAN_REVERSION") return "trend_reversal";
+  return "other";
+}
+
+export async function recordLossReason(
+  strategy: StrategyName,
+  reason: LossReason
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO strategy_loss_reasons(strategy, reason, count)
+     VALUES($1,$2,1)
+     ON CONFLICT(strategy,reason) DO UPDATE SET count=strategy_loss_reasons.count+1`,
+    [strategy, reason]
+  ).catch(err => logger.debug({err}, "recordLossReason failed"));
+}
+
+export async function getLossReasonStats(strategy: StrategyName): Promise<string> {
+  const {rows} = await pool.query(
+    "SELECT reason,count FROM strategy_loss_reasons WHERE strategy=$1 ORDER BY count DESC",
+    [strategy]
+  );
+  if (!rows.length) return "нет данных по убыткам";
+  const total = (rows as Record<string,unknown>[]).reduce((a,r) => a+Number(r["count"]), 0);
+  const reasonLabels: Record<string,string> = {
+    sideways_market:"Боковой рынок",fake_breakout:"Ложный пробой",
+    low_volume:"Низкий объём",high_volatility:"Высокая волатильность",
+    trend_reversal:"Разворот тренда",other:"Прочее",
+  };
+  return (rows as Record<string,unknown>[]).map(r => {
+    const pct = total > 0 ? (Number(r["count"])/total*100).toFixed(0) : "0";
+    return `  ${pct}% — ${reasonLabels[r["reason"] as string] ?? r["reason"]}`;
+  }).join("\n");
+}
+
+// ── Strategy Selection by Trust Score ─────────────────────────────────────────
+export interface StrategySignalInput {
+  strategy: StrategyName;
+  score: number;
+  confidence: number;
+  direction: "LONG"|"SHORT";
+}
+
+export async function selectBestStrategy(
+  signals: StrategySignalInput[],
+  regime: MarketRegime
+): Promise<StrategySignalInput | null> {
+  if (!signals.length) return null;
+
+  const {rows:statRows} = await pool.query(
+    "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
+  );
+  const {rows:wRows} = await pool.query(
+    "SELECT strategy,weight,disabled,disabled_until,quarantine,trust_score FROM strategy_weights"
+  );
+  const now = new Date().toISOString();
+  const disabledSet = new Set(
+    (wRows as Record<string,unknown>[])
+      .filter(r => Boolean(r["disabled"]) && (!r["disabled_until"] || String(r["disabled_until"]) > now))
+      .map(r => r["strategy"] as string)
+  );
+
+  const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number}> = [];
+
+  for (const sig of signals) {
+    if (disabledSet.has(sig.strategy)) continue;
+
+    const wRow = (wRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
+    const weight = wRow ? Number(wRow["weight"]) : 1;
+    const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
+
+    // Quarantine: only allow high-confidence signals (≥60%)
+    if (isQuarantine && sig.confidence < 60) continue;
+
+    const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
+    const trades = statRow ? Number(statRow["trades"]) : 0;
+    const wins   = statRow ? Number(statRow["wins"])   : 0;
+    const winPnl = statRow ? Number(statRow["win_pnl"]): 0;
+    const lossPnl= statRow ? Number(statRow["loss_pnl"]): 0;
+    const totalPnl=statRow ? Number(statRow["total_pnl"]): 0;
+
+    const trustScore = await calcTrustScore(sig.strategy, trades, wins, winPnl, lossPnl, totalPnl, regime);
+
+    // Regime-specific PF
+    let regimePF = 1;
+    try {
+      const {rows:regRows} = await pool.query(
+        "SELECT win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
+        [sig.strategy, regime]
+      );
+      if (regRows.length) {
+        const rr = regRows[0] as Record<string,unknown>;
+        const rwp=Number(rr["win_pnl"]),rlp=Number(rr["loss_pnl"]);
+        regimePF = rlp > 0 ? rwp/rlp : rwp > 0 ? 5 : 0;
+      }
+    } catch { regimePF = 1; }
+
+    scored.push({sig, trustScore, regimePF, weight});
   }
 
-  export async function runAdaptationCycle(chatIds:Set<number>): Promise<string> {
-    const {rows:statRows} = await pool.query("SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats");
-    const {rows:wRows} = await pool.query("SELECT strategy,weight,cycles_below_threshold FROM strategy_weights");
-    const curW:Record<string,{weight:number;cycles:number}>={};
-    for (const r of wRows as Record<string,unknown>[])
-      curW[r["strategy"] as string]={weight:Number(r["weight"]),cycles:Number(r["cycles_below_threshold"])};
+  if (!scored.length) return null;
 
-    const MAX_CHANGE=0.05, MIN_W=0.3, MAX_W=1.5;
-    const changes:string[]=[];
+  // Sort: trust score primary (≥10 gap), regime PF secondary (≥0.2 gap), score tertiary
+  scored.sort((a, b) => {
+    const trustDiff = b.trustScore - a.trustScore;
+    if (Math.abs(trustDiff) >= 10) return trustDiff;
+    const pfDiff = b.regimePF - a.regimePF;
+    if (Math.abs(pfDiff) >= 0.2) return pfDiff;
+    return b.sig.score - a.sig.score;
+  });
 
-    for (const r of statRows as Record<string,unknown>[]) {
-      const strat=r["strategy"] as string;
-      const trades=Number(r["trades"]);
-      if (trades<20) continue;
-      const wins=Number(r["wins"]);
-      const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-      const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
-      const wr=wins/trades;
-      const cur=curW[strat]??{weight:1,cycles:0};
-      let newW=cur.weight, newC=cur.cycles, disabled=false, until:string|null=null;
+  logger.debug({
+    candidates: scored.map(s => ({
+      strategy:s.sig.strategy, trustScore:s.trustScore,
+      regimePF:s.regimePF.toFixed(2), score:s.sig.score,
+    }))
+  }, "Strategy selection ranking");
 
-      if (pf>=1.5&&wr>=0.5) {
-        newW=Math.min(MAX_W,cur.weight+MAX_CHANGE); newC=0;
-        if (newW>cur.weight+0.001) changes.push(`📈 ${strat}: вес +5% (PF ${pf.toFixed(2)})`);
-      } else if (pf<0.8||wr<0.35) {
-        newW=Math.max(MIN_W,cur.weight-MAX_CHANGE); newC=cur.cycles+1;
-        if (cur.weight-newW>0.001) changes.push(`📉 ${strat}: вес -5% (PF ${pf.toFixed(2)})`);
-        if (newC>=3) {
-          disabled=true; newC=0;
-          until=new Date(Date.now()+24*3600000).toISOString();
-          changes.push(`🚫 ${strat}: отключена на 24ч (3 цикла ниже порога)`);
+  return scored[0]!.sig;
+}
+
+// ── Get all strategy statuses ──────────────────────────────────────────────────
+export async function getAllStrategyStatuses(
+  regime: MarketRegime = "sideways"
+): Promise<StrategyTrustResult[]> {
+  const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats");
+  const {rows:wRows}    = await pool.query("SELECT * FROM strategy_weights");
+  const now = new Date().toISOString();
+  const results: StrategyTrustResult[] = [];
+
+  for (const stratName of ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[]) {
+    const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === stratName);
+    const wRow    = (wRows    as Record<string,unknown>[]).find(r => r["strategy"] === stratName);
+
+    const trades   = statRow ? Number(statRow["trades"])   : 0;
+    const wins     = statRow ? Number(statRow["wins"])     : 0;
+    const winPnl   = statRow ? Number(statRow["win_pnl"])  : 0;
+    const lossPnl  = statRow ? Number(statRow["loss_pnl"]) : 0;
+    const totalPnl = statRow ? Number(statRow["total_pnl"]): 0;
+    const weight   = wRow ? Number(wRow["weight"]) : 1;
+    const isDisabled  = wRow ? Boolean(wRow["disabled"])   : false;
+    const disabledUntil = wRow ? wRow["disabled_until"] as string|null : null;
+    const isQuarantine  = wRow ? Boolean(wRow["quarantine"]) : false;
+    const isActuallyDisabled = isDisabled && (!disabledUntil || disabledUntil > now);
+
+    const trustScore = await calcTrustScore(stratName, trades, wins, winPnl, lossPnl, totalPnl, regime);
+    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 99 : 0;
+    const wr = trades > 0 ? wins/trades : 0;
+
+    const status: StrategyStatus = isActuallyDisabled ? "disabled" : isQuarantine ? "quarantine" : "active";
+    results.push({strategy:stratName, trustScore, status, weight, trades, winRate:wr, profitFactor:pf});
+  }
+  return results;
+}
+
+// ── Quarantine check ──────────────────────────────────────────────────────────
+export async function isStrategyInQuarantine(strategy: StrategyName): Promise<boolean> {
+  const {rows} = await pool.query(
+    "SELECT quarantine FROM strategy_weights WHERE strategy=$1", [strategy]
+  );
+  if (!rows.length) return false;
+  return Boolean((rows[0] as Record<string,unknown>)["quarantine"]);
+}
+
+// ── Strategy history recording ─────────────────────────────────────────────────
+async function recordStrategyHistory(
+  strategy: StrategyName, prevWeight: number, newWeight: number,
+  prevPF: number, newPF: number, trustScore: number, reason: string
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO strategy_history(strategy,changed_at,prev_weight,new_weight,prev_pf,new_pf,trust_score,reason)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [strategy, new Date().toISOString(), prevWeight, newWeight, prevPF, newPF, trustScore, reason]
+  ).catch(err => logger.debug({err}, "recordStrategyHistory failed"));
+}
+
+// ── Main adaptation cycle ──────────────────────────────────────────────────────
+export async function loadStrategyWeights(): Promise<Record<StrategyName,number>> {
+  const {rows} = await pool.query(
+    "SELECT strategy,weight,disabled,disabled_until,quarantine FROM strategy_weights"
+  );
+  const weights:Record<string,number>={TREND:1,BREAKOUT:1,VOLUME_IMPULSE:1,MEAN_REVERSION:1};
+  const now = new Date().toISOString();
+  for (const r of rows as Record<string,unknown>[]) {
+    const strat=r["strategy"] as string;
+    let w=Number(r["weight"]);
+    const disabled=Boolean(r["disabled"]);
+    const quarantine=Boolean(r["quarantine"]);
+    const until=r["disabled_until"] as string|null;
+    if (disabled && until && until>now) { w=0; }
+    else if (disabled && (!until||until<=now)) {
+      await pool.query("UPDATE strategy_weights SET disabled=false,disabled_until=NULL WHERE strategy=$1",[strat]);
+    }
+    // Quarantine: cap effective weight at 0.5 for callers
+    if (quarantine && w > 0) w = Math.min(w, 0.5);
+    weights[strat]=w;
+  }
+  return weights as Record<StrategyName,number>;
+}
+
+export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
+  const {rows:statRows} = await pool.query(
+    "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
+  );
+  const {rows:wRows} = await pool.query(
+    "SELECT strategy,weight,disabled,quarantine,cycles_below_threshold FROM strategy_weights"
+  );
+  const curW:Record<string,{weight:number;cycles:number;disabled:boolean;quarantine:boolean}>={};
+  for (const r of wRows as Record<string,unknown>[])
+    curW[r["strategy"] as string]={
+      weight:Number(r["weight"]),
+      cycles:Number(r["cycles_below_threshold"]),
+      disabled:Boolean(r["disabled"]),
+      quarantine:Boolean(r["quarantine"]),
+    };
+
+  const changes:string[]=[];
+  const STRATS = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
+
+  for (const strat of STRATS) {
+    const statRow=(statRows as Record<string,unknown>[]).find(r => r["strategy"]===strat);
+    const trades=statRow ? Number(statRow["trades"]) : 0;
+
+    // ── 1. Minimum sample gate: no weight changes below 30 trades ─────────
+    if (trades < 30) {
+      logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<30)");
+      continue;
+    }
+
+    const wins    = statRow ? Number(statRow["wins"])    : 0;
+    const winPnl  = statRow ? Number(statRow["win_pnl"]) : 0;
+    const lossPnl = statRow ? Number(statRow["loss_pnl"]): 0;
+    const totalPnl= statRow ? Number(statRow["total_pnl"]): 0;
+    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 99 : 0;
+    const isNegativeReturn = totalPnl < 0;
+
+    const cur = curW[strat] ?? {weight:1,cycles:0,disabled:false,quarantine:false};
+    const trustScore = await calcTrustScore(strat, trades, wins, winPnl, lossPnl, totalPnl, "sideways");
+
+    let newW = cur.weight;
+    let newCycles = cur.cycles;
+    let newDisabled = cur.disabled;
+    let newQuarantine = cur.quarantine;
+    let disabledUntil: string|null = null;
+    let changeReason = "";
+
+    // ── 4. Auto-disable: 100+ trades, PF<0.7, negative return ────────────
+    if (trades >= 100 && pf < 0.7 && isNegativeReturn && !cur.disabled) {
+      newDisabled = true;
+      newQuarantine = false;
+      disabledUntil = new Date(Date.now() + 48*3600000).toISOString();
+      changeReason = `Отключена: ${trades} сд, PF ${pf.toFixed(2)}, убыток`;
+      changes.push(`🚫 ${strat}: *отключена на 48ч* (Shadow Mode) — PF ${pf.toFixed(2)}`);
+      await recordStrategyHistory(strat, cur.weight, 0, pf, pf, trustScore, changeReason);
+      await pool.query(
+        `UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,quarantine=false,
+         cycles_below_threshold=0,trust_score=$5,updated_at=$6 WHERE strategy=$1`,
+        [strat, cur.weight, true, disabledUntil, trustScore, new Date().toISOString()]
+      );
+      continue;
+    }
+
+    // Re-enable: check shadow performance if disabled
+    if (cur.disabled) {
+      const {rows:shadowRows} = await pool.query(
+        `SELECT COUNT(*) as cnt,
+                SUM(CASE WHEN is_win THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN is_win THEN pnl_percent ELSE 0 END) as win_pnl,
+                SUM(CASE WHEN NOT is_win THEN ABS(pnl_percent) ELSE 0 END) as loss_pnl
+         FROM shadow_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 30`,
+        [strat]
+      );
+      if (shadowRows.length) {
+        const sr = shadowRows[0] as Record<string,unknown>;
+        const sCnt = Number(sr["cnt"]);
+        const sWinPnl = Number(sr["win_pnl"]);
+        const sLossPnl = Number(sr["loss_pnl"]);
+        const sPF = sCnt >= 10 && sLossPnl > 0 ? sWinPnl/sLossPnl : 0;
+        if (sPF >= 1.0 && sCnt >= 10) {
+          newDisabled = false;
+          newQuarantine = true; // Return via quarantine first
+          newW = Math.max(0.3, cur.weight * 0.5);
+          changeReason = `Восстановлена из Shadow (PF ${sPF.toFixed(2)}) → Карантин`;
+          changes.push(`🔄 ${strat}: возвращена из Shadow → *Карантин* (PF тени: ${sPF.toFixed(2)})`);
+          await recordStrategyHistory(strat, 0, newW, pf, sPF, trustScore, changeReason);
+        } else {
+          await pool.query(
+            "UPDATE strategy_weights SET trust_score=$2,updated_at=$3 WHERE strategy=$1",
+            [strat, trustScore, new Date().toISOString()]
+          );
+          continue;
         }
       } else {
-        newW=cur.weight>1?Math.max(1,cur.weight-0.01):Math.min(1,cur.weight+0.01);
-        newC=Math.max(0,cur.cycles-1);
+        continue;
       }
-      await pool.query(
-        "UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,cycles_below_threshold=$5,updated_at=$6 WHERE strategy=$1",
-        [strat,newW,disabled,until,newC,new Date().toISOString()]
-      );
     }
-    return changes.length>0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";
-  }
 
-  export async function getClosedTradeCount(): Promise<number> {
-    const {rows} = await pool.query("SELECT COUNT(*) as cnt FROM paper_closed_trades");
-    return Number((rows[0] as Record<string,unknown>)["cnt"]);
-  }
+    // ── 3. Quarantine mode: PF<0.8 and negative return ──────────────────
+    if (!newDisabled) {
+      if (trades >= 30 && pf < 0.8 && isNegativeReturn && !cur.quarantine) {
+        newQuarantine = true;
+        newW = Math.max(0.3, cur.weight - 0.10);
+        newCycles = cur.cycles + 1;
+        changeReason = `Карантин: PF ${pf.toFixed(2)}, убыточна`;
+        changes.push(`⚠️ ${strat}: → *Карантин* (PF ${pf.toFixed(2)}, только Confidence ≥60%)`);
+        await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
+      } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
+        newQuarantine = false;
+        newW = Math.min(1.0, cur.weight + 0.05);
+        changeReason = `Выход из карантина: PF ${pf.toFixed(2)} → норма`;
+        changes.push(`✅ ${strat}: выходит из карантина (PF ${pf.toFixed(2)})`);
+        await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
+      } else {
+        // ── 2. Smooth weight changes per PF table ────────────────────────
+        if (pf < 0.8) {
+          const delta = trades >= 100 ? 0.05 : 0.03;
+          newW = Math.max(0.3, cur.weight - delta);
+          newCycles = cur.cycles + 1;
+          if (newW < cur.weight - 0.001) {
+            changeReason = `PF ${pf.toFixed(2)} < 0.8 → вес −${(delta*100).toFixed(0)}%`;
+            changes.push(`📉 ${strat}: вес −${(delta*100).toFixed(0)}% (PF ${pf.toFixed(2)})`);
+            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
+          }
+        } else if (pf >= 0.8 && pf < 1.1) {
+          // Stable zone — gentle drift back toward 1.0, no record
+          newW = cur.weight > 1 ? Math.max(1, cur.weight - 0.01) : Math.min(1, cur.weight + 0.01);
+          newCycles = Math.max(0, cur.cycles - 1);
+        } else if (pf >= 1.1 && pf < 1.4) {
+          newW = Math.min(1.5, cur.weight + 0.03);
+          newCycles = 0;
+          if (newW > cur.weight + 0.001) {
+            changeReason = `PF ${pf.toFixed(2)} 1.1–1.4 → вес +3%`;
+            changes.push(`📈 ${strat}: вес +3% (PF ${pf.toFixed(2)})`);
+            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
+          }
+        } else if (pf >= 1.4) {
+          newW = Math.min(1.5, cur.weight + 0.05);
+          newCycles = 0;
+          if (newW > cur.weight + 0.001) {
+            changeReason = `PF ${pf.toFixed(2)} > 1.4 → вес +5%`;
+            changes.push(`🔥 ${strat}: вес +5% (PF ${pf.toFixed(2)})`);
+            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
+          }
+        }
+      }
+    }
 
-  async function getVersionCounter(): Promise<string> {
-    const {rows} = await pool.query("SELECT COUNT(*) as cnt FROM strategy_versions");
-    const n=Number((rows[0] as Record<string,unknown>)["cnt"])+1;
-    return `v1.${n}`;
-  }
-
-  export async function snapshotStrategyVersion(changes:string): Promise<void> {
-    const {rows:wRows} = await pool.query("SELECT * FROM factor_weights WHERE id=1");
-    const weights=wRows.length ? wRows[0] as Record<string,unknown> : {};
-    const {rows:statsRows} = await pool.query(
-      "SELECT pnl_percent FROM paper_closed_trades WHERE pnl_percent IS NOT NULL ORDER BY closed_at DESC LIMIT 100"
+    await pool.query(
+      `UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,quarantine=$5,
+       cycles_below_threshold=$6,trust_score=$7,updated_at=$8 WHERE strategy=$1`,
+      [strat, newW, newDisabled, disabledUntil, newQuarantine, newCycles, trustScore, new Date().toISOString()]
     );
-    const pnls=statsRows.map(r=>Number((r as Record<string,unknown>)["pnl_percent"]));
-    const wins=pnls.filter(p=>p>0);
-    const losses=pnls.filter(p=>p<=0);
-    const wr=pnls.length?wins.length/pnls.length*100:0;
-    const winPnl=wins.reduce((a,b)=>a+b,0);
-    const lossPnl=Math.abs(losses.reduce((a,b)=>a+b,0));
+  }
+
+  return changes.length > 0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";
+}
+
+export async function getClosedTradeCount(): Promise<number> {
+  const {rows} = await pool.query("SELECT COUNT(*) as cnt FROM paper_closed_trades");
+  return Number((rows[0] as Record<string,unknown>)["cnt"]);
+}
+
+async function getVersionCounter(): Promise<string> {
+  const {rows} = await pool.query("SELECT COUNT(*) as cnt FROM strategy_versions");
+  const n=Number((rows[0] as Record<string,unknown>)["cnt"])+1;
+  return `v1.${n}`;
+}
+
+export async function snapshotStrategyVersion(changes:string): Promise<void> {
+  const {rows:wRows} = await pool.query("SELECT * FROM factor_weights WHERE id=1");
+  const weights=wRows.length ? wRows[0] as Record<string,unknown> : {};
+  const {rows:statsRows} = await pool.query(
+    "SELECT pnl_percent FROM paper_closed_trades WHERE pnl_percent IS NOT NULL ORDER BY closed_at DESC LIMIT 100"
+  );
+  const pnls=statsRows.map(r=>Number((r as Record<string,unknown>)["pnl_percent"]));
+  const wins=pnls.filter(p=>p>0);
+  const losses=pnls.filter(p=>p<=0);
+  const wr=pnls.length?wins.length/pnls.length*100:0;
+  const winPnl=wins.reduce((a,b)=>a+b,0);
+  const lossPnl=Math.abs(losses.reduce((a,b)=>a+b,0));
+  const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
+  const mean=pnls.length?pnls.reduce((a,b)=>a+b,0)/pnls.length:0;
+  const std=pnls.length>1?Math.sqrt(pnls.reduce((a,b)=>a+(b-mean)**2,0)/(pnls.length-1)):0;
+  const sharpe=std>0?mean/std:0;
+  let eq=100; const curve=[100];
+  for (const p of [...pnls].reverse()) { eq*=(1+p/100); curve.push(eq); }
+  let peak=curve[0]??100, dd=0;
+  for (const v of curve) { if(v>peak)peak=v; dd=Math.max(dd,peak>0?(peak-v)/peak*100:0); }
+  const rf=dd>0?((eq-100)/dd):0;
+  const label=await getVersionCounter();
+
+  await pool.query("UPDATE strategy_versions SET is_best=false WHERE is_best=true");
+  await pool.query(
+    `INSERT INTO strategy_versions(created_at,weights,win_rate,profit_factor,trade_count,is_best,version_label,total_return,max_drawdown,sharpe_ratio,recovery_factor,notes)
+     VALUES($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11)`,
+    [new Date().toISOString(),JSON.stringify(weights),wr,pf,pnls.length,label,eq-100,dd,sharpe,rf,changes]
+  );
+  const {rows:all} = await pool.query("SELECT id FROM strategy_versions ORDER BY created_at DESC OFFSET 10");
+  for (const r of all as Record<string,unknown>[])
+    await pool.query("DELETE FROM strategy_versions WHERE id=$1",[r["id"]]);
+  logger.info({label,pf,wr,sharpe},"Strategy version snapshot saved");
+}
+
+export async function checkAndRollback(): Promise<string|null> {
+  const {rows} = await pool.query(
+    "SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2"
+  );
+  if (rows.length<2) return null;
+  const cur=rows[0] as Record<string,unknown>;
+  const prev=rows[1] as Record<string,unknown>;
+  const curPF=Number(cur["profit_factor"]);
+  const prevPF=Number(prev["profit_factor"]);
+  if (prevPF>0.5 && curPF<prevPF*0.8) {
+    const bestWeights=(prev["weights"] as Record<string,unknown>);
+    await pool.query(
+      "UPDATE factor_weights SET trend=$1,volume=$2,momentum=$3,levels=$4,pattern=$5 WHERE id=1",
+      [bestWeights["trend"],bestWeights["volume"],bestWeights["momentum"],bestWeights["levels"],bestWeights["pattern"]]
+    );
+    logger.warn({curPF,prevPF},"Strategy rolled back to previous version");
+    return `🔄 *Откат стратегии*\nТекущий PF ${curPF.toFixed(2)} хуже предыдущего ${prevPF.toFixed(2)} на >20%.\nВосстановлена версия ${cur["version_label"]??prev["version_label"]}.`;
+  }
+  return null;
+}
+
+export async function generateLearningReport(): Promise<string> {
+  const tradeCount=await getClosedTradeCount();
+  const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats");
+  const {rows:wRows}    = await pool.query("SELECT strategy,weight,disabled,quarantine,trust_score FROM strategy_weights");
+  const {rows:vRows}    = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2");
+
+  const stratLines:string[]=[];
+  for (const r of statRows as Record<string,unknown>[]) {
+    const strat=r["strategy"] as StrategyName;
+    const trades=Number(r["trades"]);
+    if (trades<5) continue;
+    const wins=Number(r["wins"]);
+    const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
     const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
-    const mean=pnls.length?pnls.reduce((a,b)=>a+b,0)/pnls.length:0;
-    const std=pnls.length>1?Math.sqrt(pnls.reduce((a,b)=>a+(b-mean)**2,0)/(pnls.length-1)):0;
-    const sharpe=std>0?mean/std:0;
-    let eq=100; const curve=[100];
-    for (const p of [...pnls].reverse()) { eq*=(1+p/100); curve.push(eq); }
-    let peak=curve[0]??100, dd=0;
-    for (const v of curve) { if(v>peak)peak=v; dd=Math.max(dd,peak>0?(peak-v)/peak*100:0); }
-    const rf=dd>0?((eq-100)/dd):0;
-    const label=await getVersionCounter();
-
-    await pool.query("UPDATE strategy_versions SET is_best=false WHERE is_best=true");
-    await pool.query(
-      `INSERT INTO strategy_versions(created_at,weights,win_rate,profit_factor,trade_count,is_best,version_label,total_return,max_drawdown,sharpe_ratio,recovery_factor,notes)
-       VALUES($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11)`,
-      [new Date().toISOString(),JSON.stringify(weights),wr,pf,pnls.length,label,eq-100,dd,sharpe,rf,changes]
-    );
-    // Keep only last 10 versions
-    const {rows:all} = await pool.query("SELECT id FROM strategy_versions ORDER BY created_at DESC OFFSET 10");
-    for (const r of all as Record<string,unknown>[])
-      await pool.query("DELETE FROM strategy_versions WHERE id=$1",[r["id"]]);
-    logger.info({label,pf,wr,sharpe},"Strategy version snapshot saved");
+    const wr=(wins/trades*100).toFixed(1);
+    const wRow=wRows.find(w=>(w as Record<string,unknown>)["strategy"]===strat) as Record<string,unknown>|undefined;
+    const weight=wRow?Number(wRow["weight"]):1;
+    const dis=wRow?Boolean(wRow["disabled"]):false;
+    const quar=wRow?Boolean(wRow["quarantine"]):false;
+    const trust=wRow?Number(wRow["trust_score"]):0;
+    const sampleTag = trades < 30 ? " ⚠️<30сд" : "";
+    const icon=dis?"🚫":quar?"⚠️":weight>=1.3?"🔥":weight<=0.5?"📉":"✅";
+    stratLines.push(`${icon} ${strat}: WR ${wr}% | PF ${pf===99?"∞":pf.toFixed(2)} | Trust ${trust}/100 | Вес ${(weight*100).toFixed(0)}%${sampleTag}`);
   }
 
-  export async function checkAndRollback(): Promise<string|null> {
-    const {rows} = await pool.query(
-      "SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2"
-    );
-    if (rows.length<2) return null;
-    const cur=rows[0] as Record<string,unknown>;
-    const prev=rows[1] as Record<string,unknown>;
-    const curPF=Number(cur["profit_factor"]);
-    const prevPF=Number(prev["profit_factor"]);
-    if (prevPF>0.5 && curPF<prevPF*0.8) {
-      const bestWeights=(prev["weights"] as Record<string,unknown>);
-      await pool.query(
-        "UPDATE factor_weights SET trend=$1,volume=$2,momentum=$3,levels=$4,pattern=$5 WHERE id=1",
-        [bestWeights["trend"],bestWeights["volume"],bestWeights["momentum"],bestWeights["levels"],bestWeights["pattern"]]
-      );
-      logger.warn({curPF,prevPF},"Strategy rolled back to previous version");
-      return `🔄 *Откат стратегии*
-Текущий PF ${curPF.toFixed(2)} хуже предыдущего ${prevPF.toFixed(2)} на >20%.
-Восстановлена версия ${cur["version_label"]??prev["version_label"]}.`;
-    }
-    return null;
+  let vLine="";
+  if (vRows.length>=2) {
+    const c=vRows[0] as Record<string,unknown>, p=vRows[1] as Record<string,unknown>;
+    const diff=Number(c["profit_factor"])-Number(p["profit_factor"]);
+    vLine=`\n📊 ${p["version_label"]}→${c["version_label"]}: PF ${Number(p["profit_factor"]).toFixed(2)}→${Number(c["profit_factor"]).toFixed(2)} (${diff>=0?"+":""}${diff.toFixed(2)})`;
   }
 
-  export async function generateLearningReport(): Promise<string> {
-    const tradeCount=await getClosedTradeCount();
-    const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats");
-    const {rows:wRows} = await pool.query("SELECT strategy,weight,disabled FROM strategy_weights");
-    const {rows:vRows} = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2");
+  const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
+  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
 
-    const stratLines:string[]=[];
-    for (const r of statRows as Record<string,unknown>[]) {
-      const strat=r["strategy"] as string;
-      const trades=Number(r["trades"]);
-      if (trades<5) continue;
-      const wins=Number(r["wins"]);
-      const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-      const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
-      const wr=(wins/trades*100).toFixed(1);
-      const wRow=wRows.find(w=>(w as Record<string,unknown>)["strategy"]===strat) as Record<string,unknown>|undefined;
-      const weight=wRow?Number(wRow["weight"]):1;
-      const dis=wRow?Boolean(wRow["disabled"]):false;
-      const icon=dis?"🚫":weight>=1.3?"🔥":weight<=0.5?"⚠️":"✅";
-      stratLines.push(`${icon} ${strat}: WR ${wr}% | PF ${pf===99?"∞":pf.toFixed(2)} | Вес ${(weight*100).toFixed(0)}%`);
-    }
+  await pool.query(
+    "INSERT INTO learning_reports(version_label,created_at,trade_count_at_report,summary,report_json) VALUES($1,$2,$3,$4,$5)",
+    [reportLabel,new Date().toISOString(),tradeCount,summary,JSON.stringify({strategies:stratLines,tradeCount})]
+  );
+  return summary;
+}
 
-    let vLine="";
-    if (vRows.length>=2) {
-      const c=vRows[0] as Record<string,unknown>, p=vRows[1] as Record<string,unknown>;
-      const diff=Number(c["profit_factor"])-Number(p["profit_factor"]);
-      vLine=`\n📊 ${p["version_label"]}→${c["version_label"]}: PF ${Number(p["profit_factor"]).toFixed(2)}→${Number(c["profit_factor"]).toFixed(2)} (${diff>=0?"+":""}${diff.toFixed(2)})`;
-    }
+export async function getLearningHistory(): Promise<string> {
+  const {rows:vRows}   = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 10");
+  const {rows:rRows}   = await pool.query("SELECT version_label,created_at,summary FROM learning_reports ORDER BY created_at DESC LIMIT 3");
+  const {rows:regRows} = await pool.query("SELECT strategy,regime,trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats");
 
-    const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
-    const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
+  if (!vRows.length) return "📚 *История обучения*\n\nДанных пока нет — нужно минимум 20 сделок для первого снапшота.";
 
-    await pool.query(
-      "INSERT INTO learning_reports(version_label,created_at,trade_count_at_report,summary,report_json) VALUES($1,$2,$3,$4,$5)",
-      [reportLabel,new Date().toISOString(),tradeCount,summary,JSON.stringify({strategies:stratLines,tradeCount})]
-    );
-    return summary;
+  const vLines=vRows.map(r=>{
+    const row=r as Record<string,unknown>;
+    const label=(row["version_label"] as string)??"—";
+    const pf=Number(row["profit_factor"]);
+    const wr=Number(row["win_rate"]);
+    const n=Number(row["trade_count"]);
+    const best=Boolean(row["is_best"]);
+    const date=(row["created_at"] as string).slice(0,10);
+    const dd=Number(row["max_drawdown"]);
+    return `${best?"⭐":"  "} ${label} [${date}] PF ${pf.toFixed(2)} | WR ${wr.toFixed(1)}% | n=${n} | DD ${dd.toFixed(1)}%`;
+  });
+
+  const regByStrat:Record<string,string[]>={};
+  const REGIME_LABEL:Record<string,string>={trend_up:"📈↑",trend_down:"📉↓",sideways:"↔️",high_vol:"⚡",low_vol:"😴"};
+  for (const r of regRows as Record<string,unknown>[]) {
+    const strat=r["strategy"] as string;
+    const trades=Number(r["trades"]);
+    if (trades<5) continue;
+    const wins=Number(r["wins"]),winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
+    const pf=lossPnl>0?winPnl/lossPnl:99;
+    const wr=(wins/trades*100).toFixed(0);
+    const regime=r["regime"] as string;
+    if(!regByStrat[strat]) regByStrat[strat]=[];
+    regByStrat[strat]!.push(`  ${REGIME_LABEL[regime]??regime}: PF ${pf===99?"∞":pf.toFixed(2)} WR${wr}% n=${trades}`);
   }
+  const regLines:string[]=[];
+  for (const [s,lines] of Object.entries(regByStrat)) { regLines.push(`*${s}:*`,...lines); }
 
-  export async function getLearningHistory(): Promise<string> {
-    const {rows:vRows} = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 10");
-    const {rows:rRows} = await pool.query("SELECT version_label,created_at,summary FROM learning_reports ORDER BY created_at DESC LIMIT 3");
-    const {rows:regRows} = await pool.query("SELECT strategy,regime,trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats");
+  const lastReports=rRows.length ? ["","📋 *Последние отчёты:*",...rRows.map(r=>(r as Record<string,unknown>)["version_label"] as string)] : [];
 
-    if (!vRows.length) return "📚 *История обучения*\n\nДанных пока нет — нужно минимум 20 сделок для первого снапшота.";
+  return ["📚 *История обучения AI*","","🔖 *Версии стратегии:*",...vLines,
+    ...(regLines.length?["","🌍 *По режиму рынка:*",...regLines]:[]),
+    ...lastReports].join("\n");
+}
 
-    const vLines=vRows.map(r=>{
-      const row=r as Record<string,unknown>;
-      const label=(row["version_label"] as string)??"—";
-      const pf=Number(row["profit_factor"]);
-      const wr=Number(row["win_rate"]);
-      const n=Number(row["trade_count"]);
-      const best=Boolean(row["is_best"]);
-      const date=(row["created_at"] as string).slice(0,10);
-      const dd=Number(row["max_drawdown"]);
-      return `${best?"⭐":"  "} ${label} [${date}] PF ${pf.toFixed(2)} | WR ${wr.toFixed(1)}% | n=${n} | DD ${dd.toFixed(1)}%`;
-    });
+// ── Strategy evolution history ─────────────────────────────────────────────────
+export async function getStrategyEvolutionHistory(strategy?: StrategyName): Promise<string> {
+  const whereClause = strategy ? "WHERE strategy=$1" : "";
+  const params = strategy ? [strategy] : [];
+  const {rows} = await pool.query(
+    `SELECT strategy,changed_at,prev_weight,new_weight,prev_pf,new_pf,trust_score,reason
+     FROM strategy_history ${whereClause} ORDER BY changed_at DESC LIMIT 20`,
+    params
+  );
 
-    const regByStrat:Record<string,string[]>={};
-    const REGIME_LABEL:Record<string,string>={trend_up:"📈↑",trend_down:"📉↓",sideways:"↔️",high_vol:"⚡",low_vol:"😴"};
-    for (const r of regRows as Record<string,unknown>[]) {
-      const strat=r["strategy"] as string;
-      const trades=Number(r["trades"]);
-      if (trades<5) continue;
-      const wins=Number(r["wins"]),winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-      const pf=lossPnl>0?winPnl/lossPnl:99;
-      const wr=(wins/trades*100).toFixed(0);
-      const regime=r["regime"] as string;
-      if(!regByStrat[strat]) regByStrat[strat]=[];
-      regByStrat[strat]!.push(`  ${REGIME_LABEL[regime]??regime}: PF ${pf===99?"∞":pf.toFixed(2)} WR${wr}% n=${trades}`);
-    }
-    const regLines:string[]=[];
-    for (const [s,lines] of Object.entries(regByStrat)) { regLines.push(`*${s}:*`,...lines); }
+  if (!rows.length) return "📈 *История изменений стратегий*\n\nИзменений пока нет — нужно минимум 30 сделок.";
 
-    const lastReports=rRows.length ? ["","📋 *Последние отчёты:*",...rRows.map(r=>(r as Record<string,unknown>)["version_label"] as string)] : [];
+  const lines: string[] = strategy
+    ? [`📈 *История: ${strategy}*`, ""]
+    : ["📈 *История изменений стратегий*", ""];
 
-    return ["📚 *История обучения AI*","","🔖 *Версии стратегии:*",...vLines,
-      ...(regLines.length?["","🌍 *По режиму рынка:*",...regLines]:[]),
-      ...lastReports].join("\n");
+  for (const r of rows as Record<string,unknown>[]) {
+    const strat = r["strategy"] as string;
+    const date  = (r["changed_at"] as string).slice(0,10);
+    const prevW = (Number(r["prev_weight"])*100).toFixed(0);
+    const newW  = (Number(r["new_weight"])*100).toFixed(0);
+    const prevPF= Number(r["prev_pf"]).toFixed(2);
+    const newPF = Number(r["new_pf"]).toFixed(2);
+    const trust = Number(r["trust_score"]);
+    const reason= r["reason"] as string;
+    const arrow = Number(newW) > Number(prevW) ? "↑" : Number(newW) < Number(prevW) ? "↓" : "→";
+    lines.push(`${arrow} *${strategy ? "" : strat + " "}*[${date}] Вес: ${prevW}%→${newW}% | PF: ${prevPF}→${newPF} | Trust: ${trust}`);
+    lines.push(`  _${reason}_`);
   }
-  
+  return lines.join("\n");
+}

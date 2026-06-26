@@ -8,7 +8,7 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
-  import { recordRegimeTrade, type MarketRegime } from "./learning-engine.js";
+  import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
   import { recordTimeTrade } from "./time-analytics.js";
   import { recordInstrumentTrade } from "./instrument-analytics.js";
 // Position → market regime map (populated at open, consumed at close)
@@ -136,6 +136,11 @@ export async function checkPaperPositions(
           recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlPct, pnl > 0).catch(() => {});
           recordTimeTrade(pos.openedAt, pnlPct, pnl > 0).catch(() => {});
           recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlPct, pnl > 0).catch(() => {});
+          // Record loss reason for SL/BE losses
+          if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
+            const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
+            recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
+          }
 
         const isProfit = pnl > 0;
         const isBreakeven = closeReason === "BE";

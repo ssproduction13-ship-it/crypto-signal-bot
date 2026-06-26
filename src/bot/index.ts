@@ -17,6 +17,12 @@ import { Telegraf, Markup } from "telegraf";
   import { formatPrice } from "./risk.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
+  import {
+    getAllStrategyStatuses, getLearningHistory, generateLearningReport,
+    getStrategyEvolutionHistory, detectMarketRegime,
+  } from "./learning-engine.js";
+  import { getTimeAnalytics } from "./time-analytics.js";
+  import { getInstrumentAnalytics } from "./instrument-analytics.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     { symbol: "BTCUSDT",  interval: "1h"  }, { symbol: "ETHUSDT",  interval: "1h"  },
@@ -333,8 +339,71 @@ import { Telegraf, Markup } from "telegraf";
 
     bot.action("menu_strategies", async (ctx) => {
       await ctx.answerCbQuery();
-      const stats = await loadStrategyStats();
-      await ctx.reply(formatStrategyStats(stats), { parse_mode:"Markdown", ...analysisMenu() });
+      const loading = await ctx.reply("⏳ Загружаю статус стратегий...");
+      try {
+        // Detect current regime from BTC 1h
+        const { getCandles } = await import("./binance.js");
+        const { calcIndicators } = await import("./indicators.js");
+        const { assessMarket } = await import("./chaos-filter.js");
+        const candles = await getCandles("BTCUSDT","1h",200);
+        const ind = calcIndicators(candles);
+        const market = assessMarket(candles, ind);
+        const rating = calcMarketRating(ind, market, candles);
+        const regime = detectMarketRegime(market, rating);
+
+        const statuses = await getAllStrategyStatuses(regime);
+        const regimeLabels: Record<string,string> = {
+          trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
+          sideways:"↔️ Боковик",high_vol:"⚡ Волат.",low_vol:"😴 Затишье",
+        };
+        const statusIcon: Record<string,string> = {active:"✅",quarantine:"⚠️",disabled:"🚫"};
+        const statusLabel: Record<string,string> = {active:"Активна",quarantine:"Карантин",disabled:"Shadow"};
+
+        const lines = [
+          `🏆 *Стратегии* | Режим: ${regimeLabels[regime] ?? regime}`,
+          "",
+        ];
+        for (const s of statuses) {
+          const icon = statusIcon[s.status] ?? "✅";
+          const sl   = statusLabel[s.status] ?? s.status;
+          const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
+          const wr   = (s.winRate * 100).toFixed(1);
+          const sampleNote = s.trades < 30 ? " ⚠️" : "";
+          lines.push(
+            `${icon} *${s.strategy}* — ${sl}${sampleNote}\n` +
+            `  Trust: ${s.trustScore}/100 | Вес: ${(s.weight*100).toFixed(0)}%\n` +
+            `  WR: ${wr}% | PF: ${pf} | Сд: ${s.trades}`
+          );
+        }
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply(lines.join("\n"), {
+          parse_mode:"Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("📈 История изменений","menu_strat_history")],
+            [Markup.button.callback("◀️ Анализ","menu_analysis")],
+          ]),
+        });
+      } catch {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        const stats = await loadStrategyStats();
+        await ctx.reply(formatStrategyStats(stats), { parse_mode:"Markdown", ...analysisMenu() });
+      }
+    });
+
+    bot.action("menu_strat_history", async (ctx) => {
+      await ctx.answerCbQuery();
+      const loading = await ctx.reply("⏳ Загружаю историю...");
+      try {
+        const history = await getStrategyEvolutionHistory();
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply(history, {
+          parse_mode:"Markdown",
+          ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Стратегии","menu_strategies")]]),
+        });
+      } catch {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("❌ Ошибка загрузки истории изменений");
+      }
     });
 
     // ── Настройки ──────────────────────────────────────────────────────────

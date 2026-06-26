@@ -12,6 +12,8 @@ import cron from "node-cron";
   import {
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
+    selectBestStrategy, recordLossReason, classifyLossReason,
+    type StrategySignalInput,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
   import { getInstrumentPriority } from "./instrument-analytics.js";
@@ -119,8 +121,33 @@ import cron from "node-cron";
         return;
       }
 
+      // Build strategy signal inputs from all available strategies
+      const strategySignals: StrategySignalInput[] = [];
+      if (sig.strategySignals) {
+        for (const s of sig.strategySignals) {
+          strategySignals.push({
+            strategy: s.strategy,
+            score: s.score ?? sig.score.total,
+            confidence: s.confidence ?? sig.confidence.score,
+            direction: sig.score.direction as "LONG"|"SHORT",
+          });
+        }
+      } else if (sig.bestStrategy?.strategy) {
+        strategySignals.push({
+          strategy: sig.bestStrategy.strategy,
+          score: sig.score.total,
+          confidence: sig.confidence.score,
+          direction: sig.score.direction as "LONG"|"SHORT",
+        });
+      }
+
+      // Select best strategy by Trust Score (v2 engine)
+      const bestSig = strategySignals.length > 0
+        ? await selectBestStrategy(strategySignals, regime)
+        : null;
+      const strat = bestSig?.strategy ?? sig.bestStrategy?.strategy ?? "TREND";
+
       // Strategy regime gate: skip if strategy consistently loses in this market regime
-      const strat = sig.bestStrategy?.strategy ?? "TREND";
       const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime);
       if (regimeBlocked) {
         logger.info({ symbol: sub.symbol, strat, regime, regimeReason }, "Trade blocked: strategy unprofitable in regime");
