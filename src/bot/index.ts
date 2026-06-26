@@ -105,9 +105,14 @@ import { Telegraf, Markup } from "telegraf";
     const dd      = (account.peakBalance ?? account.balance) > 0
       ? (((account.peakBalance ?? account.balance) - account.balance) / (account.peakBalance ?? account.balance)) * 100
       : 0;
-    const now  = Date.now();
-    const pnlD = trades.filter(t => now - new Date(t.closedAt).getTime() < 86_400_000).reduce((a, t) => a + t.pnl, 0);
-    const pnlW = trades.filter(t => now - new Date(t.closedAt).getTime() < 604_800_000).reduce((a, t) => a + t.pnl, 0);
+    // Compare against calendar boundaries, not rolling windows.
+      // Rolling 86_400_000 ms doesn't reset at midnight — trades from 23:00
+      // yesterday still appear as "today" at 09:00 today.
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const weekStart  = new Date(todayStart);
+      weekStart.setDate(todayStart.getDate() - ((todayStart.getDay() + 6) % 7)); // Monday
+      const pnlD = trades.filter(t => new Date(t.closedAt) >= todayStart).reduce((a, t) => a + t.pnl, 0);
+      const pnlW = trades.filter(t => new Date(t.closedAt) >= weekStart).reduce((a, t) => a + t.pnl, 0);
     const posLines = account.positions.length === 0
       ? ["  нет открытых позиций"]
       : account.positions.map(p => {
