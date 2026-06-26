@@ -1,10 +1,8 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-RUN npm install -g pnpm
-
 COPY package.json ./
-RUN pnpm install --no-frozen-lockfile
+RUN npm install --legacy-peer-deps
 
 COPY tsconfig.json build.mjs ./
 COPY src/ ./src/
