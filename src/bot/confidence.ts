@@ -3,6 +3,7 @@ import { pool } from "../lib/db.js";
   import type { MarketCondition } from "./chaos-filter.js";
   import type { StrategyName } from "./strategies.js";
   import type { MarketRegime } from "./learning-engine.js";
+  import type { TradeFeatures } from "./similar-trades.js";
 
   export interface ConfidenceResult {
     score: number;
@@ -14,12 +15,14 @@ import { pool } from "../lib/db.js";
       timeFactor: number;
       instrumentFactor: number;
       regimeFactor: number;
+      similarTradesFactor: number;
     };
+    similarTradesBoost: number;
     label: "high" | "medium" | "low";
   }
 
   /**
-   * Confidence Engine v2 — 7 factors:
+   * Confidence Engine v3 — 8 factors:
    * 1. recentPerformance   — last 20–50 trades win rate
    * 2. marketQuality       — non-chaotic / trending
    * 3. volatilityFit       — ATR in optimal range 0.5–3%
@@ -27,6 +30,7 @@ import { pool } from "../lib/db.js";
    * 5. timeFactor          — historical win rate at this hour/day
    * 6. instrumentFactor    — instrument priority weight
    * 7. regimeFactor        — strategy PF in current market regime
+   * 8. similarTradesFactor — cosine-similarity k-NN from trade history
    */
   export async function calcConfidence(
     ind: IndicatorResult,
@@ -34,7 +38,8 @@ import { pool } from "../lib/db.js";
     strategy?: StrategyName,
     signalScore?: number,
     symbol?: string,
-    regime?: MarketRegime
+    regime?: MarketRegime,
+    tradeFeatures?: TradeFeatures
   ): Promise<ConfidenceResult> {
 
     // 1. Recent performance (0–100) from actual closed trades
@@ -155,21 +160,44 @@ import { pool } from "../lib/db.js";
       } catch { /* keep default */ }
     }
 
+    // 8. Similar trades factor (0–100) — k-NN cosine similarity engine
+    let similarTradesFactor = 50;
+    let similarTradesBoost = 0;
+    if (tradeFeatures) {
+      try {
+        const { findSimilarTrades } = await import("./similar-trades.js");
+        const result = await findSimilarTrades(tradeFeatures);
+        if (result) {
+          // Map WR to 0-100 factor score
+          similarTradesFactor = Math.round(result.winRate * 100);
+          similarTradesBoost = result.confidenceBoost;
+        }
+      } catch { /* keep default */ }
+    }
+
     const signalBonus = signalScore ? Math.round((signalScore - 50) * 0.15) : 0;
+    // v3: reduce other weights slightly to accommodate 8th factor (sum = 1.0)
     const raw =
-      recentPerformance * 0.22 +
-      marketQuality     * 0.22 +
-      volatilityFit     * 0.14 +
-      strategyEffectiveness * 0.16 +
-      timeFactor        * 0.10 +
-      instrumentFactor  * 0.08 +
-      regimeFactor      * 0.08 +
-      signalBonus;
+      recentPerformance     * 0.20 +
+      marketQuality         * 0.20 +
+      volatilityFit         * 0.13 +
+      strategyEffectiveness * 0.15 +
+      timeFactor            * 0.09 +
+      instrumentFactor      * 0.07 +
+      regimeFactor          * 0.07 +
+      similarTradesFactor   * 0.09 +
+      signalBonus +
+      similarTradesBoost;
 
     const score = Math.max(0, Math.min(100, Math.round(raw)));
     const label: ConfidenceResult["label"] = score >= 65 ? "high" : score >= 40 ? "medium" : "low";
 
-    return { score, factors: { recentPerformance, marketQuality, volatilityFit, strategyEffectiveness, timeFactor, instrumentFactor, regimeFactor }, label };
+    return {
+      score,
+      factors: { recentPerformance, marketQuality, volatilityFit, strategyEffectiveness, timeFactor, instrumentFactor, regimeFactor, similarTradesFactor },
+      similarTradesBoost,
+      label,
+    };
   }
 
   export function formatConfidence(c: ConfidenceResult): string {

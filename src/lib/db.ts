@@ -221,6 +221,38 @@ const MIGRATIONS = [
     count    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy, reason)
   )`,
+  // AI Learning Engine v3
+  `CREATE TABLE IF NOT EXISTS trade_features (
+    position_id  TEXT PRIMARY KEY,
+    symbol       TEXT NOT NULL,
+    strategy     TEXT NOT NULL,
+    direction    TEXT NOT NULL,
+    interval     TEXT NOT NULL,
+    features     JSONB NOT NULL,
+    pnl_percent  DOUBLE PRECISION,
+    is_win       BOOLEAN,
+    outcome      TEXT,
+    saved_at     TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS feature_importance (
+    factor           TEXT PRIMARY KEY,
+    label            TEXT NOT NULL DEFAULT '',
+    importance_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    wr_lift          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pf_lift          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    trades           INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS ai_research_reports (
+    id              SERIAL PRIMARY KEY,
+    date            TEXT NOT NULL,
+    pattern         TEXT NOT NULL,
+    hypothesis      TEXT NOT NULL,
+    experiment      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'generated',
+    result          TEXT,
+    trade_count_at  INTEGER NOT NULL DEFAULT 0
+  )`,
 ];
 
 

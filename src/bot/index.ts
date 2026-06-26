@@ -23,6 +23,9 @@ import { Telegraf, Markup } from "telegraf";
   } from "./learning-engine.js";
   import { getTimeAnalytics } from "./time-analytics.js";
   import { getInstrumentAnalytics } from "./instrument-analytics.js";
+  import { loadFeatureImportance, formatFeatureImportance } from "./feature-importance.js";
+  import { getResearchHistory } from "./ai-researcher.js";
+  import { getSimilarTradesStats } from "./similar-trades.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     { symbol: "BTCUSDT",  interval: "1h"  }, { symbol: "ETHUSDT",  interval: "1h"  },
@@ -65,7 +68,10 @@ import { Telegraf, Markup } from "telegraf";
     return Markup.inlineKeyboard([
       [Markup.button.callback("📊 Рейтинг рынка", "menu_marketrating"),
        Markup.button.callback("🏆 Стратегии",     "menu_strategies")],
-      [Markup.button.callback("◀️ Меню",           "menu_main")],
+      [Markup.button.callback("🔬 Важность факторов", "menu_feature_importance"),
+       Markup.button.callback("🔭 AI Исследования",   "menu_ai_research")],
+      [Markup.button.callback("📡 Похожие сделки",   "menu_similar_trades")],
+      [Markup.button.callback("◀️ Меню",              "menu_main")],
     ]);
   }
   function pairsMenu(action: string, back = "menu_main") {
@@ -316,6 +322,50 @@ import { Telegraf, Markup } from "telegraf";
           await ctx.reply(stats, { parse_mode: "Markdown",
             ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
         } catch { await ctx.reply("❌ Ошибка загрузки аналитики"); }
+      });
+
+      // ── AI Learning Engine v3 handlers ─────────────────────────────────────
+      bot.action("menu_feature_importance", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Вычисляю влияние факторов...");
+        try {
+          const importances = await loadFeatureImportance();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          const text = formatFeatureImportance(importances);
+          await ctx.reply(text, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка загрузки данных о факторах");
+        }
+      });
+
+      bot.action("menu_ai_research", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю историю AI-исследований...");
+        try {
+          const history = await getResearchHistory();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(history, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка загрузки исследований");
+        }
+      });
+
+      bot.action("menu_similar_trades", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳ Загружаю статистику похожих сделок...");
+        try {
+          const stats = await getSimilarTradesStats();
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(stats, { parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Анализ","menu_analysis")]]) });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("❌ Ошибка загрузки данных");
+        }
       });
       bot.action("menu_marketrating", async (ctx) => {
       await ctx.answerCbQuery();

@@ -11,6 +11,7 @@ import { logger } from "../lib/logger.js";
   import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
   import { recordTimeTrade } from "./time-analytics.js";
   import { recordInstrumentTrade } from "./instrument-analytics.js";
+  import { updateTradeResult } from "./similar-trades.js";
 // Position → market regime map (populated at open, consumed at close)
 const positionRegimes = new Map<string, MarketRegime>();
 
@@ -141,6 +142,8 @@ export async function checkPaperPositions(
             const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
             recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
           }
+          // AI Learning Engine v3: update trade features with result
+          updateTradeResult(pos.id, pnlPct, pnl > 0, closeReason).catch(() => {});
 
         const isProfit = pnl > 0;
         const isBreakeven = closeReason === "BE";

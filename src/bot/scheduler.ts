@@ -18,6 +18,9 @@ import cron from "node-cron";
   import { isTimeRestricted } from "./time-analytics.js";
   import { getInstrumentPriority } from "./instrument-analytics.js";
   import { checkShadowPositions, openShadowPosition } from "./shadow-testing.js";
+  import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
+  import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
+  import { runAIResearch } from "./ai-researcher.js";
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
   const subs    = new Map<string, Sub>();
@@ -192,6 +195,30 @@ import cron from "node-cron";
       );
 
       if (res.success) {
+        // AI Learning Engine v3: save trade features for Similar Trades Engine
+        if (res.position) {
+          const now = new Date();
+          const features: TradeFeatures = {
+            symbol: sub.symbol,
+            strategy: strat,
+            direction: sig.score.direction,
+            interval: sub.interval,
+            score: sig.score.total,
+            confidence: sig.confidence.score,
+            rsi: sig.confidence.factors.recentPerformance, // use available data
+            macdHistogram: 0,
+            adxValue: 0,
+            atrPercent: sig.risk.atr ? (sig.risk.atr / sig.risk.entryPrice) * 100 : 1,
+            bbPercent: 50,
+            ema20rel: 1, ema50rel: 1, ema200rel: 1,
+            volumeAbove: 0,
+            isSideways: sig.market.isSideways ? 1 : 0,
+            isHighVol: sig.market.isHighVolatility ? 1 : 0,
+            hour: now.getHours(),
+            dayOfWeek: now.getDay(),
+          };
+          saveTradeFeatures(res.position.id, features).catch(() => {});
+        }
         const dir = sig.score.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
         const stratNames: Record<string, string> = {
           TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
@@ -247,6 +274,29 @@ import cron from "node-cron";
         await snapshotStrategyVersion(changes);
         const report = await generateLearningReport();
         for (const chatId of chatIds) await safeSend(chatId, report);
+
+        // AI Learning Engine v3: Feature Importance + AI Researcher
+        try {
+          const importances = await calcFeatureImportance();
+          if (importances.length) {
+            const weightChanges = await applyFeatureWeightAdjustments(importances);
+            const importanceReport = formatFeatureImportance(importances);
+            const weightNote = weightChanges.length
+              ? `\n\n⚙️ *Веса факторов скорректированы:*\n${weightChanges.join("\n")}`
+              : "\n\n_Веса факторов не изменились_";
+            for (const chatId of chatIds)
+              await safeSend(chatId, importanceReport + weightNote);
+          }
+        } catch (err) {
+          logger.error({ err }, "Feature importance cycle error");
+        }
+
+        try {
+          const researchReport = await runAIResearch(total);
+          for (const chatId of chatIds) await safeSend(chatId, researchReport);
+        } catch (err) {
+          logger.error({ err }, "AI Researcher cycle error");
+        }
       }
     } catch (err) {
       logger.error({ err }, "Learning milestone cycle error");
