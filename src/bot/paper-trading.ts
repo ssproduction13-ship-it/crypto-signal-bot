@@ -8,12 +8,16 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
+// Position → market regime map (populated at open, consumed at close)
+const positionRegimes = new Map<string, string>();
+
 
 export async function openPaperPosition(
   chatId: number, symbol: string, direction: "LONG"|"SHORT",
   entryPrice: number, stopLoss: number, tp1: number, tp2: number,
   riskPercent?: number, atr?: number,
-  strategy: StrategyName = "TREND"
+  strategy: StrategyName = "TREND",
+  marketRegime = "sideways"
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
@@ -34,6 +38,7 @@ export async function openPaperPosition(
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
+  positionRegimes.set(pos.id, marketRegime);
     await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   await recordPositionOpened();
 
