@@ -371,6 +371,23 @@ const MIGRATIONS = [
     max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
     computed_at  TEXT NOT NULL
   )`,
+  // ── Final Decision Engine v1.0 ───────────────────────────────────────────
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS decision_trace JSONB",
+  `CREATE TABLE IF NOT EXISTS decision_log (
+    id            SERIAL PRIMARY KEY,
+    symbol        TEXT NOT NULL,
+    strategy      TEXT NOT NULL DEFAULT 'UNKNOWN',
+    direction     TEXT NOT NULL,
+    regime        TEXT NOT NULL DEFAULT 'unknown',
+    timestamp     TEXT NOT NULL,
+    steps         JSONB NOT NULL DEFAULT '[]',
+    verdict       TEXT NOT NULL DEFAULT 'REJECT',
+    reject_reason TEXT,
+    trade_id      TEXT,
+    score         DOUBLE PRECISION,
+    confidence    DOUBLE PRECISION
+  )`,
 ];
 
 

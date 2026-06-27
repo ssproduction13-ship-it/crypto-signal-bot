@@ -256,14 +256,17 @@ import { Telegraf, Markup } from "telegraf";
         const best = statuses.sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0))[0];
 
         const statusIcons: Record<string, string> = { active: "✅", quarantine: "⚠️", disabled: "🔴" };
-        const healthIcon = health?.overall === "healthy" ? "✅" : health?.overall === "warning" ? "⚠️" : "🔴";
+        const levelIcons: Record<string, string> = { excellent:"🟢", good:"🟢", watch:"🟡", warning:"🟠", critical:"🔴" };
+        const levelLabels: Record<string, string> = { excellent:"Отлично", good:"Хорошо", watch:"Наблюдение", warning:"Внимание", critical:"Критично" };
+        const healthIcon = health ? (levelIcons[health.overall] ?? "⚪") : "⚪";
+        const healthText = health ? (levelLabels[health.overall] ?? health.overall) : "Нет данных";
         const trendIcon  = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "→";
 
         const lines = [
           `🧠 *Обучение AI*`, ``,
           `📊 Сделок накоплено: *${totalTrades}*`,
           `${trendIcon} Тренд: *${health?.trend === "improving" ? "Улучшается" : health?.trend === "degrading" ? "Ухудшается" : "Стабильно"}*`,
-          `${healthIcon} Состояние: *${health?.overall === "healthy" ? "Норма" : health?.overall === "warning" ? "Внимание" : health ? "Критично" : "Нет данных"}*`,
+          `${healthIcon} Состояние: *${healthText}*`,
           ``,
         ];
 

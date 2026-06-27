@@ -18,8 +18,10 @@ export interface PeriodStats {
   sharpeRatio: number;
 }
 
+export type HealthLevel = "excellent" | "good" | "watch" | "warning" | "critical";
+
 export interface HealthStatus {
-  overall: "healthy" | "warning" | "critical";
+  overall: HealthLevel;
   periods: PeriodStats[];
   trend: "improving" | "stable" | "degrading";
   alerts: string[];
@@ -81,34 +83,57 @@ export async function checkLearningHealth(chatId?: number): Promise<HealthStatus
   const periods: PeriodStats[] = PERIODS.map(p => calcPeriodStats(all.slice(0, p.size), p.label));
 
   const alerts: string[] = [];
-  let overall: "healthy" | "warning" | "critical" = "healthy";
 
-  // Check for deterioration across periods
-  const p30 = periods[0]!;
+  const p30  = periods[0]!;
   const p100 = periods[1]!;
   const p300 = periods[2]!;
 
-  if (p30.trades >= 20) {
-    if (p30.profitFactor < 0.9) { alerts.push("🚨 PF за 30 сделок < 0.9"); overall = "critical"; }
-    else if (p30.profitFactor < 1.1) { alerts.push("⚠️ PF за 30 сделок низкий"); if (overall !== "critical") overall = "warning"; }
+  // ── 5-level health assessment ─────────────────────────────────────────────
+  // Scores: each metric contributes points (100 = perfect)
+  let score = 100;
 
-    if (p30.winRate < 0.35) { alerts.push("🚨 WR за 30 сделок < 35%"); overall = "critical"; }
-    else if (p30.winRate < 0.42) { alerts.push("⚠️ WR за 30 сделок снижен"); if (overall !== "critical") overall = "warning"; }
-
-    if (p30.maxDrawdown > 20) { alerts.push("🚨 Просадка за 30 сделок > 20%"); overall = "critical"; }
-    else if (p30.maxDrawdown > 12) { alerts.push("⚠️ Просадка за 30 сделок растёт"); if (overall !== "critical") overall = "warning"; }
+  if (p30.trades >= 10) {
+    // PF component (−40 max penalty)
+    if      (p30.profitFactor < 0.7)  { score -= 40; alerts.push("🔴 PF(30) критически низкий: " + p30.profitFactor.toFixed(2)); }
+    else if (p30.profitFactor < 0.9)  { score -= 30; alerts.push("🟠 PF(30) ниже 0.9: " + p30.profitFactor.toFixed(2)); }
+    else if (p30.profitFactor < 1.1)  { score -= 18; alerts.push("🟡 PF(30) ниже 1.1: " + p30.profitFactor.toFixed(2)); }
+    else if (p30.profitFactor < 1.3)  { score -=  6; }
+    // WR component (−25 max penalty)
+    if      (p30.winRate < 0.30) { score -= 25; alerts.push("🔴 WR(30) < 30%"); }
+    else if (p30.winRate < 0.38) { score -= 15; alerts.push("🟠 WR(30) < 38%"); }
+    else if (p30.winRate < 0.45) { score -=  5; alerts.push("🟡 WR(30) < 45%"); }
+    // DD component (−25 max penalty)
+    if      (p30.maxDrawdown > 25) { score -= 25; alerts.push("🔴 Просадка(30) > 25%"); }
+    else if (p30.maxDrawdown > 18) { score -= 15; alerts.push("🟠 Просадка(30) > 18%"); }
+    else if (p30.maxDrawdown > 12) { score -=  6; alerts.push("🟡 Просадка(30) > 12%"); }
   }
+
+  if (p100.trades >= 30) {
+    // Stability vs p30 (−10 max penalty for degradation)
+    if (p30.profitFactor < p100.profitFactor - 0.2) { score -= 10; alerts.push("📉 Деградация: PF(30) значительно хуже PF(100)"); }
+    else if (p30.profitFactor > p100.profitFactor + 0.15) { score += 5; } // bonus for improvement
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  // Map score to 5-level status
+  let overall: HealthLevel;
+  if      (score >= 85) overall = "excellent";
+  else if (score >= 68) overall = "good";
+  else if (score >= 50) overall = "watch";
+  else if (score >= 32) overall = "warning";
+  else                  overall = "critical";
 
   // Trend: comparing 30 vs 100 vs 300
   let trend: "improving" | "stable" | "degrading" = "stable";
-  if (p30.trades >= 20 && p100.trades >= 50 && p300.trades >= 100) {
-    const pfDrop30vs100 = p100.profitFactor - p30.profitFactor;
-    const pfDrop100vs300 = p300.profitFactor - p100.profitFactor;
-    if (pfDrop30vs100 > 0.1 && pfDrop100vs300 > 0) trend = "degrading";
-    else if (p30.profitFactor > p100.profitFactor && p100.profitFactor > p300.profitFactor) trend = "improving";
+  if (p30.trades >= 15 && p100.trades >= 40) {
+    const pfDelta = p30.profitFactor - p100.profitFactor;
+    if      (pfDelta < -0.15) trend = "degrading";
+    else if (pfDelta >  0.10) trend = "improving";
   }
 
-  if (trend === "degrading" && (overall as string) === "healthy") overall = "warning";
+  if (trend === "degrading" && overall === "good")  overall = "watch";
+  if (trend === "degrading" && overall === "watch")  overall = "warning";
 
   const status: HealthStatus = {
     overall, periods, trend, alerts, lastChecked: new Date().toISOString(),
@@ -123,8 +148,15 @@ export async function checkLearningHealth(chatId?: number): Promise<HealthStatus
   return status;
 }
 
+export function healthIcon(level: HealthLevel): string {
+  return { excellent: "🟢", good: "🟢", watch: "🟡", warning: "🟠", critical: "🔴" }[level] ?? "⚪";
+}
+export function healthLabel(level: HealthLevel): string {
+  return { excellent: "Отлично", good: "Хорошо", watch: "Наблюдение", warning: "Внимание", critical: "Критично" }[level] ?? level;
+}
+
 export function formatHealthReport(h: HealthStatus): string {
-  const icon = h.overall === "healthy" ? "🟢" : h.overall === "warning" ? "🟡" : "🔴";
+  const icon = healthIcon(h.overall);
   const trendIcon = h.trend === "improving" ? "📈" : h.trend === "degrading" ? "📉" : "➡️";
 
   let text = `${icon} *Learning Health Monitor*\n`;

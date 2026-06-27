@@ -12,7 +12,7 @@ import cron from "node-cron";
   import {
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
-    selectBestStrategy, recordLossReason, classifyLossReason,
+    selectBestStrategy, recordLossReason, classifyLossReason, getAllStrategyStatuses,
     type StrategySignalInput,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
@@ -23,6 +23,7 @@ import cron from "node-cron";
   import { runAIResearch } from "./ai-researcher.js";
   import { detectMarketDrift } from "./market-drift.js";
   import { checkLearningHealth } from "./health-monitor.js";
+  import { makeTrace, saveDecisionTrace } from "./decision-trace.js";
   import { runWalkForwardTest } from "./walk-forward.js";
   import { evaluateCooldown } from "./auto-cooldown.js";
   import { generateWeeklyResearch } from "./weekly-research.js";
@@ -110,39 +111,10 @@ import cron from "node-cron";
 
     try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
-
-      if (sig.market.isChaotic) {
-        logger.info({ symbol: sub.symbol, atrPct: sig.market.atrPercent, adx: sig.market.warnings }, "Trade blocked: chaotic market");
-        return;
-      }
-      if (sig.score.direction === "NEUTRAL") {
-        logger.debug({ symbol: sub.symbol, score: sig.score.total }, "Trade blocked: NEUTRAL direction");
-        return;
-      }
-      const minScore = dynamicMinScore(sig.marketRating.index);
-      if (sig.score.total < minScore) {
-        logger.debug({ symbol: sub.symbol, score: sig.score.total, minScore }, "Trade blocked: score below threshold");
-        return;
-      }
-      if (sig.confidence.score < 10) {
-        logger.debug({ symbol: sub.symbol, confidence: sig.confidence.score }, "Trade blocked: low confidence");
-        return;
-      }
-
-      // ── Self Learning Engine v2 gates ──────────────────────────────────────
+      const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
 
-      // Time restriction: skip if historically bad hour/day
-      const now = new Date();
-      const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
-        now.getHours(), (now.getDay() + 6) % 7
-      );
-      if (timeBlocked) {
-        logger.debug({ symbol: sub.symbol, timeReason }, "Trade blocked: bad time slot");
-        return;
-      }
-
-      // Build strategy signal inputs from all available strategies
+      // ── Build strategy selection ───────────────────────────────────────────
       const strategySignals: StrategySignalInput[] = [];
       if (sig.strategies?.length) {
         for (const s of sig.strategies) {
@@ -161,35 +133,108 @@ import cron from "node-cron";
           direction: sig.score.direction as "LONG"|"SHORT",
         });
       }
-
-      // Select best strategy by Trust Score (v2 engine)
       const bestSig = strategySignals.length > 0
         ? await selectBestStrategy(strategySignals, regime)
         : null;
       const strat = bestSig?.strategy ?? sig.bestStrategy?.strategy ?? "TREND";
 
-      // Strategy regime gate: skip if strategy consistently loses in this market regime
-      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime);
-      if (regimeBlocked) {
-        logger.info({ symbol: sub.symbol, strat, regime, regimeReason }, "Trade blocked: strategy unprofitable in regime");
-        return;
-      }
-
-      // Strategy weight gate: skip if strategy is temporarily disabled by adaptation
-      const stratWeights = await loadStrategyWeights();
+      // ── Load strategy status for gate checks ──────────────────────────────
+      const [stratStatuses, stratWeights] = await Promise.all([
+        getAllStrategyStatuses().catch(() => [] as any[]),
+        loadStrategyWeights(),
+      ]);
+      const stratStatus = stratStatuses.find((s: any) => s.strategy === strat);
       const stratWeight = stratWeights[strat] ?? 1;
-      if (stratWeight === 0) {
-        logger.info({ symbol: sub.symbol, strat }, "Trade blocked: strategy disabled by learning engine");
+      const minScore = dynamicMinScore(sig.marketRating.index);
+
+      // ── TRADE QUALITY GATE — 8 sequential checks ──────────────────────────
+      const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
+
+      // 1. Market Chaos
+      if (sig.market.isChaotic) {
+        gate.fail("Рынок: хаос", "Хаотичный рынок", `ATR ${sig.market.atrPercent?.toFixed(1)}%`);
+      } else {
+        gate.pass("Рынок: хаос", "OK");
+      }
+
+      // 2. Signal Direction
+      if (!gate.rejected && sig.score.direction === "NEUTRAL") {
+        gate.fail("Направление", "Нейтральный сигнал", "NEUTRAL");
+      } else if (!gate.rejected) {
+        gate.pass("Направление", sig.score.direction);
+      }
+
+      // 3. Score & Confidence
+      if (!gate.rejected && sig.score.total < minScore) {
+        gate.fail("Score", `Score ниже порога`, sig.score.total, minScore);
+      } else if (!gate.rejected) {
+        gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
+      }
+
+      if (!gate.rejected && sig.confidence.score < 12) {
+        gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
+      } else if (!gate.rejected) {
+        gate.pass("Confidence", `${sig.confidence.score}%`);
+      }
+
+      // 4. Strategy Trust Score
+      const minTrust = stratStatus?.quarantine ? 45 : 20;
+      if (!gate.rejected && stratStatus && stratStatus.trustScore < minTrust) {
+        gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
+      } else {
+        if (!gate.rejected) gate.pass("Trust Score", stratStatus ? `${stratStatus.trustScore}/100` : "нет данных");
+      }
+
+      // 5. Strategy Profit Factor (minimum 0.75 unless too few trades)
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.75) {
+        gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
+      } else {
+        if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
+      }
+
+      // 6. Market Regime compatibility
+      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime);
+      if (!gate.rejected && regimeBlocked) {
+        gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
+      } else if (!gate.rejected) {
+        gate.pass("Режим рынка", `${regime} → ${strat} OK`);
+      }
+
+      // 7. Strategy weight (disabled = 0)
+      if (!gate.rejected && stratWeight === 0) {
+        gate.fail("Вес стратегии", "Стратегия отключена движком адаптации", "0%");
+      } else if (!gate.rejected) {
+        gate.pass("Вес стратегии", `${(stratWeight * 100).toFixed(0)}%`);
+      }
+
+      // 8. Time restriction (historically bad hour/day)
+      const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
+        now.getHours(), (now.getDay() + 6) % 7
+      );
+      if (!gate.rejected && timeBlocked) {
+        gate.fail("Временной слот", timeReason);
+      } else if (!gate.rejected) {
+        gate.pass("Временной слот", `${now.getHours()}h OK`);
+      }
+
+      // ── Save decision trace async (non-blocking) ───────────────────────────
+      saveDecisionTrace({
+        symbol: sub.symbol, strategy: strat,
+        direction: sig.score.direction, regime,
+        timestamp: now.toISOString(),
+        steps: gate.steps,
+        verdict: gate.rejected ? "REJECT" : "OPEN",
+        rejectReason: gate.rejectReason || undefined,
+        score: sig.score.total, confidence: sig.confidence.score,
+      }).catch(() => {});
+
+      if (gate.rejected) {
+        logger.debug({ symbol: sub.symbol, reason: gate.rejectReason, strat }, "Trade Quality Gate: REJECT");
         return;
       }
 
-      // Instrument priority gate: low-priority symbols need higher score
-      const instrPriority = await getInstrumentPriority(sub.symbol);
-      if (instrPriority <= 0.2 && sig.score.total < 70) {
-        logger.debug({ symbol: sub.symbol, instrPriority }, "Trade blocked: low instrument priority, need score 70+");
-        return;
-      }
-      // ── End Learning Engine gates ──────────────────────────────────────────
+      logger.debug({ symbol: sub.symbol, strat, regime, score: sig.score.total }, "Trade Quality Gate: PASS");
+      // ── End Trade Quality Gate ─────────────────────────────────────────────
 
       const settings = await loadSettings(sub.chatId);
       if (!settings.autoPaperTrade) return;
