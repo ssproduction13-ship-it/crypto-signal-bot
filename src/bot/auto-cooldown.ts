@@ -52,12 +52,13 @@ export async function evaluateCooldown(chatId?: number): Promise<CooldownState> 
   const gL = Math.abs(losses.reduce((s, v) => s + v, 0));
   const recentPF = gL > 0 ? gW / gL : gW > 0 ? 99 : 0;
 
-  // Calculate drawdown
-  let peak = 0, eq = 0, recentDrawdown = 0;
+  // Calculate drawdown via equity curve (compound), so DD is always 0–100%
+  // pnl_percent = e.g. +2.5 means +2.5% on that trade
+  let eqPeak = 1.0, eqCur = 1.0, recentDrawdown = 0;
   for (const r of [...pnls].reverse()) {
-    eq += r;
-    if (eq > peak) peak = eq;
-    const dd = peak > 0 ? (peak - eq) / peak * 100 : 0;
+    eqCur *= (1 + r / 100);
+    if (eqCur > eqPeak) eqPeak = eqCur;
+    const dd = eqPeak > 0 ? (eqPeak - eqCur) / eqPeak * 100 : 0;
     if (dd > recentDrawdown) recentDrawdown = dd;
   }
 
