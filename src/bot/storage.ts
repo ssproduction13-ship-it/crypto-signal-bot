@@ -18,6 +18,8 @@ import { pool } from "../lib/db.js";
     strategy: StrategyName;
     breakevenMoved: boolean; trailAtr: number|null;
     llmSentiment?: string; llmRisk?: string; llmConfidence?: number;
+    /** Balance at the moment position was opened — used for equity-based PnL % */
+    equityAtOpen?: number;
   }
   export interface ClosedPaperTrade {
     id: string; symbol: string; direction: "LONG"|"SHORT";
@@ -26,10 +28,18 @@ import { pool } from "../lib/db.js";
     strategy: StrategyName;
     openedAt: string; closedAt: string;
     llmSentiment?: string; llmRisk?: string; llmConfidence?: number;
+    /** Total commission paid (open + close) in $ */
+    commission?: number;
+    /** Slippage cost in $ (always negative impact) */
+    slippage?: number;
+    /** PnL as % of account equity at trade open — the real account impact metric */
+    pnlEquityPct?: number;
   }
   export interface PaperAccount {
     balance: number; initialBalance: number; peakBalance: number;
     positions: PaperPosition[]; closedTrades: ClosedPaperTrade[];
+    totalCommission: number;
+    totalSlippage: number;
   }
   export interface FactorWeights {
     trend: number; volume: number; momentum: number; levels: number; pattern: number;
@@ -82,6 +92,7 @@ import { pool } from "../lib/db.js";
       llmSentiment:(r["llm_sentiment"] as string|null)??undefined,
       llmRisk:(r["llm_risk"] as string|null)??undefined,
       llmConfidence:r["llm_confidence"]!=null?Number(r["llm_confidence"]):undefined,
+      equityAtOpen:r["equity_at_open"]!=null?Number(r["equity_at_open"]):undefined,
     };
   }
   function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
@@ -96,6 +107,9 @@ import { pool } from "../lib/db.js";
       llmSentiment:(r["llm_sentiment"] as string|null)??undefined,
       llmRisk:(r["llm_risk"] as string|null)??undefined,
       llmConfidence:r["llm_confidence"]!=null?Number(r["llm_confidence"]):undefined,
+      commission:r["commission"]!=null?Number(r["commission"]):undefined,
+      slippage:r["slippage"]!=null?Number(r["slippage"]):undefined,
+      pnlEquityPct:r["pnl_equity_pct"]!=null?Number(r["pnl_equity_pct"]):undefined,
     };
   }
 
@@ -162,8 +176,10 @@ import { pool } from "../lib/db.js";
     const balance = acc?Number(acc["balance"]):10000;
     return {
       balance,
-      initialBalance: acc?Number(acc["initial_balance"]):10000,
-      peakBalance:    acc?Number(acc["peak_balance"]):balance,
+      initialBalance:   acc?Number(acc["initial_balance"]):10000,
+      peakBalance:      acc?Number(acc["peak_balance"]):balance,
+      totalCommission:  acc?Number(acc["total_commission"]??0):0,
+      totalSlippage:    acc?Number(acc["total_slippage"]??0):0,
       positions:   p.rows.map(r=>toPos(r as Record<string,unknown>)),
       closedTrades:t.rows.map(r=>toTrade(r as Record<string,unknown>)),
     };
@@ -314,13 +330,22 @@ import { pool } from "../lib/db.js";
       [chatId, balance, initialBalance, peak]
     );
   }
+  export async function addAccountCosts(chatId: number, commission: number, slippage: number): Promise<void> {
+    await pool.query(
+      `UPDATE paper_accounts SET
+         total_commission = COALESCE(total_commission,0) + $1,
+         total_slippage   = COALESCE(total_slippage,0)   + $2
+       WHERE chat_id = $3`,
+      [commission, slippage, chatId]
+    );
+  }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
        pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
-       pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null]
+       pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null]
     );
   }
   export async function deletePosition(chatId: number, posId: string): Promise<void> {
@@ -334,11 +359,12 @@ import { pool } from "../lib/db.js";
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO NOTHING`,
       [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
        t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
-       t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null]
+       t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
+       t.commission??0,t.slippage??0,t.pnlEquityPct??null]
     );
   }
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
