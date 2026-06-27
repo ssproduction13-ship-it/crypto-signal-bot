@@ -30,6 +30,7 @@ import cron from "node-cron";
   import { autoSnapshotAfterLearning } from "./evolution-timeline.js";
   import { calcReadinessIndex } from "./readiness-index.js";
   import { checkNewListings } from "./listing-watcher.js";
+import { checkMTFAlignment } from "./mtf-filter.js";
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
   const subs    = new Map<string, Sub>();
