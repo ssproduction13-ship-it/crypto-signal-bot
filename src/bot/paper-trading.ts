@@ -1,9 +1,9 @@
 import { getPrice } from "./binance.js";
 import {
-  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
+  loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
-import { recordPositionClosed, recordPositionOpened, canOpenTrade } from "./risk-manager.js";
+import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
 import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
