@@ -161,6 +161,28 @@ export async function checkPaperPositions(
         if (pos.direction === "SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
       }
 
+      // ── Early Breakeven: unrealized profit ≥ 2× initial risk ──────────────
+      // Fires while en route to TP1 (before partial close).
+      // Guard: SL not yet at entry prevents re-triggering after BE move.
+      if (!pos.breakevenMoved) {
+        const originalStopDist = Math.abs(pos.entryPrice - pos.stopLoss);
+        const unrealizedGain   = pos.direction === "LONG"
+          ? price - pos.entryPrice
+          : pos.entryPrice - price;
+        const slNotAtEntry = pos.direction === "LONG"
+          ? pos.stopLoss < pos.entryPrice
+          : pos.stopLoss > pos.entryPrice;
+        if (slNotAtEntry && originalStopDist > 0 && unrealizedGain >= 2 * originalStopDist) {
+          pos.stopLoss = pos.entryPrice;
+          msgs.push(
+            `📌 *Стоп → безубыток — ${pos.symbol}*\n` +
+            `${dirLabel} | Прибыль достигла 2× риска\n` +
+            `Стоп перенесён в точку входа: \`${formatPrice(pos.entryPrice)}\`\n` +
+            `_Позиция теперь без риска убытка_`
+          );
+        }
+      }
+
       // ── TP1 Partial Close: 50% at TP1, move SL to breakeven ───────────────
       // Fires only once (breakevenMoved guards re-entry).
       const tp1Hit = !pos.breakevenMoved && (
