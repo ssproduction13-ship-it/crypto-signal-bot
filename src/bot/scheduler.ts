@@ -29,6 +29,7 @@ import cron from "node-cron";
   import { generateWeeklyResearch } from "./weekly-research.js";
   import { autoSnapshotAfterLearning } from "./evolution-timeline.js";
   import { calcReadinessIndex } from "./readiness-index.js";
+  import { checkNewListings } from "./listing-watcher.js";
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
   const subs    = new Map<string, Sub>();
