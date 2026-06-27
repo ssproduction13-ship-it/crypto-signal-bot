@@ -179,12 +179,12 @@ import { checkMTFAlignment } from "./mtf-filter.js";
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }
 
-      // 4. Strategy Trust Score
+      // 4. Strategy Trust Score — skip on cold-start (< 10 trades, no data yet)
       const minTrust = stratStatus?.quarantine ? 45 : 20;
-      if (!gate.rejected && stratStatus && stratStatus.trustScore < minTrust) {
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 10 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
       } else {
-        if (!gate.rejected) gate.pass("Trust Score", stratStatus ? `${stratStatus.trustScore}/100` : "нет данных");
+        if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 10 ? `${stratStatus.trustScore}/100` : "bootstrap (<10 сделок)");
       }
 
       // 5. Strategy Profit Factor (minimum 0.75 unless too few trades)
