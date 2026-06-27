@@ -476,21 +476,46 @@ import cron from "node-cron";
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
 
-    // Learning Health Monitor + Auto Cooldown — every hour
+    // Learning Health Monitor + Auto Cooldown — every hour (single combined message)
     cron.schedule("0 * * * *", async () => {
       try {
         const health = await checkLearningHealth();
-        if (health.overall === "critical" && health.alerts.length) {
-          const msg = `🔴 *Learning Health Critical!*\n\n${health.alerts.join("\n")}\n\nПроверь раздел Анализ → Здоровье обучения`;
-          for (const chatId of chatIds) await safeSend(chatId, msg);
-        }
-        // Auto cooldown check per chat
         for (const chatId of chatIds) {
           const cooldown = await evaluateCooldown(chatId);
-          if (cooldown.level === "severe") {
-            const msg = `🚨 *Auto Cooldown активирован!*\n\nПозиции сокращены до ${Math.round(cooldown.sizeMultiplier * 100)}%\nПричина: ${cooldown.reason}`;
-            await safeSend(chatId, msg);
+          const isCritical = health.overall === "critical" && health.alerts.length > 0;
+          const isSevere   = cooldown.level === "severe";
+          const isModerate = cooldown.level === "moderate";
+
+          if (!isCritical && !isSevere && !isModerate) continue;
+
+          const lines: string[] = [];
+
+          // Header — single icon based on worst condition
+          if (isSevere) {
+            lines.push(`🚨 *Бот снизил активность до ${Math.round(cooldown.sizeMultiplier * 100)}%*`);
+          } else if (isCritical) {
+            lines.push(`🔴 *Слабая статистика последних 30 сделок*`);
+          } else {
+            lines.push(`⚠️ *Умеренное снижение активности до ${Math.round(cooldown.sizeMultiplier * 100)}%*`);
           }
+          lines.push(``);
+
+          // Health details (if critical)
+          if (isCritical) {
+            for (const alert of health.alerts) lines.push(alert);
+            lines.push(``);
+          }
+
+          // Cooldown action (if active)
+          if (isSevere || isModerate) {
+            lines.push(`📉 Причина: ${cooldown.reason}`);
+            lines.push(`📐 PF(30): ${cooldown.recentPF.toFixed(2)} | Просадка: ${cooldown.recentDrawdown.toFixed(1)}%`);
+            lines.push(`🔧 Размер позиции: ${Math.round(cooldown.sizeMultiplier * 100)}% | Мин. Confidence +${cooldown.minConfidenceBoost}%`);
+            lines.push(``);
+            lines.push(`_Ограничения снимутся автоматически когда статистика улучшится._`);
+          }
+
+          await safeSend(chatId, lines.join("\n"));
         }
       } catch (err) { logger.warn({ err }, "Health monitor / cooldown error"); }
     });
