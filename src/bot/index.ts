@@ -38,17 +38,27 @@ import { Telegraf, Markup } from "telegraf";
   import { calcReadinessIndex, formatReadinessReport } from "./readiness-index.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
-    { symbol: "BTCUSDT",  interval: "1h"  }, { symbol: "ETHUSDT",  interval: "1h"  },
-    { symbol: "SOLUSDT",  interval: "1h"  }, { symbol: "BNBUSDT",  interval: "1h"  },
-    { symbol: "XRPUSDT",  interval: "1h"  }, { symbol: "DOGEUSDT", interval: "15m" },
-    { symbol: "ADAUSDT",  interval: "15m" }, { symbol: "AVAXUSDT", interval: "1h"  },
-    { symbol: "LINKUSDT", interval: "15m" }, { symbol: "NEARUSDT", interval: "15m" },
-    { symbol: "SUIUSDT",  interval: "15m" }, { symbol: "APTUSDT",  interval: "15m" },
-    { symbol: "OPUSDT",   interval: "1h"  }, { symbol: "ARBUSDT",  interval: "1h"  },
-    { symbol: "ATOMUSDT", interval: "1h"  }, { symbol: "DOTUSDT",  interval: "1h"  },
-    { symbol: "LTCUSDT",  interval: "1h"  }, { symbol: "TRXUSDT",  interval: "1h"  },
-    { symbol: "PEPEUSDT", interval: "15m" }, { symbol: "WIFUSDT",  interval: "15m" },
-    { symbol: "SHIBUSDT", interval: "15m" },
+    // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
+    { symbol: "BTCUSDT",    interval: "1h"  }, { symbol: "ETHUSDT",    interval: "1h"  },
+    { symbol: "SOLUSDT",    interval: "1h"  }, { symbol: "BNBUSDT",    interval: "1h"  },
+    { symbol: "XRPUSDT",    interval: "1h"  }, { symbol: "DOGEUSDT",   interval: "15m" },
+    { symbol: "ADAUSDT",    interval: "15m" }, { symbol: "AVAXUSDT",   interval: "1h"  },
+    { symbol: "LINKUSDT",   interval: "15m" }, { symbol: "NEARUSDT",   interval: "15m" },
+    { symbol: "SUIUSDT",    interval: "15m" }, { symbol: "APTUSDT",    interval: "15m" },
+    { symbol: "OPUSDT",     interval: "1h"  }, { symbol: "ARBUSDT",    interval: "1h"  },
+    { symbol: "ATOMUSDT",   interval: "1h"  }, { symbol: "DOTUSDT",    interval: "1h"  },
+    { symbol: "LTCUSDT",    interval: "1h"  }, { symbol: "TRXUSDT",    interval: "1h"  },
+    { symbol: "PEPEUSDT",   interval: "15m" }, { symbol: "WIFUSDT",    interval: "15m" },
+    { symbol: "SHIBUSDT",   interval: "15m" },
+    // ── Tier 2: Перспективные пары (добавлены) ────────────────────────────────
+    { symbol: "INJUSDT",    interval: "1h"  }, { symbol: "TONUSDT",    interval: "1h"  },
+    { symbol: "RENDERUSDT", interval: "1h"  }, { symbol: "RUNEUSDT",   interval: "1h"  },
+    { symbol: "HBARUSDT",   interval: "1h"  }, { symbol: "STXUSDT",    interval: "1h"  },
+    { symbol: "MNTUSDT",    interval: "1h"  }, { symbol: "FETUSDT",    interval: "1h"  },
+    { symbol: "TIAUSDT",    interval: "15m" }, { symbol: "WLDUSDT",    interval: "15m" },
+    { symbol: "SEIUSDT",    interval: "15m" }, { symbol: "JUPUSDT",    interval: "15m" },
+    { symbol: "ORDIUSDT",   interval: "15m" }, { symbol: "NOTUSDT",    interval: "15m" },
+    { symbol: "PYTHUSDT",   interval: "15m" }, { symbol: "EIGENUSDT",  interval: "15m" },
   ];
   const ALL_PAIRS = AUTO_PAIRS.map(p => p.symbol);
 
@@ -69,14 +79,21 @@ import { Telegraf, Markup } from "telegraf";
   }
   function pairsMenu(action: string, back = "menu_main") {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("₿ BTC",  `${action}_BTCUSDT`),  Markup.button.callback("Ξ ETH",  `${action}_ETHUSDT`),  Markup.button.callback("◎ SOL",  `${action}_SOLUSDT`)],
-      [Markup.button.callback("🔶 BNB", `${action}_BNBUSDT`),  Markup.button.callback("✕ XRP",  `${action}_XRPUSDT`),  Markup.button.callback("🐶 DOGE",`${action}_DOGEUSDT`)],
-      [Markup.button.callback("🔗 LINK",`${action}_LINKUSDT`), Markup.button.callback("🌊 ADA", `${action}_ADAUSDT`),  Markup.button.callback("🔺 AVAX",`${action}_AVAXUSDT`)],
-      [Markup.button.callback("🟣 NEAR",`${action}_NEARUSDT`), Markup.button.callback("🔵 SUI", `${action}_SUIUSDT`),  Markup.button.callback("🅰 APT", `${action}_APTUSDT`)],
-      [Markup.button.callback("🔴 OP",  `${action}_OPUSDT`),   Markup.button.callback("🔷 ARB", `${action}_ARBUSDT`),  Markup.button.callback("⚛ ATOM",`${action}_ATOMUSDT`)],
-      [Markup.button.callback("⬡ DOT",  `${action}_DOTUSDT`),  Markup.button.callback("🌕 LTC", `${action}_LTCUSDT`),  Markup.button.callback("⚡ TRX", `${action}_TRXUSDT`)],
-      [Markup.button.callback("🐸 PEPE",`${action}_PEPEUSDT`), Markup.button.callback("🐕 WIF", `${action}_WIFUSDT`),  Markup.button.callback("🐕 SHIB",`${action}_SHIBUSDT`)],
-      [Markup.button.callback("◀️ Назад", back)],
+      // Tier 1
+      [Markup.button.callback("₿ BTC",    `${action}_BTCUSDT`),   Markup.button.callback("Ξ ETH",     `${action}_ETHUSDT`),   Markup.button.callback("◎ SOL",    `${action}_SOLUSDT`)],
+      [Markup.button.callback("🔶 BNB",   `${action}_BNBUSDT`),   Markup.button.callback("✕ XRP",     `${action}_XRPUSDT`),   Markup.button.callback("🐶 DOGE",  `${action}_DOGEUSDT`)],
+      [Markup.button.callback("🔗 LINK",  `${action}_LINKUSDT`),  Markup.button.callback("🌊 ADA",    `${action}_ADAUSDT`),   Markup.button.callback("🔺 AVAX",  `${action}_AVAXUSDT`)],
+      [Markup.button.callback("🟣 NEAR",  `${action}_NEARUSDT`),  Markup.button.callback("🔵 SUI",    `${action}_SUIUSDT`),   Markup.button.callback("🅰 APT",   `${action}_APTUSDT`)],
+      [Markup.button.callback("🔴 OP",    `${action}_OPUSDT`),    Markup.button.callback("🔷 ARB",    `${action}_ARBUSDT`),   Markup.button.callback("⚛ ATOM",   `${action}_ATOMUSDT`)],
+      [Markup.button.callback("⬡ DOT",    `${action}_DOTUSDT`),   Markup.button.callback("🌕 LTC",    `${action}_LTCUSDT`),   Markup.button.callback("⚡ TRX",   `${action}_TRXUSDT`)],
+      [Markup.button.callback("🐸 PEPE",  `${action}_PEPEUSDT`),  Markup.button.callback("🐕 WIF",    `${action}_WIFUSDT`),   Markup.button.callback("🐕 SHIB",  `${action}_SHIBUSDT`)],
+      // Tier 2
+      [Markup.button.callback("🔮 INJ",   `${action}_INJUSDT`),   Markup.button.callback("💎 TON",    `${action}_TONUSDT`),   Markup.button.callback("🖥 RNDR",   `${action}_RENDERUSDT`)],
+      [Markup.button.callback("⚗ RUNE",  `${action}_RUNEUSDT`),  Markup.button.callback("🌐 HBAR",   `${action}_HBARUSDT`),  Markup.button.callback("🟠 STX",   `${action}_STXUSDT`)],
+      [Markup.button.callback("🔷 MNT",   `${action}_MNTUSDT`),   Markup.button.callback("🤖 FET",    `${action}_FETUSDT`),   Markup.button.callback("🌌 TIA",   `${action}_TIAUSDT`)],
+      [Markup.button.callback("🌍 WLD",   `${action}_WLDUSDT`),   Markup.button.callback("⚡ SEI",    `${action}_SEIUSDT`),   Markup.button.callback("🪐 JUP",   `${action}_JUPUSDT`)],
+      [Markup.button.callback("🔸 ORDI",  `${action}_ORDIUSDT`),  Markup.button.callback("🔔 NOT",    `${action}_NOTUSDT`),   Markup.button.callback("🔭 PYTH",  `${action}_PYTHUSDT`)],
+      [Markup.button.callback("⚖ EIGEN", `${action}_EIGENUSDT`), Markup.button.callback("◀️ Назад", back)],
     ]);
   }
 
