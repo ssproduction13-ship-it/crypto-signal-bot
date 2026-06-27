@@ -283,7 +283,7 @@ import { Telegraf, Markup } from "telegraf";
         }
 
         if (readiness) {
-          const ri = readiness.score;
+          const ri = readiness.percent;
           const riIcon = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
           lines.push(`${riIcon} Готовность: *${ri}/100*`);
         }
@@ -869,8 +869,8 @@ import { Telegraf, Markup } from "telegraf";
         parts.push(
           `═══ 🧠 СОСТОЯНИЕ ОБУЧЕНИЯ ═══`,
           `Здоровье: ${health?.overall ?? "нет данных"} (${health?.trend ?? "—"})`,
-          `Готовность к продакшну: ${readiness ? readiness.score + "/100" : "нет данных"}`,
-          `Причины не готов: ${readiness?.blockers?.join(", ") || "нет"}`,
+          `Готовность к продакшну: ${readiness ? readiness.percent + "/100" : "нет данных"}`,
+          `Причины не готов: ${readiness?.recommendations?.join(", ") || "нет"}`,
           ``,
         );
 
