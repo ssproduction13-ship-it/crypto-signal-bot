@@ -206,10 +206,31 @@ export interface StrategySignalInput {
   direction: "LONG"|"SHORT";
 }
 
+export interface StrategyRankEntry {
+  strategy: StrategyName;
+  finalScore: number;
+  trustScore: number;
+  weight: number;
+  regimePF: number;
+  rawScore: number;
+}
+
+export interface StrategySelectionResult {
+  selected: StrategySignalInput;
+  isExploration: boolean;
+  finalScore: number;
+  trustScore: number;
+  weight: number;
+  ranking: StrategyRankEntry[];
+}
+
+/** 10% of trades go to non-best strategies for exploration (TZ §2) */
+const EXPLORATION_RATE = 0.10;
+
 export async function selectBestStrategy(
   signals: StrategySignalInput[],
   regime: MarketRegime
-): Promise<StrategySignalInput | null> {
+): Promise<StrategySelectionResult | null> {
   if (!signals.length) return null;
 
   const {rows:statRows} = await pool.query(
@@ -218,31 +239,24 @@ export async function selectBestStrategy(
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,disabled_until,quarantine,trust_score FROM strategy_weights"
   );
-  const now = new Date().toISOString();
-  const disabledSet = new Set(
-    (wRows as Record<string,unknown>[])
-      .filter(r => Boolean(r["disabled"]) && (!r["disabled_until"] || String(r["disabled_until"]) > now))
-      .map(r => r["strategy"] as string)
-  );
 
-  const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number}> = [];
+  const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number;finalScore:number}> = [];
 
   for (const sig of signals) {
-    if (disabledSet.has(sig.strategy)) continue;
-
     const wRow = (wRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
-    const weight = wRow ? Number(wRow["weight"]) : 1;
+    // Learning mode: never fully exclude a strategy — min weight 0.10 (TZ §2 exploration floor)
+    const weight = Math.max(0.10, wRow ? Number(wRow["weight"]) : 1);
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
 
-    // Quarantine: only allow moderate-confidence signals (≥35%) — lower bar in RC/learning phase
+    // Quarantine: only allow moderate-confidence signals (≥35%)
     if (isQuarantine && sig.confidence < 35) continue;
 
     const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
-    const trades = statRow ? Number(statRow["trades"]) : 0;
-    const wins   = statRow ? Number(statRow["wins"])   : 0;
-    const winPnl = statRow ? Number(statRow["win_pnl"]): 0;
-    const lossPnl= statRow ? Number(statRow["loss_pnl"]): 0;
-    const totalPnl=statRow ? Number(statRow["total_pnl"]): 0;
+    const trades  = statRow ? Number(statRow["trades"])   : 0;
+    const wins    = statRow ? Number(statRow["wins"])     : 0;
+    const winPnl  = statRow ? Number(statRow["win_pnl"])  : 0;
+    const lossPnl = statRow ? Number(statRow["loss_pnl"]) : 0;
+    const totalPnl= statRow ? Number(statRow["total_pnl"]): 0;
 
     const trustScore = await calcTrustScore(sig.strategy, trades, wins, winPnl, lossPnl, totalPnl, regime);
 
@@ -260,28 +274,54 @@ export async function selectBestStrategy(
       }
     } catch { regimePF = 1; }
 
-    scored.push({sig, trustScore, regimePF, weight});
+    // Final Score = Signal Score × Trust × Strategy Weight × Regime Score (TZ §1)
+    const finalScore = sig.score
+      * Math.max(0.01, trustScore / 100)
+      * Math.max(0.10, weight)
+      * Math.max(0.10, regimePF);
+
+    scored.push({sig, trustScore, regimePF, weight, finalScore});
   }
 
   if (!scored.length) return null;
 
-  // Sort: trust score primary (≥10 gap), regime PF secondary (≥0.2 gap), score tertiary
-  scored.sort((a, b) => {
-    const trustDiff = b.trustScore - a.trustScore;
-    if (Math.abs(trustDiff) >= 10) return trustDiff;
-    const pfDiff = b.regimePF - a.regimePF;
-    if (Math.abs(pfDiff) >= 0.2) return pfDiff;
-    return b.sig.score - a.sig.score;
-  });
+  // Sort by composite finalScore descending
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+
+  const ranking: StrategyRankEntry[] = scored.map(s => ({
+    strategy: s.sig.strategy,
+    finalScore: s.finalScore,
+    trustScore: s.trustScore,
+    weight: s.weight,
+    regimePF: s.regimePF,
+    rawScore: s.sig.score,
+  }));
 
   logger.debug({
-    candidates: scored.map(s => ({
-      strategy:s.sig.strategy, trustScore:s.trustScore,
-      regimePF:s.regimePF.toFixed(2), score:s.sig.score,
+    candidates: ranking.map(r => ({
+      strategy: r.strategy, finalScore: r.finalScore.toFixed(1),
+      trustScore: r.trustScore, weight: r.weight.toFixed(2),
     }))
-  }, "Strategy selection ranking");
+  }, "Strategy selection ranking (composite finalScore)");
 
-  return scored[0]!.sig;
+  // Exploration Mode (TZ §2): 10% of trades go to non-best strategies
+  let pickedIdx = 0;
+  let isExploration = false;
+  if (scored.length > 1 && Math.random() < EXPLORATION_RATE) {
+    pickedIdx = Math.floor(Math.random() * (scored.length - 1)) + 1;
+    isExploration = true;
+    logger.debug({ explorationPick: scored[pickedIdx]!.sig.strategy }, "Exploration mode: non-best strategy selected");
+  }
+
+  const best = scored[pickedIdx]!;
+  return {
+    selected: best.sig,
+    isExploration,
+    finalScore: best.finalScore,
+    trustScore: best.trustScore,
+    weight: best.weight,
+    ranking,
+  };
 }
 
 // ── Get all strategy statuses ──────────────────────────────────────────────────
@@ -363,6 +403,16 @@ export async function loadStrategyWeights(): Promise<Record<StrategyName,number>
   return weights as Record<StrategyName,number>;
 }
 
+/** PF → target weight mapping from TZ §1 */
+function pfToTargetWeight(pf: number): number {
+  if (pf >= 1.70) return 1.50;
+  if (pf >= 1.40) return 1.20;
+  if (pf >= 1.20) return 0.90;
+  if (pf >= 1.00) return 0.60;
+  if (pf >= 0.80) return 0.30;
+  return 0.10; // exploration floor — never zero in learning mode
+}
+
 export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
   const {rows:statRows} = await pool.query(
     "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
@@ -386,9 +436,11 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
     const statRow=(statRows as Record<string,unknown>[]).find(r => r["strategy"]===strat);
     const trades=statRow ? Number(statRow["trades"]) : 0;
 
-    // ── 1. Minimum sample gate: no weight changes below 30 trades ─────────
-    if (trades < 30) {
-      logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<30)");
+    // ── 1. Gradual learning: start adapting at 20 trades (TZ §3) ───────────
+    // Confidence scale: 20-49 trades=30%, 50-99=70%, 100+=100%
+    const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0;
+    if (confidenceScale === 0) {
+      logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<20)");
       continue;
     }
 
@@ -409,18 +461,18 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
     let disabledUntil: string|null = null;
     let changeReason = "";
 
-    // ── 4. Auto-disable: 100+ trades, PF<0.7, negative return ────────────
+    // ── 4. Learning mode: never fully disable — use exploration floor 0.10 (TZ §5) ──
+    // Strategies with 100+ trades and PF<0.7 get pinned to 0.10 weight (not disabled)
     if (trades >= 100 && pf < 0.7 && isNegativeReturn && !cur.disabled) {
-      newDisabled = true;
-      newQuarantine = false;
-      disabledUntil = new Date(Date.now() + 48*3600000).toISOString();
-      changeReason = `Отключена: ${trades} сд, PF ${pf.toFixed(2)}, убыток`;
-      changes.push(`🚫 ${strat}: *отключена на 48ч* (Shadow Mode) — PF ${pf.toFixed(2)}`);
-      await recordStrategyHistory(strat, cur.weight, 0, pf, pf, trustScore, changeReason);
+      newQuarantine = true;
+      newW = 0.10; // exploration floor — always gets 10% of slots
+      changeReason = `Слабая стратегия (${trades} сд, PF ${pf.toFixed(2)}) → вес минимум 10% (режим обучения)`;
+      changes.push(`⚠️ ${strat}: вес → 10% (PF ${pf.toFixed(2)}, режим обучения — не отключаем)`);
+      await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
       await pool.query(
-        `UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,quarantine=false,
-         cycles_below_threshold=0,trust_score=$5,updated_at=$6 WHERE strategy=$1`,
-        [strat, cur.weight, true, disabledUntil, trustScore, new Date().toISOString()]
+        `UPDATE strategy_weights SET weight=$2,disabled=false,disabled_until=NULL,quarantine=true,
+         cycles_below_threshold=$3,trust_score=$4,updated_at=$5 WHERE strategy=$1`,
+        [strat, newW, cur.cycles + 1, trustScore, new Date().toISOString()]
       );
       continue;
     }
@@ -476,36 +528,19 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
         changes.push(`✅ ${strat}: выходит из карантина (PF ${pf.toFixed(2)})`);
         await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
       } else {
-        // ── 2. Smooth weight changes per PF table ────────────────────────
-        if (pf < 0.8) {
-          const delta = trades >= 100 ? 0.05 : 0.03;
-          newW = Math.max(0.3, cur.weight - delta);
-          newCycles = cur.cycles + 1;
-          if (newW < cur.weight - 0.001) {
-            changeReason = `PF ${pf.toFixed(2)} < 0.8 → вес −${(delta*100).toFixed(0)}%`;
-            changes.push(`📉 ${strat}: вес −${(delta*100).toFixed(0)}% (PF ${pf.toFixed(2)})`);
-            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-          }
-        } else if (pf >= 0.8 && pf < 1.1) {
-          // Stable zone — gentle drift back toward 1.0, no record
-          newW = cur.weight > 1 ? Math.max(1, cur.weight - 0.01) : Math.min(1, cur.weight + 0.01);
-          newCycles = Math.max(0, cur.cycles - 1);
-        } else if (pf >= 1.1 && pf < 1.4) {
-          newW = Math.min(1.5, cur.weight + 0.03);
-          newCycles = 0;
-          if (newW > cur.weight + 0.001) {
-            changeReason = `PF ${pf.toFixed(2)} 1.1–1.4 → вес +3%`;
-            changes.push(`📈 ${strat}: вес +3% (PF ${pf.toFixed(2)})`);
-            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-          }
-        } else if (pf >= 1.4) {
-          newW = Math.min(1.5, cur.weight + 0.05);
-          newCycles = 0;
-          if (newW > cur.weight + 0.001) {
-            changeReason = `PF ${pf.toFixed(2)} > 1.4 → вес +5%`;
-            changes.push(`🔥 ${strat}: вес +5% (PF ${pf.toFixed(2)})`);
-            await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-          }
+        // ── 2. PF-table direct mapping with confidence scaling (TZ §1, §3) ──
+        // Target weight from PF table; blend toward it scaled by sample confidence
+        const targetW = pfToTargetWeight(pf);
+        const blendSpeed = 0.15; // max 15% of gap per cycle
+        const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
+        newW = Math.max(0.10, Math.min(1.50, blendedW));
+        newCycles = pf < 0.8 ? cur.cycles + 1 : Math.max(0, cur.cycles - 1);
+        if (Math.abs(newW - cur.weight) > 0.005) {
+          const dir = newW > cur.weight ? "📈" : "📉";
+          const arrow = newW > cur.weight ? "+" : "";
+          changeReason = `PF ${pf.toFixed(2)} → цель ${(targetW*100).toFixed(0)}%, шаг ${arrow}${((newW-cur.weight)*100).toFixed(1)}% (conf ${(confidenceScale*100).toFixed(0)}%)`;
+          changes.push(`${dir} ${strat}: вес ${(cur.weight*100).toFixed(0)}%→${(newW*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades})`);
+          await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
         }
       }
     }
@@ -700,5 +735,62 @@ export async function getStrategyEvolutionHistory(strategy?: StrategyName): Prom
     lines.push(`${arrow} *${strategy ? "" : strat + " "}*[${date}] Вес: ${prevW}%→${newW}% | PF: ${prevPF}→${newPF} | Trust: ${trust}`);
     lines.push(`  _${reason}_`);
   }
+  return lines.join("\n");
+}
+
+// ── Weekly Strategy Ranking (TZ §4) ──────────────────────────────────────────
+export async function generateWeeklyRanking(): Promise<string> {
+  const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats ORDER BY strategy");
+  const {rows:wRows}    = await pool.query("SELECT strategy,weight,trust_score,quarantine FROM strategy_weights");
+
+  const MEDALS = ["🥇","🥈","🥉","4️⃣"];
+  const stratRows = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
+
+  const entries: Array<{strat:StrategyName;pf:number;wr:number;trades:number;weight:number;trust:number}> = [];
+
+  for (const strat of stratRows) {
+    const s = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === strat);
+    const w = (wRows    as Record<string,unknown>[]).find(r => r["strategy"] === strat);
+    const trades   = s ? Number(s["trades"])   : 0;
+    const wins     = s ? Number(s["wins"])     : 0;
+    const winPnl   = s ? Number(s["win_pnl"])  : 0;
+    const lossPnl  = s ? Number(s["loss_pnl"]) : 0;
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 99 : 0;
+    const wr = trades > 0 ? wins / trades : 0;
+    const weight = w ? Number(w["weight"]) : 1;
+    const trust  = w ? Number(w["trust_score"]) : 0;
+    entries.push({strat, pf, wr, trades, weight, trust});
+  }
+
+  // Sort by weight desc (weights already reflect PF performance)
+  entries.sort((a, b) => b.weight - a.weight);
+
+  const STRAT_NAMES: Record<string,string> = {
+    TREND:"Trend", BREAKOUT:"Breakout",
+    VOLUME_IMPULSE:"Volume Impulse", MEAN_REVERSION:"Mean Reversion",
+  };
+
+  const now = new Date();
+  const weekStr = `${now.getDate().toString().padStart(2,"0")}.${(now.getMonth()+1).toString().padStart(2,"0")}.${now.getFullYear()}`;
+
+  const lines = [
+    `📊 *Еженедельный рейтинг стратегий — ${weekStr}*`,
+    `_Используется при выборе сделок на следующей неделе_`,
+    ``,
+  ];
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    const medal = MEDALS[i] ?? `${i+1}.`;
+    const pfStr = e.pf >= 99 ? "∞" : e.pf === 0 ? "—" : e.pf.toFixed(2);
+    const wrStr = e.trades > 0 ? `${(e.wr*100).toFixed(0)}%` : "—";
+    const sampleTag = e.trades < 20 ? ` ⚠️ мало данных (${e.trades} сд)` : `n=${e.trades}`;
+    lines.push(`${medal} *${STRAT_NAMES[e.strat] ?? e.strat}*`);
+    lines.push(`PF ${pfStr} | WR ${wrStr} | Trust ${e.trust}/100 | ${sampleTag}`);
+    lines.push(`Вес: ${(e.weight*100).toFixed(0)}% — ${pfToTargetWeight(e.pf) === e.weight ? "точно по таблице" : e.weight >= 1.0 ? "приоритет" : e.weight <= 0.2 ? "исследование" : "адаптация"}`);
+    lines.push(``);
+  }
+
+  lines.push(`_Следующий пересчёт — воскресенье 20:00_`);
   return lines.join("\n");
 }
