@@ -22,7 +22,14 @@ export interface ReadinessResult {
   components: ReadinessComponent[];
   recommendations: string[];
   computedAt: string;
+  /** PF, используемый при оценке Readiness (последние PF_WINDOW сделок) */
+  pfValue: number;
+  /** Сколько сделок вошло в расчёт PF */
+  pfWindow: number;
 }
+
+/** Сколько последних сделок берётся для расчёта PF в Readiness */
+const PF_WINDOW = 200;
 
 export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResult> {
   const components: ReadinessComponent[] = [];
@@ -45,11 +52,11 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   else { tradeScore = Math.floor(totalTrades / 100 * 7); tradeNote = `${totalTrades} из нужных 100+`; recommendations.push(`Нужно ещё ${100 - totalTrades} сделок минимум`); }
   components.push({ name: "Количество сделок", score: tradeScore, maxScore: 15, status: tradeScore >= 11 ? "✅" : tradeScore >= 7 ? "🟡" : "❌", note: tradeNote });
 
-  // 2. Profit Factor (max 20)
+  // 2. Profit Factor (max 20) — последние PF_WINDOW сделок
   const { rows: pfRows } = await pool.query(
     chatId != null
-      ? `SELECT pnl_percent FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 200`
-      : `SELECT pnl_percent FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 200`,
+      ? `SELECT pnl_percent FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
+      : `SELECT pnl_percent FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
     chatId != null ? [chatId] : []
   );
   const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl_percent"]));
@@ -60,13 +67,17 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   const pf = gL > 0 ? gW / gL : gW > 0 ? 99 : 0;
   const wr = pnls.length > 0 ? wins.length / pnls.length : 0;
 
+  // Прозрачная подпись: сколько сделок вошло в расчёт
+  const pfWindowActual = pnls.length;
+  const pfNote = `PF ${pf.toFixed(2)} (последние ${pfWindowActual} сделок, нужно ≥1.50)`;
+
   let pfScore = 0;
   if (pf >= 1.5) { pfScore = 20; }
   else if (pf >= 1.3) { pfScore = 16; }
-  else if (pf >= 1.1) { pfScore = 10; recommendations.push("Улучшить Profit Factor до 1.3+"); }
-  else if (pf >= 1.0) { pfScore = 5; recommendations.push("Profit Factor слишком близко к 1.0"); }
-  else { pfScore = 0; recommendations.push("Profit Factor < 1.0 — система убыточна"); }
-  components.push({ name: "Profit Factor", score: pfScore, maxScore: 20, status: pfScore >= 16 ? "✅" : pfScore >= 10 ? "🟡" : "❌", note: `PF = ${pf.toFixed(2)}` });
+  else if (pf >= 1.1) { pfScore = 10; recommendations.push(`Profit Factor последних ${pfWindowActual} сделок: ${pf.toFixed(2)} — нужно ≥1.30`); }
+  else if (pf >= 1.0) { pfScore = 5; recommendations.push(`Profit Factor последних ${pfWindowActual} сделок: ${pf.toFixed(2)} — слишком близко к 1.0`); }
+  else { pfScore = 0; recommendations.push(`Profit Factor последних ${pfWindowActual} сделок: ${pf.toFixed(2)} — система убыточна на этом окне`); }
+  components.push({ name: "Profit Factor", score: pfScore, maxScore: 20, status: pfScore >= 16 ? "✅" : pfScore >= 10 ? "🟡" : "❌", note: pfNote });
 
   // 3. Win Rate (max 10)
   let wrScore = 0;
@@ -143,6 +154,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   const result: ReadinessResult = {
     total, maxTotal, percent, label, components, recommendations,
     computedAt: new Date().toISOString(),
+    pfValue: pf,
+    pfWindow: pfWindowActual,
   };
 
   await pool.query(
@@ -161,6 +174,9 @@ export function formatReadinessReport(r: ReadinessResult): string {
 
   const bar = "█".repeat(Math.floor(r.percent / 5)) + "░".repeat(20 - Math.floor(r.percent / 5));
   text += `\`${bar}\`\n\n`;
+
+  // Прозрачность: показываем какой PF используется
+  text += `ℹ️ _PF в расчёте: последние ${r.pfWindow} сделок = *${r.pfValue.toFixed(2)}* (нужно ≥1.50)_\n\n`;
 
   text += `*Компоненты:*\n`;
   for (const c of r.components) {
