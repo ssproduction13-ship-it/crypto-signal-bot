@@ -19,9 +19,9 @@ const positionRegimes = new Map<string, MarketRegime>();
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
 const COMMISSION_RATE = 0.001;
-/** Slippage range: min 0.02%, max 0.30% */
+/** Slippage range: min 0.02%, max 0.10% (realistic for KuCoin liquid pairs <$20k notional) */
 const SLIPPAGE_MIN_PCT = 0.0002;
-const SLIPPAGE_MAX_PCT = 0.003;
+const SLIPPAGE_MAX_PCT = 0.001;
 
 /** Generate random slippage fraction */
 function randomSlippagePct(): number {
@@ -78,7 +78,7 @@ export async function openPaperPosition(
       `Стоп: ${formatPrice(stopLoss)}\n` +
       `TP1: ${formatPrice(tp1)} | TP2: ${formatPrice(tp2)}\n` +
       `Размер: ${size.toFixed(4)} ед. | Риск: $${maxLoss.toFixed(2)}\n` +
-      `Комиссия открытия: -$${openCommission.toFixed(3)}`
+      `Комиссия открытия: -$${openCommission.toFixed(2)}`
   };
 }
 
@@ -201,18 +201,24 @@ export async function checkPaperPositions(
         };
         const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
         const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+
+        // P&L уже включает комиссию закрытия и слиппаж (через скорректированную цену).
+        // Показываем разбивку как справочную информацию (не дополнительное списание).
+        const costsBreakdown = `комиссия -$${closeCommission.toFixed(2)} | слипп -$${slippageCost.toFixed(2)}`;
+
         const closeMsg = isBreakeven
           ? `*${header}*\n` +
             `${dirLabel} | ${stratLabel}\n` +
             `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
             `P&L: *≈$0* (стоп был в точке входа)\n` +
-            `💼 Депозит: ${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}% | Комиссия: -$${closeCommission.toFixed(3)}\n` +
+            `💸 В P&L учтено: ${costsBreakdown}\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`
           : `*${header}*\n` +
             `${dirLabel} | ${closeReason}${pos.breakevenMoved ? " 📌 BE" : ""} | ${stratLabel}\n` +
             `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
-            `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (цена: ${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
-            `💼 Депозит: *${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}%* | Комиссия+слипп: -$${(closeCommission + slippageCost).toFixed(3)}\n` +
+            `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
+            `💸 В P&L учтено: ${costsBreakdown}\n` +
+            `💼 Депозит: *${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}%*\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`;
         msgs.push(closeMsg);
 
