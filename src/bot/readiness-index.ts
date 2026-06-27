@@ -26,6 +26,10 @@ export interface ReadinessResult {
   pfValue: number;
   /** Сколько сделок вошло в расчёт PF */
   pfWindow: number;
+  /** Суммарная прибыль по выигранным сделкам (в $) */
+  grossProfit: number;
+  /** Суммарный убыток по проигранным сделкам (в $, положительное число) */
+  grossLoss: number;
 }
 
 /** Сколько последних сделок берётся для расчёта PF в Readiness */
@@ -55,11 +59,11 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   // 2. Profit Factor (max 20) — последние PF_WINDOW сделок
   const { rows: pfRows } = await pool.query(
     chatId != null
-      ? `SELECT pnl_percent FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
-      : `SELECT pnl_percent FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
+      ? `SELECT pnl FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
+      : `SELECT pnl FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
     chatId != null ? [chatId] : []
   );
-  const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl_percent"]));
+  const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl"]));
   const wins = pnls.filter(v => v > 0);
   const losses = pnls.filter(v => v <= 0);
   const gW = wins.reduce((s, v) => s + v, 0);
@@ -69,7 +73,7 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
 
   // Прозрачная подпись: сколько сделок вошло в расчёт
   const pfWindowActual = pnls.length;
-  const pfNote = `PF ${pf.toFixed(2)} (последние ${pfWindowActual} сделок, нужно ≥1.50)`;
+  const pfNote = `PF ${pf.toFixed(2)} [Gross+ ${gW.toFixed(2)} / Gross- ${gL.toFixed(2)}, ${pfWindowActual} сделок]`;
 
   let pfScore = 0;
   if (pf >= 1.5) { pfScore = 20; }
@@ -156,6 +160,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
     computedAt: new Date().toISOString(),
     pfValue: pf,
     pfWindow: pfWindowActual,
+    grossProfit: gW,
+    grossLoss: gL,
   };
 
   await pool.query(
@@ -175,8 +181,12 @@ export function formatReadinessReport(r: ReadinessResult): string {
   const bar = "█".repeat(Math.floor(r.percent / 5)) + "░".repeat(20 - Math.floor(r.percent / 5));
   text += `\`${bar}\`\n\n`;
 
-  // Прозрачность: показываем какой PF используется
-  text += `ℹ️ _PF в расчёте: последние ${r.pfWindow} сделок = *${r.pfValue.toFixed(2)}* (нужно ≥1.50)_\n\n`;
+  // Debug: PF transparency block
+  text += `📐 *Диагностика PF* (последние ${r.pfWindow} сделок, в $):\n`;
+  text += `  Gross Profit: *+${r.grossProfit.toFixed(2)}*\n`;
+  text += `  Gross Loss:    *-${r.grossLoss.toFixed(2)}*\n`;
+  text += `  PF = *${r.pfValue.toFixed(3)}* (нужно ≥1.500)\n`;
+  text += `  Сделок в расчёте: ${r.pfWindow}\n\n`;
 
   text += `*Компоненты:*\n`;
   for (const c of r.components) {
