@@ -13,7 +13,8 @@ import cron from "node-cron";
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
     selectBestStrategy, recordLossReason, classifyLossReason, getAllStrategyStatuses,
-    type StrategySignalInput,
+    generateWeeklyRanking,
+    type StrategySignalInput, type StrategySelectionResult,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
   import { getInstrumentPriority } from "./instrument-analytics.js";
@@ -136,10 +137,15 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
           direction: sig.score.direction as "LONG"|"SHORT",
         });
       }
-      const bestSig = strategySignals.length > 0
+      const selectionResult: StrategySelectionResult | null = strategySignals.length > 0
         ? await selectBestStrategy(strategySignals, regime)
         : null;
+      const bestSig = selectionResult?.selected ?? null;
       const strat = bestSig?.strategy ?? sig.bestStrategy?.strategy ?? "TREND";
+      const stratTrust  = selectionResult?.trustScore ?? 0;
+      const stratFScore = selectionResult?.finalScore ?? 0;
+      const stratRanking = selectionResult?.ranking ?? [];
+      const isExploration = selectionResult?.isExploration ?? false;
 
       // ── Load strategy status for gate checks ──────────────────────────────
       const [stratStatuses, stratWeights] = await Promise.all([
@@ -234,11 +240,25 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       }
 
       // ── Save decision trace async (non-blocking) ───────────────────────────
+      // TZ §6: Enhanced transparency — include trust, weight, exploration flag, strategy ranking
+      const rankingNote = stratRanking.length > 1
+        ? stratRanking.slice(1).map(r =>
+            `${r.strategy}: score=${r.finalScore.toFixed(1)} trust=${r.trustScore} w=${(r.weight*100).toFixed(0)}%`
+          ).join(" | ")
+        : undefined;
       saveDecisionTrace({
         symbol: sub.symbol, strategy: strat,
         direction: sig.score.direction, regime,
         timestamp: now.toISOString(),
-        steps: gate.steps,
+        steps: [
+          ...gate.steps,
+          ...(stratRanking.length > 1 ? [{
+            check: "Выбор стратегии",
+            result: "PASS" as const,
+            value: `${strat} (finalScore=${stratFScore.toFixed(1)}, trust=${stratTrust}, ${isExploration?"exploration":"best"})`,
+            note: rankingNote,
+          }] : []),
+        ],
         verdict: gate.rejected ? "REJECT" : "OPEN",
         rejectReason: gate.rejectReason || undefined,
         score: sig.score.total, confidence: sig.confidence.score,
@@ -338,16 +358,26 @@ _${corrRisk.reason}_`);
           ).catch(() => {})
         ).catch(() => {});
 
+        // Build strategy ranking lines for transparency (TZ §6)
+        const rankLines = stratRanking.length > 1
+          ? stratRanking.map((r, i) => {
+              const medal = i === 0 ? (isExploration ? "🎲" : "👑") : ["2️⃣","3️⃣","4️⃣"][i-1] ?? `${i+1}.`;
+              const chosenMark = r.strategy === strat ? " ← выбрана" : "";
+              return `${medal} ${r.strategy}: score=${r.finalScore.toFixed(1)} | trust=${r.trustScore} | w=${(r.weight*100).toFixed(0)}%${chosenMark}`;
+            }).join("\n")
+          : null;
+
         await safeSend(sub.chatId,
-          `🤖 *Новая позиция*\n\n` +
+          `🤖 *Новая позиция${isExploration ? " 🎲 [Exploration]" : ""}*\n\n` +
           `${dir} *${sub.symbol}*\n` +
-          `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}%)\n` +
-          `Режим: ${regimeLabels[regime] ?? regime}\n` +
+          `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratTrust}/100)\n` +
+          `Режим: ${regimeLabels[regime] ?? regime} | FinalScore: ${stratFScore.toFixed(1)}\n` +
           `Score: ${sig.score.total}/100 | Min: ${minScore} | Conf: ${sig.confidence.score}%\n` +
           `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
           `Вход: \`${sig.risk.entryPrice.toPrecision(6)}\`\n` +
           `Стоп: \`${sig.risk.stopLoss.toPrecision(6)}\`\n` +
-          `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\``
+          `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\`` +
+          (rankLines ? `\n\n📊 *Рейтинг стратегий:*\n${rankLines}` : "")
         );
       }
     } catch (err) {
@@ -570,6 +600,14 @@ _${corrRisk.reason}_`);
         await autoSnapshotAfterLearning();
         await calcReadinessIndex().catch(() => {});
       } catch (err) { logger.warn({ err }, "Walk-forward / snapshot error"); }
+    });
+
+    // Weekly strategy ranking — every Sunday 20:00 (TZ §4)
+    cron.schedule("0 20 * * 0", async () => {
+      try {
+        const ranking = await generateWeeklyRanking();
+        for (const chatId of chatIds) await safeSend(chatId, ranking);
+      } catch (err) { logger.warn({ err }, "Weekly ranking error"); }
     });
 
     // AI Weekly Research — every 7 days at Monday 09:00
