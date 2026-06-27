@@ -1,6 +1,6 @@
 import { getPrice } from "./binance.js";
 import {
-  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId,
+  loadPaperAccount, savePaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened, canOpenTrade } from "./risk-manager.js";
@@ -8,13 +8,25 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
-  import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
-  import { recordTimeTrade } from "./time-analytics.js";
-  import { recordInstrumentTrade } from "./instrument-analytics.js";
-  import { updateTradeResult } from "./similar-trades.js";
+import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
+import { recordTimeTrade } from "./time-analytics.js";
+import { recordInstrumentTrade } from "./instrument-analytics.js";
+import { updateTradeResult } from "./similar-trades.js";
+
 // Position → market regime map (populated at open, consumed at close)
 const positionRegimes = new Map<string, MarketRegime>();
 
+// ── Realistic execution constants ──────────────────────────────────────────
+/** Commission per side (0.1% — KuCoin taker fee) */
+const COMMISSION_RATE = 0.001;
+/** Slippage range: min 0.02%, max 0.30% */
+const SLIPPAGE_MIN_PCT = 0.0002;
+const SLIPPAGE_MAX_PCT = 0.003;
+
+/** Generate random slippage fraction */
+function randomSlippagePct(): number {
+  return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
+}
 
 export async function openPaperPosition(
   chatId: number, symbol: string, direction: "LONG"|"SHORT",
@@ -33,17 +45,22 @@ export async function openPaperPosition(
 
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
-  // Learning mode: no position count limit — bot trades freely to collect data
+
+  // ── Realistic: deduct open commission from balance ─────────────────────
+  const openCommission = entryPrice * size * COMMISSION_RATE;
+  account.balance -= openCommission;
+  addAccountCosts(chatId, openCommission, 0).catch(() => {});
 
   const pos: PaperPosition = {
     id:genId(), symbol, direction, entryPrice, size,
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
+    equityAtOpen: account.balance, // record equity AFTER open commission
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
   positionRegimes.set(pos.id, marketRegime);
-    await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
+  await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   await recordPositionOpened();
 
   const stratNames: Record<string, string> = {
@@ -60,7 +77,8 @@ export async function openPaperPosition(
       `Вход: ${formatPrice(entryPrice)}\n` +
       `Стоп: ${formatPrice(stopLoss)}\n` +
       `TP1: ${formatPrice(tp1)} | TP2: ${formatPrice(tp2)}\n` +
-      `Размер: ${size.toFixed(4)} ед. | Риск: $${maxLoss.toFixed(2)}`
+      `Размер: ${size.toFixed(4)} ед. | Риск: $${maxLoss.toFixed(2)}\n` +
+      `Комиссия открытия: -$${openCommission.toFixed(3)}`
   };
 }
 
@@ -84,7 +102,6 @@ export async function checkPaperPositions(
         if (gain >= r1) {
           pos.stopLoss = pos.entryPrice;
           pos.breakevenMoved = true;
-          // BE move is silent — info appears in the final close message
         }
       }
 
@@ -110,40 +127,64 @@ export async function checkPaperPositions(
       }
 
       if (closeReason) {
-        const pnl = pos.direction==="LONG"
-          ? (closePrice-pos.entryPrice)*pos.size
-          : (pos.entryPrice-closePrice)*pos.size;
+        // ── Realistic execution: apply slippage to close price ─────────────
+        const slipPct = randomSlippagePct();
+        // Slippage always worsens the exit
+        const realisticClosePrice = pos.direction === "LONG"
+          ? closePrice * (1 - slipPct)   // LONG exit: price slips down
+          : closePrice * (1 + slipPct);  // SHORT exit: price slips up
+        const slippageCost = Math.abs(closePrice - realisticClosePrice) * pos.size;
+
+        // Commission on close
+        const closeCommission = realisticClosePrice * pos.size * COMMISSION_RATE;
+
+        // Raw PnL based on realistic (slippage-adjusted) close price
+        const rawPnl = pos.direction==="LONG"
+          ? (realisticClosePrice - pos.entryPrice) * pos.size
+          : (pos.entryPrice - realisticClosePrice) * pos.size;
+
+        // Net PnL after close commission (open commission already deducted at open)
+        const pnl = rawPnl - closeCommission;
+
         const pnlPct = pos.direction==="LONG"
-          ? ((closePrice-pos.entryPrice)/pos.entryPrice)*100
-          : ((pos.entryPrice-closePrice)/pos.entryPrice)*100;
+          ? ((realisticClosePrice - pos.entryPrice) / pos.entryPrice) * 100
+          : ((pos.entryPrice - realisticClosePrice) / pos.entryPrice) * 100;
+
+        // PnL as % of account equity at trade open (real account impact)
+        const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
+        const pnlEquityPct = equityAtOpen > 0 ? (pnl / equityAtOpen) * 100 : 0;
 
         const trade: ClosedPaperTrade = {
           id:genId(), symbol:pos.symbol, direction:pos.direction,
-          entryPrice:pos.entryPrice, closePrice, size:pos.size,
+          entryPrice:pos.entryPrice, closePrice:realisticClosePrice, size:pos.size,
           pnl, pnlPercent:pnlPct, outcome:closeReason,
           strategy: pos.strategy ?? "TREND",
           openedAt:pos.openedAt, closedAt:new Date().toISOString(),
+          commission: closeCommission,
+          slippage: slippageCost,
+          pnlEquityPct,
         };
         account.balance += pnl;
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
 
-        // Record strategy stat
-        recordStrategyTrade(pos.strategy ?? "TREND", pnlPct, pnl > 0).catch(() => {});
+        // Track realistic costs
+        addAccountCosts(chatId, closeCommission, slippageCost).catch(() => {});
 
-          // Self Learning Engine v2: record analytics
-          const regime = positionRegimes.get(pos.id) ?? "sideways";
-          positionRegimes.delete(pos.id);
-          recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlPct, pnl > 0).catch(() => {});
-          recordTimeTrade(pos.openedAt, pnlPct, pnl > 0).catch(() => {});
-          recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlPct, pnl > 0).catch(() => {});
-          // Record loss reason for SL/BE losses
-          if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
-            const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
-            recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
-          }
-          // AI Learning Engine v3: update trade features with result
-          updateTradeResult(pos.id, pnlPct, pnl > 0, closeReason).catch(() => {});
+        // Record strategy stat
+        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
+
+        // Self Learning Engine v2: record analytics
+        const regime = positionRegimes.get(pos.id) ?? "sideways";
+        positionRegimes.delete(pos.id);
+        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
+        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+        if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
+          const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
+          recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
+        }
+        updateTradeResult(pos.id, pnlEquityPct, pnl > 0, closeReason).catch(() => {});
 
         const isProfit = pnl > 0;
         const isBreakeven = closeReason === "BE";
@@ -163,27 +204,26 @@ export async function checkPaperPositions(
         const closeMsg = isBreakeven
           ? `*${header}*\n` +
             `${dirLabel} | ${stratLabel}\n` +
-            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(closePrice)}\`\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
             `P&L: *≈$0* (стоп был в точке входа)\n` +
+            `💼 Депозит: ${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}% | Комиссия: -$${closeCommission.toFixed(3)}\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`
           : `*${header}*\n` +
             `${dirLabel} | ${closeReason}${pos.breakevenMoved ? " 📌 BE" : ""} | ${stratLabel}\n` +
-            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(closePrice)}\`\n` +
-            `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
+            `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (цена: ${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
+            `💼 Депозит: *${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}%* | Комиссия+слипп: -$${(closeCommission + slippageCost).toFixed(3)}\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`;
         msgs.push(closeMsg);
 
         const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0);
         if (riskAlert) msgs.push(riskAlert);
 
-        // Notifications: peak, drawdown, milestone
         if (sendNotification) {
-          const peak = Math.max(account.balance, account.peakBalance ?? account.balance);
           await checkNewPeak(chatId, account.balance, account.peakBalance ?? account.balance, sendNotification);
-          await checkDrawdown(chatId, account.balance, peak, sendNotification);
+          await checkDrawdown(chatId, account.balance, Math.max(account.balance, account.peakBalance ?? account.balance), sendNotification);
           await checkMilestone(chatId, account.balance, account.initialBalance, sendNotification);
         }
-        // Update peak
         if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
       } else {
         remaining.push(pos);
@@ -194,13 +234,12 @@ export async function checkPaperPositions(
     }
   }
 
-  // Atomic: remove closed positions individually, update modified ones (no race condition)
-    const remainingIds = new Set(remaining.map(p => p.id));
-    for (const p of account.positions) {
-      if (!remainingIds.has(p.id)) await deletePosition(chatId, p.id);
-      else await updatePosition(chatId, p);
-    }
-    account.positions = remaining;
+  const remainingIds = new Set(remaining.map(p => p.id));
+  for (const p of account.positions) {
+    if (!remainingIds.has(p.id)) await deletePosition(chatId, p.id);
+    else await updatePosition(chatId, p);
+  }
+  account.positions = remaining;
   await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   return msgs;
 }
@@ -216,6 +255,8 @@ export async function getPaperStats(chatId: number): Promise<string> {
   const gL      = Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
   const pf      = gL>0 ? gW/gL : gW>0?999:0;
   const ret     = ((account.balance-account.initialBalance)/account.initialBalance)*100;
+  const totalComm = account.totalCommission ?? 0;
+  const totalSlip = account.totalSlippage ?? 0;
 
   const posLines = account.positions.length===0
     ? ["  нет открытых позиций"]
@@ -232,6 +273,8 @@ export async function getPaperStats(chatId: number): Promise<string> {
     `📊 Сделок: ${trades.length} | WR: ${trades.length?(wins.length/trades.length*100).toFixed(1):0}%`,
     `Win avg: +${avgW.toFixed(2)}% | Loss avg: -${avgL.toFixed(2)}%`,
     `Profit Factor: ${pf===999?"∞":pf.toFixed(2)}`, "",
+    `💸 Комиссии: -$${totalComm.toFixed(2)} | Проскальзывание: -$${totalSlip.toFixed(2)}`,
+    `Потери на издержках: -$${(totalComm + totalSlip).toFixed(2)} (${account.initialBalance > 0 ? ((totalComm + totalSlip) / account.initialBalance * 100).toFixed(2) : "0"}% депозита)`, "",
     `📂 Открытых позиций (${account.positions.length}/10):`,
     ...posLines,
   ].join("\n");
