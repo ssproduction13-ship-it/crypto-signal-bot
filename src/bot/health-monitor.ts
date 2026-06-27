@@ -73,8 +73,8 @@ function calcPeriodStats(pnls: number[], label: string): PeriodStats {
 
 export async function checkLearningHealth(chatId?: number): Promise<HealthStatus> {
   const query = chatId != null
-    ? `SELECT pnl_percent FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 300`
-    : `SELECT pnl_percent FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 300`;
+    ? `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl_percent FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 300`
+    : `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl_percent FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT 300`;
   const params = chatId != null ? [chatId] : [];
 
   const { rows } = await pool.query(query, params);
