@@ -69,30 +69,9 @@ import { pool } from "../lib/db.js";
       );
     }
 
-    // ── Correlation groups — символы внутри одной группы сильно коррелируют друг с другом
-    // Лимит: не более MAX_SAME_DIR_IN_GROUP позиций одного направления в одной группе
-    const CORRELATION_GROUPS: Record<string, string[]> = {
-      btc:  ["BTCUSDT", "BTCBUSD"],
-      eth:  ["ETHUSDT", "ETHBUSD", "ETHBTC"],
-      alts: [
-        "BNBUSDT","SOLUSDT","ADAUSDT","XRPUSDT","DOTUSDT","AVAXUSDT","ATOMUSDT",
-        "LINKUSDT","LTCUSDT","OPUSDT","ARBUSDT","DOGEUSDT","MATICUSDT","NEARUSDT",
-        "PEPEUSDT","APTUSDT","SUIUSDT","TRXUSDT","SHIBUSDT","TONUSDT","UNIUSDT",
-      ],
-    };
-    const MAX_SAME_DIR_IN_GROUP = 3;
-
-    function getCorrelationGroup(symbol: string): string | null {
-      const s = symbol.toUpperCase();
-      for (const [group, symbols] of Object.entries(CORRELATION_GROUPS)) {
-        if (symbols.includes(s)) return group;
-      }
-      return null;
-    }
-
-    // Learning mode: only structural limits (max positions, no duplicate symbols, correlation cap)
-    // P&L loss limits are disabled — bot collects data freely for Self Learning Engine
-    // openPositionsCount is the ACTUAL count from loaded account (source of truth), not the stale risk_state counter
+    // Learning mode — все лимиты по количеству позиций сняты.
+    // Бот открывает столько сделок, сколько считает нужным, чтобы собрать максимум данных.
+    // Единственная защита: нельзя открыть две позиции по одному символу одновременно.
     export async function canOpenTrade(
       symbol: string,
       openSymbols: string[],
@@ -100,28 +79,7 @@ import { pool } from "../lib/db.js";
       direction?: "LONG" | "SHORT",
       openPositions?: Array<{ symbol: string; direction: string }>,
     ): Promise<{ allowed: boolean; reason: string }> {
-      // Use the actual passed count; fall back to risk_state only if not provided
-      const count = openPositionsCount !== undefined ? openPositionsCount : openSymbols.length;
-      if (count >= 10)                   return { allowed: false, reason: "Лимит: 10 открытых позиций" };
       if (openSymbols.includes(symbol))  return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
-
-      // ── Correlation guard: не более MAX_SAME_DIR_IN_GROUP одинаковых направлений в группе
-      if (direction && openPositions && openPositions.length > 0) {
-        const myGroup = getCorrelationGroup(symbol);
-        if (myGroup && myGroup !== "btc" && myGroup !== "eth") {
-          // Для BTC и ETH каждый торгуется отдельно — группа из одного символа, проверка не нужна
-          const sameGroupSameDir = openPositions.filter(
-            p => getCorrelationGroup(p.symbol) === myGroup && p.direction === direction
-          ).length;
-          if (sameGroupSameDir >= MAX_SAME_DIR_IN_GROUP) {
-            return {
-              allowed: false,
-              reason: `Корреляция: уже ${sameGroupSameDir} позиций ${direction} в группе altcoins (лимит ${MAX_SAME_DIR_IN_GROUP})`,
-            };
-          }
-        }
-      }
-
       return { allowed: true, reason: "" };
     }
 
@@ -164,10 +122,10 @@ import { pool } from "../lib/db.js";
     export async function getRiskStatus(): Promise<string> {
       const s = await loadRiskState();
       return [
-        `📚 *Режим обучения — лимиты убытков отключены*`, "",
+        `📚 *Режим обучения — все лимиты позиций сняты*`, "",
         `📅 Дневной P&L: ${s.dailyPnlPct >= 0 ? "+" : ""}${s.dailyPnlPct.toFixed(2)}% (только стат.)`,
         `📆 Недельный P&L: ${s.weeklyPnlPct >= 0 ? "+" : ""}${s.weeklyPnlPct.toFixed(2)}% (только стат.)`,
         `📊 Убытков подряд: ${s.consecutiveLosses} (только стат.)`,
-        `📂 Открытых позиций: ${s.openPositions}/10 — единственный лимит`,
+        `📂 Открытых позиций: ${s.openPositions} (без лимита)`,
       ].join("\n");
     }
