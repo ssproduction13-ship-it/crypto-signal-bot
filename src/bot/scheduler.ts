@@ -471,7 +471,13 @@ _${corrRisk.reason}_`);
     cron.schedule("*/15 * * * *", async () => {
       if (!subs.size) return;
       logger.debug({ count: subs.size }, "Silent fallback scan");
-      for (const sub of subs.values()) void analyzeAndTrade(sub);
+      // Stagger: 250ms delay per pair to avoid KuCoin API rate limit burst
+      let _stagger = 0;
+      for (const sub of subs.values()) {
+        const _s = sub;
+        setTimeout(() => { void analyzeAndTrade(_s); }, _stagger);
+        _stagger += 250;
+      }
     });
 
     // A/B evaluation + degradation check every 6 hours
