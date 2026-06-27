@@ -217,6 +217,19 @@ import cron from "node-cron";
         gate.pass("Временной слот", `${now.getHours()}h OK`);
       }
 
+
+      // 9. MTF Alignment — block trades against 4H trend
+      if (!gate.rejected) {
+        const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch(() => ({ allowed: true, trend4h: 'NEUTRAL' as const, reason: 'MTF ошибка — пропуск', ema20_4h: null, ema50_4h: null }));
+        if (!mtf.allowed) {
+          gate.fail('MTF фильтр (4H)', mtf.reason, `4H: ${mtf.trend4h}`);
+        } else {
+          gate.pass('MTF фильтр (4H)', `4H ${mtf.trend4h} → ${sig.score.direction} OK`);
+        }
+      } else {
+        gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
+      }
+
       // ── Save decision trace async (non-blocking) ───────────────────────────
       saveDecisionTrace({
         symbol: sub.symbol, strategy: strat,
@@ -251,10 +264,30 @@ import cron from "node-cron";
         return;
       }
 
+
+      // ── Correlation Guard ──────────────────────────────────────────────────
+      const corrRisk = await checkCorrelationRisk(
+        sub.chatId, sub.symbol,
+        sig.score.direction as 'LONG'|'SHORT',
+        settings.riskPercent
+      ).catch(() => ({ allowed: true, sizeMultiplier: 1.0, reason: '', portfolioRisk: 0, correlatedRisk: 0, maxAllowedRisk: 5, message: '' }));
+
+      if (!corrRisk.allowed) {
+        logger.debug({ symbol: sub.symbol, reason: corrRisk.reason }, 'Correlation Guard: REJECT');
+        await safeSend(sub.chatId, `🚫 *Correlation Guard*
+${corrRisk.message}
+_${corrRisk.reason}_`);
+        return;
+      }
+      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier;
+      if (corrRisk.sizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, sizeMultiplier: corrRisk.sizeMultiplier }, 'Correlation Guard: size reduced');
+      }
+
       const res = await openPaperPosition(
         sub.chatId, sub.symbol, sig.score.direction,
         sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-        settings.riskPercent, sig.risk.atr,
+        effectiveRiskPct, sig.risk.atr,
         strat, regime
       );
 
