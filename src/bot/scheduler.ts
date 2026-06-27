@@ -180,12 +180,12 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }
 
-      // 4. Strategy Trust Score — skip on cold-start (< 10 trades, no data yet)
+      // 4. Strategy Trust Score — skip until 20 trades (matches PF gate threshold)
       const minTrust = stratStatus?.quarantine ? 45 : 20;
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 10 && stratStatus.trustScore < minTrust) {
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
       } else {
-        if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 10 ? `${stratStatus.trustScore}/100` : "bootstrap (<10 сделок)");
+        if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
       // 5. Strategy Profit Factor (minimum 0.75 unless too few trades)
