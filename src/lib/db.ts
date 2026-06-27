@@ -176,6 +176,20 @@ CREATE TABLE IF NOT EXISTS notifications_log (
     created_at TEXT NOT NULL, trade_count_at_report INTEGER NOT NULL,
     summary TEXT NOT NULL, report_json JSONB NOT NULL DEFAULT '{}'
   );
+  CREATE TABLE IF NOT EXISTS decision_log (
+    id            SERIAL PRIMARY KEY,
+    symbol        TEXT NOT NULL,
+    strategy      TEXT,
+    direction     TEXT,
+    regime        TEXT,
+    timestamp     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    steps         JSONB,
+    verdict       TEXT NOT NULL,
+    reject_reason TEXT,
+    trade_id      TEXT,
+    score         NUMERIC,
+    confidence    NUMERIC
+  );
 `;
 
 const MIGRATIONS = [
