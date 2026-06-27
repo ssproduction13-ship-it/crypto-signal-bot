@@ -59,8 +59,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   // 2. Profit Factor (max 20) — последние PF_WINDOW сделок
   const { rows: pfRows } = await pool.query(
     chatId != null
-      ? `SELECT pnl FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
-      : `SELECT pnl FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
+      ? `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
+      : `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
     chatId != null ? [chatId] : []
   );
   const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl"]));
