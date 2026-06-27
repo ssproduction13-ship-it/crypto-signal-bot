@@ -50,7 +50,7 @@ export async function checkCorrelationRisk(
   const openPositions: PositionRiskInfo[] = (rows as Record<string, unknown>[]).map(r => ({
     symbol: r["symbol"] as string,
     direction: r["direction"] as "LONG" | "SHORT",
-    riskPercent: 1.0,
+    riskPercent, // use actual risk setting, not hardcoded 1.0
   }));
 
   if (!openPositions.length) {
@@ -72,9 +72,10 @@ export async function checkCorrelationRisk(
     correlatedRisk += riskPercent * corr * pos.riskPercent;
   }
 
-  // Общий риск портфеля (простая сумма + скоррелированная надбавка)
-  const rawPortfolioRisk = openPositions.reduce((s, p) => s + p.riskPercent, 0) + riskPercent;
-  const portfolioRisk = rawPortfolioRisk + correlatedRisk * 0.5;
+  // portfolioRisk = только скоррелированный риск в том же направлении.
+  // Суммарный лимит позиций контролирует canOpenTrade() в risk-manager.ts.
+  // Противоположные направления хеджируют друг друга — не считаем их как риск.
+  const portfolioRisk = correlatedRisk;
 
   if (portfolioRisk > maxPortfolioRisk * 1.5) {
     return {
