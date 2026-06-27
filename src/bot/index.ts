@@ -605,6 +605,90 @@ import { Telegraf, Markup } from "telegraf";
       });
 
   
+    // ── /whynotrade — диагностика почему не открываются сделки ───────────────
+    bot.command('whynotrade', async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (!chatId) return;
+      const loading = await ctx.reply('⏳ Анализирую логи решений...', { parse_mode: 'Markdown' });
+      try {
+        const [stats, recent] = await Promise.all([
+          getDecisionStats(),
+          getRecentDecisionLog(30),
+        ]);
+
+        const rejects = recent.filter(d => d.verdict === 'REJECT');
+        const opens   = recent.filter(d => d.verdict === 'OPEN');
+
+        const lines: string[] = [
+          '🔍 *Почему не открываются сделки?*',
+          `_Последние 30 решений: ✅ ${opens.length} открыто, ❌ ${rejects.length} отклонено_`,
+          '',
+        ];
+
+        if (!rejects.length && !opens.length) {
+          lines.push('⚠️ Данных нет. Бот ещё не анализировал сигналы.', '', '_Подождите следующего закрытия свечи (до 15 мин)._');
+        } else {
+          // Топ причин отказов за последние 30 решений
+          const reasonCount = new Map<string, number>();
+          for (const r of rejects) {
+            const key = r.rejectReason ?? 'Неизвестно';
+            reasonCount.set(key, (reasonCount.get(key) ?? 0) + 1);
+          }
+          const topReasons = [...reasonCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+
+          if (topReasons.length) {
+            lines.push('*Топ причин отказов:*');
+            const icons: Record<string, string> = {
+              'MTF': '📊', 'Score': '📉', 'Confidence': '🎯',
+              'Trust': '🏆', 'Profit': '💰', 'Режим': '🌊',
+              'Вес': '⚖️', 'хаос': '🌪', 'Нейтральный': '➡️',
+              'Временной': '🕐',
+            };
+            for (const [reason, count] of topReasons) {
+              const icon = Object.entries(icons).find(([k]) => reason.includes(k))?.[1] ?? '❌';
+              const pct = Math.round((count / rejects.length) * 100);
+              lines.push(`${icon} ${reason}: *${count}x* (${pct}%)`);
+            }
+            lines.push('');
+          }
+
+          // Последние 3 полных трейса для диагностики
+          const last3 = rejects.slice(0, 3);
+          if (last3.length) {
+            lines.push('*Последние отказы (подробно):*');
+            for (const trace of last3) {
+              const ts = new Date(trace.timestamp).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+              const failStep = trace.steps.find(s => s.result === 'FAIL');
+              lines.push(`❌ ${trace.symbol} [${ts}] → ${failStep?.check ?? trace.rejectReason}`);
+            }
+            lines.push('');
+          }
+
+          // Подсказка по самой частой причине
+          if (topReasons[0]) {
+            const top = topReasons[0][0];
+            const hints: Record<string, string> = {
+              'MTF': '📊 *4H фильтр* блокирует большинство сигналов. Это нормально при боковом рынке — ждём когда 4H EMA20 и EMA50 выстроятся в одну сторону.',
+              'Score': '📉 *Сигналы слабые* — score не дотягивает до порога. Рынок в консолидации, ждём импульса.',
+              'Нейтральный': '➡️ *Нейтральное направление* — рынок не определился. Нормально для бокового движения.',
+              'хаос': '🌪 *Хаотичный рынок* — ATR слишком высокий. Бот защищает от высоковолатильных входов.',
+              'Режим': '🌊 *Режим рынка* — текущая стратегия не подходит к условиям. Система ищет другую.',
+              'Trust': '🏆 *Trust Score* — стратегия ещё набирает репутацию. Нужно больше сделок для доверия.',
+            };
+            const hint = Object.entries(hints).find(([k]) => top.includes(k))?.[1];
+            if (hint) lines.push('💡 ' + hint);
+          }
+        }
+
+        await ctx.telegram.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+        await ctx.reply(lines.join('
+'), { parse_mode: 'Markdown' });
+      } catch (err) {
+        await ctx.telegram.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
+        await ctx.reply('❌ Ошибка загрузки данных');
+      }
+    });
+
     // ── /listings — отчёт об авто-найденных листингах ───────────────────────
     bot.command("listings", async (ctx) => {
       const chatId = ctx.chat?.id;
