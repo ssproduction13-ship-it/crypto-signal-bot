@@ -2,6 +2,10 @@
  * Correlation Risk Engine — контролирует общий риск портфеля.
  * При высокой корреляции открытых позиций (BTC+ETH+SOL LONG)
  * уменьшает размер позиции или отказывает в новой сделке.
+ *
+ * v2: Исправлена формула — используется средняя корреляция (не сумма),
+ * portfolioRisk = (N+1) × riskPercent × avgCorr.
+ * maxPortfolioRisk = 8% (соответствует 10 позициям по 1% при avgCorr≈0.8).
  */
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
@@ -40,7 +44,7 @@ export async function checkCorrelationRisk(
   newSymbol: string,
   newDirection: "LONG" | "SHORT",
   riskPercent: number,
-  maxPortfolioRisk = 5.0
+  maxPortfolioRisk = 8.0,  // v2: raised from 5% → 8% (10 позиций × 1% × avgCorr 0.8)
 ): Promise<CorrelationRiskResult> {
   const { rows } = await pool.query(
     `SELECT symbol, direction FROM paper_positions WHERE chat_id = $1`,
@@ -50,7 +54,7 @@ export async function checkCorrelationRisk(
   const openPositions: PositionRiskInfo[] = (rows as Record<string, unknown>[]).map(r => ({
     symbol: r["symbol"] as string,
     direction: r["direction"] as "LONG" | "SHORT",
-    riskPercent, // use actual risk setting, not hardcoded 1.0
+    riskPercent,
   }));
 
   if (!openPositions.length) {
@@ -63,47 +67,60 @@ export async function checkCorrelationRisk(
     };
   }
 
-  // Считаем скорректированный риск с учётом корреляций
-  let correlatedRisk = 0;
   const sameDirPositions = openPositions.filter(p => p.direction === newDirection);
 
+  // v2: используем СРЕДНЮЮ корреляцию, а не сумму.
+  // Это исключает линейный рост блокировок с числом позиций.
+  let totalCorr = 0;
   for (const pos of sameDirPositions) {
-    const corr = getCorrelation(newSymbol, pos.symbol);
-    correlatedRisk += corr * pos.riskPercent;
+    totalCorr += getCorrelation(newSymbol, pos.symbol);
   }
+  const avgCorr = sameDirPositions.length > 0 ? totalCorr / sameDirPositions.length : 0;
+  const correlatedRisk = avgCorr * riskPercent;
 
-  // portfolioRisk = только скоррелированный риск в том же направлении.
-  // Суммарный лимит позиций контролирует canOpenTrade() в risk-manager.ts.
-  // Противоположные направления хеджируют друг друга — не считаем их как риск.
-  const portfolioRisk = correlatedRisk;
+  // portfolioRisk = суммарный направленный риск после открытия новой позиции,
+  // взвешенный на среднюю корреляцию внутри портфеля.
+  // Формула: (N+1) × riskPercent × avgCorr
+  const portfolioRisk = sameDirPositions.length > 0
+    ? (sameDirPositions.length + 1) * riskPercent * avgCorr
+    : riskPercent;
 
-  if (portfolioRisk > maxPortfolioRisk * 1.5) {
+  logger.debug({
+    symbol: newSymbol, direction: newDirection,
+    sameDirCount: sameDirPositions.length, avgCorr: avgCorr.toFixed(2),
+    correlatedRisk: correlatedRisk.toFixed(2), portfolioRisk: portfolioRisk.toFixed(2),
+    maxPortfolioRisk,
+  }, "Correlation Guard check");
+
+  // Жёсткая блокировка: portfolioRisk > maxPortfolioRisk (без лишнего множителя)
+  if (portfolioRisk > maxPortfolioRisk) {
     return {
       allowed: false, sizeMultiplier: 0,
       reason: `Общий риск портфеля ${portfolioRisk.toFixed(1)}% превышает максимум ${maxPortfolioRisk}%`,
       portfolioRisk, correlatedRisk, maxAllowedRisk: maxPortfolioRisk,
-      message: `🚫 *Сделка заблокирована*\nОбщий риск ${portfolioRisk.toFixed(1)}% > макс ${maxPortfolioRisk}%\nКорреляционный риск: ${correlatedRisk.toFixed(2)}%`,
+      message: `🚫 *Сделка заблокирована*\nОбщий риск ${portfolioRisk.toFixed(1)}% > макс ${maxPortfolioRisk}%\nПозиций в том же направлении: ${sameDirPositions.length} | avgCorr: ${(avgCorr * 100).toFixed(0)}%`,
     };
   }
 
-  if (portfolioRisk > maxPortfolioRisk) {
+  // Умеренное снижение размера: portfolioRisk > 70% от максимума
+  if (portfolioRisk > maxPortfolioRisk * 0.70) {
     const allowedRisk = maxPortfolioRisk - (portfolioRisk - riskPercent);
     const sizeMultiplier = Math.max(0.25, allowedRisk / riskPercent);
     return {
       allowed: true, sizeMultiplier,
       reason: `Высокая корреляция — размер снижен до ${(sizeMultiplier * 100).toFixed(0)}%`,
       portfolioRisk, correlatedRisk, maxAllowedRisk: maxPortfolioRisk,
-      message: `⚠️ Размер позиции снижен до ${(sizeMultiplier * 100).toFixed(0)}%\nКорреляция с портфелем высокая`,
+      message: `⚠️ Размер позиции снижен до ${(sizeMultiplier * 100).toFixed(0)}%\nКорреляционный риск портфеля: ${portfolioRisk.toFixed(1)}%`,
     };
   }
 
-  if (correlatedRisk > riskPercent * 0.7) {
-    const sizeMultiplier = 0.75;
+  // Лёгкое снижение: средняя корреляция высокая (> 70%)
+  if (avgCorr > 0.70 && sameDirPositions.length >= 3) {
     return {
-      allowed: true, sizeMultiplier,
-      reason: `Умеренная корреляция — размер снижен до 75%`,
+      allowed: true, sizeMultiplier: 0.75,
+      reason: `Умеренная корреляция (${(avgCorr * 100).toFixed(0)}%) — размер снижен до 75%`,
       portfolioRisk, correlatedRisk, maxAllowedRisk: maxPortfolioRisk,
-      message: `⚠️ Размер снижен до 75% — открытые позиции коррелируют`,
+      message: `⚠️ Размер снижен до 75% — открытые позиции коррелируют (avgCorr ${(avgCorr * 100).toFixed(0)}%)`,
     };
   }
 
@@ -111,7 +128,7 @@ export async function checkCorrelationRisk(
     allowed: true, sizeMultiplier: 1.0,
     reason: "Корреляционный риск в норме",
     portfolioRisk, correlatedRisk, maxAllowedRisk: maxPortfolioRisk,
-    message: `✅ Открытие разрешено\nРиск портфеля: ${portfolioRisk.toFixed(1)}%`,
+    message: `✅ Открытие разрешено\nРиск портфеля: ${portfolioRisk.toFixed(1)}% / ${maxPortfolioRisk}%`,
   };
 }
 
