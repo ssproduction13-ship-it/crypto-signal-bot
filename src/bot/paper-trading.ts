@@ -34,6 +34,40 @@ function randomSlippagePct(): number {
   return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
 }
 
+/** Helper: record one closed leg (partial or full) and return the notification message */
+function buildCloseRecord(
+  pos: PaperPosition,
+  closePrice: number,
+  size: number,
+  outcome: string,
+  equityAtOpen: number
+): { trade: ClosedPaperTrade; pnl: number; pnlPct: number; pnlEquityPct: number; realisticPrice: number; commission: number; slippage: number } {
+  const slipPct = randomSlippagePct();
+  const realisticPrice = pos.direction === "LONG"
+    ? closePrice * (1 - slipPct)
+    : closePrice * (1 + slipPct);
+  const slippage   = Math.abs(closePrice - realisticPrice) * size;
+  const commission = realisticPrice * size * COMMISSION_RATE;
+  const rawPnl = pos.direction === "LONG"
+    ? (realisticPrice - pos.entryPrice) * size
+    : (pos.entryPrice - realisticPrice) * size;
+  const pnl    = rawPnl - commission;
+  const pnlPct = pos.direction === "LONG"
+    ? ((realisticPrice - pos.entryPrice) / pos.entryPrice) * 100
+    : ((pos.entryPrice - realisticPrice) / pos.entryPrice) * 100;
+  const pnlEquityPct = equityAtOpen > 0 ? (pnl / equityAtOpen) * 100 : 0;
+
+  const trade: ClosedPaperTrade = {
+    id: genId(), symbol: pos.symbol, direction: pos.direction,
+    entryPrice: pos.entryPrice, closePrice: realisticPrice, size,
+    pnl, pnlPercent: pnlPct, outcome,
+    strategy: pos.strategy ?? "TREND",
+    openedAt: pos.openedAt, closedAt: new Date().toISOString(),
+    commission, slippage, pnlEquityPct,
+  };
+  return { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage };
+}
+
 export async function openPaperPosition(
   chatId: number, symbol: string, direction: "LONG"|"SHORT",
   entryPrice: number, stopLoss: number, tp1: number, tp2: number,
@@ -50,7 +84,6 @@ export async function openPaperPosition(
   if (size <= 0) return {success:false,message:"❌ Ошибка расчёта размера позиции"};
 
   // ── Notional cap: max 25% of balance per position ──────────────────────
-  // Prevents going all-in when stop is very tight (e.g. 1% stop → 100% notional).
   const maxNotional = account.balance * MAX_POSITION_NOTIONAL_PCT;
   const rawNotional = size * entryPrice;
   if (rawNotional > maxNotional) {
@@ -70,7 +103,7 @@ export async function openPaperPosition(
     id:genId(), symbol, direction, entryPrice, size,
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
-    equityAtOpen: account.balance, // record equity AFTER open commission
+    equityAtOpen: account.balance,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
@@ -98,7 +131,7 @@ export async function openPaperPosition(
   };
 }
 
-/** Returns string[] of alert messages — fires on TP/SL/BE close only */
+/** Returns string[] of alert messages — fires on TP/SL/BE/partial close */
 export async function checkPaperPositions(
   chatId: number,
   sendNotification?: (msg: string) => Promise<void>
@@ -107,90 +140,86 @@ export async function checkPaperPositions(
   const msgs: string[] = [];
   const remaining: PaperPosition[] = [];
 
+  const stratNames: Record<string, string> = {
+    TREND:"Тренд", BREAKOUT:"Пробой",
+    VOLUME_IMPULSE:"Импульс", MEAN_REVERSION:"Возврат к ср.",
+  };
+
   for (const pos of account.positions) {
     try {
       const price = await getPrice(pos.symbol);
+      const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
+      const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
+      const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
 
-      // Breakeven: move SL when position reaches +1R
-      if (!pos.breakevenMoved && pos.trailAtr != null) {
-        const r1   = Math.abs(pos.tp1 - pos.entryPrice);
-        const gain = pos.direction==="LONG" ? price-pos.entryPrice : pos.entryPrice-price;
-        if (gain >= r1) {
-          pos.stopLoss = pos.entryPrice;
-          pos.breakevenMoved = true;
-        }
-      }
-
-      // Trailing stop: after breakeven, trail by 1.5×ATR
+      // ── Trailing stop: after TP1 partial (breakevenMoved), trail by 1.0×ATR ─
       if (pos.breakevenMoved && pos.trailAtr != null && pos.trailAtr > 0) {
-        const trail = pos.direction==="LONG"
-          ? price - pos.trailAtr * 1.5
-          : price + pos.trailAtr * 1.5;
-        if (pos.direction==="LONG"  && trail > pos.stopLoss) pos.stopLoss = trail;
-        if (pos.direction==="SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
+        const trail = pos.direction === "LONG"
+          ? price - pos.trailAtr * 1.0
+          : price + pos.trailAtr * 1.0;
+        if (pos.direction === "LONG"  && trail > pos.stopLoss) pos.stopLoss = trail;
+        if (pos.direction === "SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
       }
 
-      // Check close conditions
-      let closeReason: string|null = null, closePrice = price;
-      if (pos.direction==="LONG") {
-        if (price<=pos.stopLoss)  { closeReason=pos.breakevenMoved?"BE":"SL"; closePrice=pos.stopLoss; }
-        else if (price>=pos.tp2)  { closeReason="TP2"; closePrice=pos.tp2; }
-        else if (price>=pos.tp1)  { closeReason="TP1"; closePrice=pos.tp1; }
-      } else {
-        if (price>=pos.stopLoss)  { closeReason=pos.breakevenMoved?"BE":"SL"; closePrice=pos.stopLoss; }
-        else if (price<=pos.tp2)  { closeReason="TP2"; closePrice=pos.tp2; }
-        else if (price<=pos.tp1)  { closeReason="TP1"; closePrice=pos.tp1; }
-      }
+      // ── TP1 Partial Close: 50% at TP1, move SL to breakeven ───────────────
+      // Fires only once (breakevenMoved guards re-entry).
+      const tp1Hit = !pos.breakevenMoved && (
+        (pos.direction === "LONG"  && price >= pos.tp1) ||
+        (pos.direction === "SHORT" && price <= pos.tp1)
+      );
 
-      if (closeReason) {
-        // ── Realistic execution: apply slippage to close price ─────────────
-        const slipPct = randomSlippagePct();
-        // Slippage always worsens the exit
-        const realisticClosePrice = pos.direction === "LONG"
-          ? closePrice * (1 - slipPct)   // LONG exit: price slips down
-          : closePrice * (1 + slipPct);  // SHORT exit: price slips up
-        const slippageCost = Math.abs(closePrice - realisticClosePrice) * pos.size;
+      if (tp1Hit) {
+        const partialSize = pos.size * 0.5;
+        const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+          buildCloseRecord(pos, pos.tp1, partialSize, "TP1", equityAtOpen);
 
-        // Commission on close
-        const closeCommission = realisticClosePrice * pos.size * COMMISSION_RATE;
-
-        // Raw PnL based on realistic (slippage-adjusted) close price
-        const rawPnl = pos.direction==="LONG"
-          ? (realisticClosePrice - pos.entryPrice) * pos.size
-          : (pos.entryPrice - realisticClosePrice) * pos.size;
-
-        // Net PnL after close commission (open commission already deducted at open)
-        const pnl = rawPnl - closeCommission;
-
-        const pnlPct = pos.direction==="LONG"
-          ? ((realisticClosePrice - pos.entryPrice) / pos.entryPrice) * 100
-          : ((pos.entryPrice - realisticClosePrice) / pos.entryPrice) * 100;
-
-        // PnL as % of account equity at trade open (real account impact)
-        const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
-        const pnlEquityPct = equityAtOpen > 0 ? (pnl / equityAtOpen) * 100 : 0;
-
-        const trade: ClosedPaperTrade = {
-          id:genId(), symbol:pos.symbol, direction:pos.direction,
-          entryPrice:pos.entryPrice, closePrice:realisticClosePrice, size:pos.size,
-          pnl, pnlPercent:pnlPct, outcome:closeReason,
-          strategy: pos.strategy ?? "TREND",
-          openedAt:pos.openedAt, closedAt:new Date().toISOString(),
-          commission: closeCommission,
-          slippage: slippageCost,
-          pnlEquityPct,
-        };
         account.balance += pnl;
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
+        addAccountCosts(chatId, commission, slippage).catch(() => {});
+        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, true).catch(() => {});
 
-        // Track realistic costs
-        addAccountCosts(chatId, closeCommission, slippageCost).catch(() => {});
+        // Update position: halve size, move SL to breakeven
+        pos.size          = pos.size * 0.5;
+        pos.stopLoss      = pos.entryPrice;
+        pos.breakevenMoved = true;
 
-        // Record strategy stat
+        msgs.push(
+          `🎯 *ЧАСТИЧНОЕ ЗАКРЫТИЕ — ${pos.symbol}*\n` +
+          `${dirLabel} | TP1 зафиксировано 50% | ${stratLabel}\n` +
+          `Вход: \`${formatPrice(pos.entryPrice)}\` → TP1: \`${formatPrice(realisticPrice)}\`\n` +
+          `P&L (50%): *+${pnl.toFixed(2)}* (+${pnlPct.toFixed(2)}%)\n` +
+          `💸 комиссия -$${commission.toFixed(2)} | слипп -$${slippage.toFixed(2)}\n` +
+          `📌 Стоп → безубыток | Оставшиеся 50% идут к TP2: \`${formatPrice(pos.tp2)}\`\n` +
+          `💰 Баланс: *${account.balance.toFixed(2)}*`
+        );
+
+        remaining.push(pos); // keep half position running towards TP2
+        continue;
+      }
+
+      // ── Full Close: SL / BE / TP2 ─────────────────────────────────────────
+      let closeReason: string | null = null;
+      let closePrice = price;
+
+      if (pos.direction === "LONG") {
+        if (price <= pos.stopLoss) { closeReason = pos.breakevenMoved ? "BE" : "SL"; closePrice = pos.stopLoss; }
+        else if (price >= pos.tp2) { closeReason = "TP2"; closePrice = pos.tp2; }
+      } else {
+        if (price >= pos.stopLoss) { closeReason = pos.breakevenMoved ? "BE" : "SL"; closePrice = pos.stopLoss; }
+        else if (price <= pos.tp2) { closeReason = "TP2"; closePrice = pos.tp2; }
+      }
+
+      if (closeReason) {
+        const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+          buildCloseRecord(pos, closePrice, pos.size, closeReason, equityAtOpen);
+
+        account.balance += pnl;
+        account.closedTrades.unshift(trade);
+        await insertClosedTrade(chatId, trade);
+        addAccountCosts(chatId, commission, slippage).catch(() => {});
         recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
 
-        // Self Learning Engine v2: record analytics
         const regime = positionRegimes.get(pos.id) ?? "sideways";
         positionRegimes.delete(pos.id);
         recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
@@ -202,40 +231,37 @@ export async function checkPaperPositions(
         }
         updateTradeResult(pos.id, pnlEquityPct, pnl > 0, closeReason).catch(() => {});
 
-        const isProfit = pnl > 0;
+        const isProfit    = pnl > 0;
         const isBreakeven = closeReason === "BE";
+        const isTP2       = closeReason === "TP2";
+        const wasPartial  = pos.breakevenMoved && (closeReason === "TP2" || isBreakeven);
+
         const header = isBreakeven
           ? `🟡 БЕЗУБЫТОК — ${pos.symbol}`
-          : closeReason === "TP2"
-          ? `🚀 ПРОФИТ — ${pos.symbol}`
+          : isTP2
+          ? `🚀 ПРОФИТ TP2 — ${pos.symbol}`
           : isProfit
           ? `✅ ПРОФИТ — ${pos.symbol}`
           : `❌ УБЫТОК — ${pos.symbol}`;
-        const stratNames: Record<string, string> = {
-          TREND:"Тренд", BREAKOUT:"Пробой",
-          VOLUME_IMPULSE:"Импульс", MEAN_REVERSION:"Возврат к ср.",
-        };
-        const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
-        const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
 
-        // P&L уже включает комиссию закрытия и слиппаж (через скорректированную цену).
-        // Показываем разбивку как справочную информацию (не дополнительное списание).
-        const costsBreakdown = `комиссия -$${closeCommission.toFixed(2)} | слипп -$${slippageCost.toFixed(2)}`;
+        const partialNote = wasPartial ? ` _(50% остаток)_` : "";
+        const costsBreakdown = `комиссия -$${commission.toFixed(2)} | слипп -$${slippage.toFixed(2)}`;
 
         const closeMsg = isBreakeven
           ? `*${header}*\n` +
-            `${dirLabel} | ${stratLabel}\n` +
-            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
+            `${dirLabel} | ${stratLabel}${partialNote}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticPrice)}\`\n` +
             `P&L: *≈$0* (стоп был в точке входа)\n` +
             `💸 В P&L учтено: ${costsBreakdown}\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`
           : `*${header}*\n` +
-            `${dirLabel} | ${closeReason}${pos.breakevenMoved ? " 📌 BE" : ""} | ${stratLabel}\n` +
-            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticClosePrice)}\`\n` +
+            `${dirLabel} | ${closeReason}${pos.breakevenMoved ? " 📌" : ""} | ${stratLabel}${partialNote}\n` +
+            `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticPrice)}\`\n` +
             `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
             `💸 В P&L учтено: ${costsBreakdown}\n` +
             `💼 Депозит: *${pnlEquityPct >= 0 ? "+" : ""}${pnlEquityPct.toFixed(3)}%*\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`;
+
         msgs.push(closeMsg);
 
         const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0);
