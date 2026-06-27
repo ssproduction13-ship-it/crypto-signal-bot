@@ -604,7 +604,16 @@ import { Telegraf, Markup } from "telegraf";
         }
       });
 
-      bot.action("menu_cooldown", async (ctx) => {
+  
+    // ── /listings — отчёт об авто-найденных листингах ───────────────────────
+    bot.command("listings", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (!chatId) return;
+      const report = await getListingsReport().catch(() => "❌ Ошибка");
+      await ctx.reply(report, { parse_mode: "Markdown" });
+    });
+
+    bot.action("menu_cooldown", async (ctx) => {
         await ctx.answerCbQuery();
         try {
           const state = await evaluateCooldown(ctx.chat!.id);
