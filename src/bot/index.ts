@@ -685,7 +685,8 @@ import { Telegraf, Markup } from "telegraf";
         await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
       } catch (err) {
         await ctx.telegram.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
-        await ctx.reply('❌ Ошибка загрузки данных');
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`❌ Ошибка: ${msg.slice(0, 300)}`);
       }
     });
 
