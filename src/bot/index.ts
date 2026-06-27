@@ -689,11 +689,14 @@ import { Telegraf, Markup } from "telegraf";
           const sl   = statusLabel[s.status] ?? s.status;
           const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
           const wr   = (s.winRate * 100).toFixed(1);
-          const sampleNote = s.trades < 30 ? " ⚠️" : "";
+          const ADAPT_THRESHOLD = 30;
+          const adaptLine = s.trades >= ADAPT_THRESHOLD
+            ? `Адаптация активна | Вес: ${(s.weight*100).toFixed(0)}%`
+            : `До адаптации: ${ADAPT_THRESHOLD - s.trades} сделок`;
           lines.push(
-            `${icon} *${s.strategy}* — ${sl}${sampleNote}\n` +
-            `  Trust: ${s.trustScore}/100 | Вес: ${(s.weight*100).toFixed(0)}%\n` +
-            `  WR: ${wr}% | PF: ${pf} | Сд: ${s.trades}`
+            `${icon} *${s.strategy}* — ${sl}\n` +
+            `  Сделок: ${s.trades} | ${adaptLine}\n` +
+            `  Trust: ${s.trustScore}/100 | WR: ${wr}% | PF: ${pf}`
           );
         }
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
@@ -857,10 +860,15 @@ import { Telegraf, Markup } from "telegraf";
           const statusMap: Record<string,string> = { active:"✅ Активна", quarantine:"⚠️ Карантин", disabled:"🚫 Выкл" };
           const wr = (s.winRate * 100).toFixed(1);
           const spf = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
+          const ADAPT_THR = 30;
+          const adaptStatus = s.trades >= ADAPT_THR
+            ? "Адаптация активна"
+            : `До адаптации: ${ADAPT_THR - s.trades} сделок`;
           parts.push(
             `${s.strategy}: ${statusMap[s.status] ?? s.status}`,
+            `  Сделок: ${s.trades} | ${adaptStatus}`,
             `  Trust Score: ${s.trustScore}/100 | Вес: ${(s.weight*100).toFixed(0)}%`,
-            `  WR: ${wr}% | PF: ${spf} | Сделок: ${s.trades}${s.trades < 30 ? " ⚠️ мало данных" : ""}`,
+            `  WR: ${wr}% | PF: ${spf}`,
           );
         }
         parts.push(``);
@@ -870,6 +878,7 @@ import { Telegraf, Markup } from "telegraf";
           `═══ 🧠 СОСТОЯНИЕ ОБУЧЕНИЯ ═══`,
           `Здоровье: ${health?.overall ?? "нет данных"} (${health?.trend ?? "—"})`,
           `Готовность к продакшну: ${readiness ? readiness.percent + "/100" : "нет данных"}`,
+          `PF в расчёте Readiness: ${readiness ? "последние " + readiness.pfWindow + " сделок = " + readiness.pfValue.toFixed(2) : "—"} (нужно ≥1.50)`,
           `Причины не готов: ${readiness?.recommendations?.join(", ") || "нет"}`,
           ``,
         );
