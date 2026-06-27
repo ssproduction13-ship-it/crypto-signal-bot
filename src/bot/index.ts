@@ -134,7 +134,7 @@ import { Telegraf, Markup } from "telegraf";
       `Profit Factor: ${pf === 999 ? "∞" : pf.toFixed(2)}`, "",
       `📅 Сегодня: ${pnlD >= 0 ? "+" : ""}$${pnlD.toFixed(2)}`,
       `📆 Неделя: ${pnlW >= 0 ? "+" : ""}$${pnlW.toFixed(2)}`, "",
-      `📂 Открытых (${account.positions.length}/10):`,
+      `📂 Открытых (${account.positions.length}):`,
       ...posLines,
     ].join("\n");
   }
@@ -336,7 +336,7 @@ import { Telegraf, Markup } from "telegraf";
       }
 
       const { getPrice } = await import("./binance.js");
-      const lines: string[] = [`📂 *Позиции (${account.positions.length}/10)*\n`];
+      const lines: string[] = [`📂 *Позиции (${account.positions.length})*\n`];
 
       for (const pos of account.positions) {
         const dir = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
@@ -1013,7 +1013,8 @@ import { Telegraf, Markup } from "telegraf";
         `📊 *Статус бота*\n\n` +
         `📡 Подписок: *${subs.length}* монет\n` +
         `🤖 Авто-торговля: *${s.autoPaperTrade ? "ВКЛ ✅" : "ВЫКЛ ❌"}*\n` +
-        `📂 Открыто позиций: *${account.positions.length}/10*\n` +
+        `📂 Открыто позиций: *${account.positions.length}*
+` +
         `💰 Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
         (subs.length === 0 ? `⚠️ Нажми /start → 🚀 Запустить` : `🟢 Бот активен, жду сигнал`),
         { parse_mode:"Markdown", ...mainMenu() }
