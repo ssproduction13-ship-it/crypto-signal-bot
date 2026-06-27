@@ -36,6 +36,8 @@ import { Telegraf, Markup } from "telegraf";
   import { evaluateCooldown, formatCooldownStatus } from "./auto-cooldown.js";
   import { generateWeeklyResearch, getLastWeeklyReport } from "./weekly-research.js";
   import { calcReadinessIndex, formatReadinessReport } from "./readiness-index.js";
+import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
+import { getListingsReport } from "./listing-watcher.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
