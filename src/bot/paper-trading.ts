@@ -33,7 +33,7 @@ export async function openPaperPosition(
 
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
-  if (account.positions.length >= 10) return {success:false,message:"⚠️ Макс. 10 позиций открыто"};
+  // Learning mode: no position count limit — bot trades freely to collect data
 
   const pos: PaperPosition = {
     id:genId(), symbol, direction, entryPrice, size,
