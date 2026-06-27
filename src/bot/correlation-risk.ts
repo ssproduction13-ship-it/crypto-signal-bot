@@ -69,7 +69,7 @@ export async function checkCorrelationRisk(
 
   for (const pos of sameDirPositions) {
     const corr = getCorrelation(newSymbol, pos.symbol);
-    correlatedRisk += riskPercent * corr * pos.riskPercent;
+    correlatedRisk += corr * pos.riskPercent;
   }
 
   // portfolioRisk = только скоррелированный риск в том же направлении.
