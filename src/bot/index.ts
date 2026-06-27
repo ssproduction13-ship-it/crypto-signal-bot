@@ -611,9 +611,10 @@ import { Telegraf, Markup } from "telegraf";
       if (!chatId) return;
       const loading = await ctx.reply('⏳ Анализирую логи решений...', { parse_mode: 'Markdown' });
       try {
+        // Ensure table exists before querying
         const [stats, recent] = await Promise.all([
-          getDecisionStats(),
-          getRecentDecisionLog(30),
+          getDecisionStats().catch(() => ({ total: 0, opened: 0, rejected: 0, topRejectReasons: [] })),
+          getRecentDecisionLog(30).catch(() => []),
         ]);
 
         const rejects = recent.filter(d => d.verdict === 'REJECT');
