@@ -22,6 +22,12 @@ const COMMISSION_RATE = 0.001;
 /** Slippage range: min 0.02%, max 0.10% (realistic for KuCoin liquid pairs <$20k notional) */
 const SLIPPAGE_MIN_PCT = 0.0002;
 const SLIPPAGE_MAX_PCT = 0.001;
+/**
+ * Max position notional as fraction of account balance (25%).
+ * Prevents going all-in on a single trade when stop is tight.
+ * With 10 max positions this implies up to 250% total exposure (≈2.5x leverage cap).
+ */
+const MAX_POSITION_NOTIONAL_PCT = 0.25;
 
 /** Generate random slippage fraction */
 function randomSlippagePct(): number {
@@ -40,8 +46,17 @@ export async function openPaperPosition(
   const rp = riskPercent ?? settings.riskPercent;
   const maxLoss  = account.balance * (rp / 100);
   const stopDist = Math.abs(entryPrice - stopLoss);
-  const size     = stopDist > 0 ? maxLoss / stopDist : 0;
+  let size       = stopDist > 0 ? maxLoss / stopDist : 0;
   if (size <= 0) return {success:false,message:"❌ Ошибка расчёта размера позиции"};
+
+  // ── Notional cap: max 25% of balance per position ──────────────────────
+  // Prevents going all-in when stop is very tight (e.g. 1% stop → 100% notional).
+  const maxNotional = account.balance * MAX_POSITION_NOTIONAL_PCT;
+  const rawNotional = size * entryPrice;
+  if (rawNotional > maxNotional) {
+    size = maxNotional / entryPrice;
+  }
+  const notional = size * entryPrice;
 
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
@@ -77,7 +92,8 @@ export async function openPaperPosition(
       `Вход: ${formatPrice(entryPrice)}\n` +
       `Стоп: ${formatPrice(stopLoss)}\n` +
       `TP1: ${formatPrice(tp1)} | TP2: ${formatPrice(tp2)}\n` +
-      `Размер: ${size.toFixed(4)} ед. | Риск: $${maxLoss.toFixed(2)}\n` +
+      `Размер: ${size.toFixed(4)} ед. | Объём: $${notional.toFixed(2)}\n` +
+      `Риск: $${(size * stopDist).toFixed(2)} (${rp}% депозита)${rawNotional > maxNotional ? ` ⚠️ обрезано с $${rawNotional.toFixed(0)}` : ""}\n` +
       `Комиссия открытия: -$${openCommission.toFixed(2)}`
   };
 }
