@@ -374,6 +374,13 @@ const MIGRATIONS = [
   // ── Final Decision Engine v1.0 ───────────────────────────────────────────
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS decision_trace JSONB",
+  // ── Realistic Paper Trading v2.0 ─────────────────────────────────────────
+  "ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS equity_at_open DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS commission DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
+  "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_commission DOUBLE PRECISION NOT NULL DEFAULT 0",
+  "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   `CREATE TABLE IF NOT EXISTS decision_log (
     id            SERIAL PRIMARY KEY,
     symbol        TEXT NOT NULL,
