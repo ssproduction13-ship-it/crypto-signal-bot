@@ -6,7 +6,7 @@ import {
 import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
 import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
-import { checkNewPeak, checkDrawdown, checkMilestone } from "./notifications.js";
+import { checkNewPeak, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
 import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
 import { recordTimeTrade } from "./time-analytics.js";
@@ -221,7 +221,6 @@ export async function checkPaperPositions(
 
         if (sendNotification) {
           await checkNewPeak(chatId, account.balance, account.peakBalance ?? account.balance, sendNotification);
-          await checkDrawdown(chatId, account.balance, Math.max(account.balance, account.peakBalance ?? account.balance), sendNotification);
           await checkMilestone(chatId, account.balance, account.initialBalance, sendNotification);
         }
         if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
