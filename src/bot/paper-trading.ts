@@ -84,7 +84,7 @@ export async function checkPaperPositions(
         if (gain >= r1) {
           pos.stopLoss = pos.entryPrice;
           pos.breakevenMoved = true;
-          msgs.push(`🟡 *${pos.symbol}*: стоп перенесён в безубыток (${formatPrice(pos.entryPrice)})`);
+          // BE move is silent — info appears in the final close message
         }
       }
 
@@ -167,7 +167,7 @@ export async function checkPaperPositions(
             `P&L: *≈$0* (стоп был в точке входа)\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`
           : `*${header}*\n` +
-            `${dirLabel} | ${closeReason} | ${stratLabel}\n` +
+            `${dirLabel} | ${closeReason}${pos.breakevenMoved ? " 📌 BE" : ""} | ${stratLabel}\n` +
             `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(closePrice)}\`\n` +
             `P&L: *${isProfit?"+":""}${pnl.toFixed(2)}* (${isProfit?"+":""}${pnlPct.toFixed(2)}%)\n` +
             `💰 Баланс: *${account.balance.toFixed(2)}*`;
