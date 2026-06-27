@@ -89,6 +89,20 @@ export async function openPaperPosition(
   if (rawNotional > maxNotional) {
     size = maxNotional / entryPrice;
   }
+
+  // ── Partial entry: open 60% now, add remaining 40% on pullback ─────────
+  // Requires ATR to set the pullback trigger level.
+  let pendingEntrySize: number | undefined;
+  let pendingEntryTrigger: number | undefined;
+  if (atr != null && atr > 0) {
+    const initialSize   = size * 0.6;
+    pendingEntrySize    = size * 0.4;
+    pendingEntryTrigger = direction === "LONG"
+      ? entryPrice - atr * 0.3   // wait for slight dip
+      : entryPrice + atr * 0.3;  // wait for slight bounce
+    size = initialSize;
+  }
+
   const notional = size * entryPrice;
 
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
@@ -104,6 +118,7 @@ export async function openPaperPosition(
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
     equityAtOpen: account.balance,
+    pendingEntrySize, pendingEntryTrigger,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
@@ -127,6 +142,9 @@ export async function openPaperPosition(
       `TP1: ${formatPrice(tp1)} | TP2: ${formatPrice(tp2)}\n` +
       `Размер: ${size.toFixed(4)} ед. | Объём: $${notional.toFixed(2)}\n` +
       `Риск: $${(size * stopDist).toFixed(2)} (${rp}% депозита)${rawNotional > maxNotional ? ` ⚠️ обрезано с $${rawNotional.toFixed(0)}` : ""}\n` +
+      (pendingEntrySize != null && pendingEntryTrigger != null
+        ? `📥 Вход частями: ещё ${pendingEntrySize.toFixed(4)} ед. при откате до \`${formatPrice(pendingEntryTrigger)}\`\n`
+        : "") +
       `Комиссия открытия: -$${openCommission.toFixed(2)}`
   };
 }
@@ -151,6 +169,30 @@ export async function checkPaperPositions(
       const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
       const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
       const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+
+      // ── Pending Second Entry: fill remaining 40% on pullback ──────────────
+      if (pos.pendingEntrySize != null && pos.pendingEntrySize > 0 && pos.pendingEntryTrigger != null) {
+        const filled = (pos.direction === "LONG"  && price <= pos.pendingEntryTrigger) ||
+                       (pos.direction === "SHORT" && price >= pos.pendingEntryTrigger);
+        if (filled) {
+          const addSize = pos.pendingEntrySize;
+          const addCommission = price * addSize * COMMISSION_RATE;
+          account.balance -= addCommission;
+          addAccountCosts(chatId, addCommission, 0).catch(() => {});
+          // Recalculate blended entry price
+          const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
+          pos.entryPrice = blended;
+          pos.size += addSize;
+          pos.pendingEntrySize = undefined;
+          pos.pendingEntryTrigger = undefined;
+          msgs.push(
+            `📥 *Второй вход — ${pos.symbol}*\n` +
+            `${dirLabel} | +${addSize.toFixed(4)} ед. по \`${formatPrice(price)}\`\n` +
+            `Средний вход: \`${formatPrice(blended)}\` | Комиссия: -$${addCommission.toFixed(2)}\n` +
+            `_Полная позиция набрана_`
+          );
+        }
+      }
 
       // ── Trailing stop: after TP1 partial (breakevenMoved), trail by 1.0×ATR ─
       if (pos.breakevenMoved && pos.trailAtr != null && pos.trailAtr > 0) {
@@ -201,10 +243,25 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, true).catch(() => {});
 
-        // Update position: halve size, move SL to breakeven
-        pos.size          = pos.size * 0.5;
-        pos.stopLoss      = pos.entryPrice;
-        pos.breakevenMoved = true;
+        // Update position: halve size, move SL to breakeven, cancel pending entry
+        pos.size              = pos.size * 0.5;
+        pos.stopLoss          = pos.entryPrice;
+        pos.breakevenMoved    = true;
+        pos.pendingEntrySize  = undefined;
+        pos.pendingEntryTrigger = undefined;
+
+        // ── Pyramiding: add 50% of remaining (= 25% of original) at TP1 price ──
+        // SL is now at breakeven → zero extra risk on pyramid units.
+        const pyramidUnits      = pos.size * 0.5;
+        const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
+        let pyramidNote = "";
+        if (account.balance > pyramidCommission * 2) {
+          account.balance -= pyramidCommission;
+          pos.size        += pyramidUnits;
+          addAccountCosts(chatId, pyramidCommission, 0).catch(() => {});
+          pyramidNote = `\n📈 *Пирамидинг*: +${pyramidUnits.toFixed(4)} ед. добавлено по TP1 (риска нет — стоп в BE)\n` +
+                        `Итого в позиции: ${pos.size.toFixed(4)} ед. → TP2: \`${formatPrice(pos.tp2)}\``;
+        }
 
         msgs.push(
           `🎯 *ЧАСТИЧНОЕ ЗАКРЫТИЕ — ${pos.symbol}*\n` +
@@ -212,11 +269,12 @@ export async function checkPaperPositions(
           `Вход: \`${formatPrice(pos.entryPrice)}\` → TP1: \`${formatPrice(realisticPrice)}\`\n` +
           `P&L (50%): *+${pnl.toFixed(2)}* (+${pnlPct.toFixed(2)}%)\n` +
           `💸 комиссия -$${commission.toFixed(2)} | слипп -$${slippage.toFixed(2)}\n` +
-          `📌 Стоп → безубыток | Оставшиеся 50% идут к TP2: \`${formatPrice(pos.tp2)}\`\n` +
+          `📌 Стоп → безубыток` +
+          pyramidNote + `\n` +
           `💰 Баланс: *${account.balance.toFixed(2)}*`
         );
 
-        remaining.push(pos); // keep half position running towards TP2
+        remaining.push(pos);
         continue;
       }
 
