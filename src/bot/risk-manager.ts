@@ -71,11 +71,25 @@ import { pool } from "../lib/db.js";
 
     // Learning mode: only structural limits (max positions, no duplicate symbols)
     // P&L loss limits are disabled — bot collects data freely for Self Learning Engine
-    export async function canOpenTrade(symbol: string, openSymbols: string[]): Promise<{ allowed: boolean; reason: string }> {
-      const s = await loadRiskState();
-      if (s.openPositions >= 10)        return { allowed: false, reason: "Лимит: 10 открытых позиций" };
-      if (openSymbols.includes(symbol)) return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
+    // openPositionsCount is the ACTUAL count from loaded account (source of truth), not the stale risk_state counter
+    export async function canOpenTrade(symbol: string, openSymbols: string[], openPositionsCount?: number): Promise<{ allowed: boolean; reason: string }> {
+      // Use the actual passed count; fall back to risk_state only if not provided
+      const count = openPositionsCount !== undefined ? openPositionsCount : openSymbols.length;
+      if (count >= 10)                   return { allowed: false, reason: "Лимит: 10 открытых позиций" };
+      if (openSymbols.includes(symbol))  return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
       return { allowed: true, reason: "" };
+    }
+
+    // Sync the risk_state counter with the actual positions in DB (call on startup or repair)
+    export async function syncPositionsCount(): Promise<void> {
+      const { rows } = await pool.query("SELECT COUNT(*) AS cnt FROM paper_positions");
+      const actual = Number(rows[0]?.cnt ?? 0);
+      const s = await loadRiskState();
+      if (s.openPositions !== actual) {
+        logger.warn({ was: s.openPositions, actual }, "Syncing risk_state positions counter");
+        s.openPositions = actual;
+        await saveRiskState(s);
+      }
     }
 
     export async function recordPositionOpened(): Promise<void> {

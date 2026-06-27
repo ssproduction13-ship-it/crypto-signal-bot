@@ -3,6 +3,7 @@ import app from "./app.js";
   import { startBot } from "./bot/index.js";
   import { setupGeminiProvider } from "./bot/gemini-provider.js";
   import { initDb } from "./lib/db.js";
+  import { syncPositionsCount } from "./bot/risk-manager.js";
 
   const rawPort = process.env["PORT"];
 
@@ -19,6 +20,7 @@ import app from "./app.js";
   }
 
   initDb()
+    .then(() => syncPositionsCount())  // Resync counter with actual DB positions on every start
     .then(() => {
       app.listen(port, (err?: Error) => {
         if (err) {

@@ -241,7 +241,8 @@ import cron from "node-cron";
 
       const account  = await loadPaperAccount(sub.chatId);
       const openSyms = account.positions.map(p => p.symbol);
-      const { allowed, reason } = await canOpenTrade(sub.symbol, openSyms);
+      // Pass actual positions count as source of truth (avoids risk_state counter desync)
+      const { allowed, reason } = await canOpenTrade(sub.symbol, openSyms, account.positions.length);
 
       if (!allowed) {
         if (reason.includes("DAILY_LIMIT") || reason.includes("WEEKLY_LIMIT") || reason.includes("3 убытка")) {
