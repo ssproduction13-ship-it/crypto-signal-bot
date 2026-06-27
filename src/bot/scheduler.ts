@@ -548,48 +548,48 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
 
-    // Learning Health Monitor + Auto Cooldown — every hour (single combined message)
+    // Learning Health Monitor — silent data collection every hour (TZ §5: no auto-stops in paper mode)
+    // evaluateCooldown and checkLearningHealth write to DB for /health command — no notifications here
     cron.schedule("0 * * * *", async () => {
       try {
-        const health = await checkLearningHealth();
+        await checkLearningHealth();
         for (const chatId of chatIds) {
-          const cooldown = await evaluateCooldown(chatId);
-          const isCritical = health.overall === "critical" && health.alerts.length > 0;
-          const isSevere   = cooldown.level === "severe";
-          const isModerate = cooldown.level === "moderate";
-
-          if (!isCritical && !isSevere && !isModerate) continue;
-
-          const lines: string[] = [];
-
-          // Header — single icon based on worst condition
-          if (isSevere) {
-            lines.push(`🚨 *Бот снизил активность до ${Math.round(cooldown.sizeMultiplier * 100)}%*`);
-          } else if (isCritical) {
-            lines.push(`🔴 *Слабая статистика последних 30 сделок*`);
-          } else {
-            lines.push(`⚠️ *Умеренное снижение активности до ${Math.round(cooldown.sizeMultiplier * 100)}%*`);
-          }
-          lines.push(``);
-
-          // Health details (if critical)
-          if (isCritical) {
-            for (const alert of health.alerts) lines.push(alert);
-            lines.push(``);
-          }
-
-          // Cooldown action (if active)
-          if (isSevere || isModerate) {
-            lines.push(`📉 Причина: ${cooldown.reason}`);
-            lines.push(`📐 PF(30): ${cooldown.recentPF.toFixed(2)} | Просадка: ${cooldown.recentDrawdown.toFixed(1)}%`);
-            lines.push(`🔧 Размер позиции: ${Math.round(cooldown.sizeMultiplier * 100)}% | Мин. Confidence +${cooldown.minConfidenceBoost}%`);
-            lines.push(``);
-            lines.push(`_Ограничения снимутся автоматически когда статистика улучшится._`);
-          }
-
-          await safeSend(chatId, lines.join("\n"));
+          await evaluateCooldown(chatId);
         }
-      } catch (err) { logger.warn({ err }, "Health monitor / cooldown error"); }
+      } catch (err) { logger.warn({ err }, "Health monitor silent collection error"); }
+    });
+
+    // Daily health digest — 18:00, calm summary only, no alarms (TZ §5)
+    cron.schedule("0 18 * * *", async () => {
+      try {
+        const health = await checkLearningHealth();
+        // Only send if there's something meaningful to report (not just noise)
+        if (health.overall === "excellent" || health.overall === "good") return;
+
+        const trendIcon = health.trend === "improving" ? "📈" : health.trend === "degrading" ? "📉" : "➡️";
+        const p30 = health.periods[0];
+        const p100 = health.periods[1];
+
+        if (!p30 || p30.trades < 15) return; // not enough data yet
+
+        const lines = [
+          `📊 *Ежедневная статистика обучения*`,
+          ``,
+          `${trendIcon} Тренд: ${health.trend === "improving" ? "Улучшается" : health.trend === "degrading" ? "Ухудшается" : "Стабильно"}`,
+          ``,
+          `*Последние 30 сделок:*`,
+          `PF: ${p30.profitFactor.toFixed(2)} | WR: ${(p30.winRate * 100).toFixed(0)}% | Просадка: ${p30.maxDrawdown.toFixed(1)}%`,
+          ...(p100 && p100.trades >= 30 ? [
+            `*Последние 100 сделок:*`,
+            `PF: ${p100.profitFactor.toFixed(2)} | WR: ${(p100.winRate * 100).toFixed(0)}%`,
+          ] : []),
+          ``,
+          `_Это информационный дайджест. В режиме обучения бот торгует в полную силу._`,
+          `_Используй /whynotrade и /stats для детального анализа._`,
+        ];
+
+        for (const chatId of chatIds) await safeSend(chatId, lines.join("\n"));
+      } catch (err) { logger.warn({ err }, "Daily health digest error"); }
     });
 
     // Walk-Forward Testing — after every adaptation cycle (every 12 hours)
