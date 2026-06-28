@@ -625,9 +625,7 @@ _${corrRisk.reason}_`);
         await snapshotStrategyVersion(changes);
         const report  = await generateLearningReport();
         for (const chatId of chatIds) {
-          await safeSend(chatId, "⚙️ *Авто-адаптация стратегий* (12ч)
-
-" + (changes || "_Изменений нет_"));
+          await safeSend(chatId, `⚙️ *Авто-адаптация стратегий* (12ч)\n\n${changes || "_Изменений нет_"}`);
           await safeSend(chatId, report);
         }
       } catch (err) { logger.warn({ err }, "12h adaptation error"); }
