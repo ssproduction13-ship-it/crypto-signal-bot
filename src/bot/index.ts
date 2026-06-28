@@ -869,6 +869,13 @@ import { runDataCleanup } from "./data-cleanup.js";
             }
           );
         }
+        // Also send HTML report as document
+        try {
+          const { html, filename } = await generateDailyReport(chatId);
+          await ctx.telegram.sendDocument(chatId, { source: html, filename }, { caption: "📄 HTML-отчёт — открой в браузере для полного просмотра" });
+        } catch (htmlErr) {
+          logger.error({ htmlErr }, "HTML report in fullreport failed");
+        }
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         logger.error({ err }, "full report error");
