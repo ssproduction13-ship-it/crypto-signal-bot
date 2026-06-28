@@ -129,10 +129,10 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   }
 
   function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 40;
-    if (marketIndex >= 50) return 45;
-    if (marketIndex >= 30) return 50;
-    return 58;
+    if (marketIndex >= 70) return 28;
+    if (marketIndex >= 50) return 30;
+    if (marketIndex >= 30) return 33;
+    return 36;
   }
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
@@ -203,20 +203,20 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
-      if (!gate.rejected && sig.confidence.score < 12) {
+      if (!gate.rejected && sig.confidence.score < 5) {
         gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
       } else if (!gate.rejected) {
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }
 
-      const minTrust = stratStatus?.quarantine ? 45 : 20;
+      const minTrust = stratStatus?.quarantine ? 20 : 5;
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
       } else {
         if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.75) {
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.1) {
         gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
       } else {
         if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
