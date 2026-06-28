@@ -14,8 +14,6 @@ import { recordTimeTrade } from "./time-analytics.js";
 import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
 
-// Position → market regime map (populated at open, consumed at close)
-const positionRegimes = new Map<string, MarketRegime>();
 
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
@@ -108,11 +106,10 @@ export async function openPaperPosition(
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
     equityAtOpen: account.balance,
-    pendingEntrySize, pendingEntryTrigger,
+    pendingEntrySize, pendingEntryTrigger, marketRegime,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
-  positionRegimes.set(pos.id, marketRegime);
   await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   await recordPositionOpened();
 
@@ -306,8 +303,7 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
 
-        const regime = positionRegimes.get(pos.id) ?? "sideways";
-        positionRegimes.delete(pos.id);
+        const regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
         recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
