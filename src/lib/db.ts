@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   opened_at TEXT NOT NULL,
   breakeven_moved BOOLEAN NOT NULL DEFAULT false,
   trail_atr DOUBLE PRECISION,
-  market_regime TEXT NOT NULL DEFAULT 'sideways'
+  market_regime TEXT NOT NULL DEFAULT 'sideways',
+  interval TEXT NOT NULL DEFAULT '1h'
 );
 CREATE TABLE IF NOT EXISTS paper_closed_trades (
   id TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, symbol TEXT NOT NULL,
@@ -394,6 +395,7 @@ const MIGRATIONS = [
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS commission DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT '1h'",
   "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_commission DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   `CREATE TABLE IF NOT EXISTS decision_log (
@@ -413,6 +415,41 @@ const MIGRATIONS = [
 ];
 
 
+
+  export async function resetAllData(): Promise<number[]> {
+    const { rows: chatRows } = await pool.query("SELECT DISTINCT chat_id FROM paper_accounts");
+    const chatIdList = chatRows.map((r: Record<string, unknown>) => Number(r["chat_id"]));
+    const client = await pool.connect();
+    try {
+      await client.query(`
+        TRUNCATE paper_positions CASCADE;
+        TRUNCATE paper_closed_trades CASCADE;
+        TRUNCATE journal_entries CASCADE;
+        TRUNCATE trade_features CASCADE;
+        TRUNCATE strategy_stats CASCADE;
+        TRUNCATE strategy_regime_stats CASCADE;
+        TRUNCATE strategy_weights CASCADE;
+        TRUNCATE strategy_history CASCADE;
+        TRUNCATE strategy_versions CASCADE;
+        TRUNCATE factor_weights CASCADE;
+        TRUNCATE paper_accounts CASCADE;
+        TRUNCATE risk_state CASCADE;
+        TRUNCATE cooldown_state CASCADE;
+        TRUNCATE time_analytics CASCADE;
+        TRUNCATE instrument_analytics CASCADE;
+        TRUNCATE walk_forward_results CASCADE;
+        TRUNCATE learning_reports CASCADE;
+        TRUNCATE shadow_closed_trades CASCADE;
+        TRUNCATE missed_trades CASCADE;
+        TRUNCATE similar_trades CASCADE;
+        TRUNCATE ab_variants CASCADE;
+        TRUNCATE decision_traces CASCADE;
+        INSERT INTO factor_weights (id) VALUES (1) ON CONFLICT DO NOTHING;
+      `);
+    } finally { client.release(); }
+    return chatIdList;
+  }
+  
 export async function initDb(): Promise<void> {
   if (!process.env["DATABASE_URL"])
     throw new Error("DATABASE_URL not set");
