@@ -38,6 +38,7 @@ import { Telegraf, Markup } from "telegraf";
   import { calcReadinessIndex, formatReadinessReport } from "./readiness-index.js";
 import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
 import { getListingsReport } from "./listing-watcher.js";
+import { runDataCleanup } from "./data-cleanup.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1147,6 +1148,39 @@ import { getListingsReport } from "./listing-watcher.js";
     });
 
     // ── Text fallback ──────────────────────────────────────────────────────
+        // cleandata command
+    bot.command("cleandata", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (!chatId) return;
+      const loading = await ctx.reply("🧹 Запускаю очистку данных... (~10 сек)");
+      try {
+        const result = await runDataCleanup(chatId);
+        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
+        const diff = result.newBalance - result.oldBalance;
+        const diffSign = diff >= 0 ? "+" : "";
+        await ctx.reply(
+          "*✅ Очистка завершена*\n\n" +
+          `🗑 Удалено фантомных дублей: *${result.dupesRemoved}*\n` +
+          `📊 Реальных сделок осталось: *${result.tradesKept}*\n\n` +
+          `💰 Баланс:\n` +
+          `  Было: *${result.oldBalance.toFixed(2)}*\n` +
+          `  Стало: *${result.newBalance.toFixed(2)}*\n` +
+          `  Коррекция: *${diffSign}${diff.toFixed(2)}*\n\n` +
+          "🧠 Сброшено:\n" +
+          "  • strategy\_stats, strategy\_regime\_stats\n" +
+          "  • strategy\_loss\_reasons\n" +
+          "  • Веса стратегий → нейтральные (trust 50/100)\n" +
+          "  • time\_analytics, instrument\_analytics\n" +
+          "  • strategy\_versions, learning\_reports\n\n" +
+          "_Бот начнёт обучение заново на чистых данных_ ✨",
+          { parse_mode: "Markdown" }
+        );
+      } catch (err) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
+        await ctx.reply("❌ Ошибка при очистке: " + String(err));
+      }
+    });
+
     bot.on("text", async (ctx) => {
       const text = ctx.message.text.trim();
       if (text.startsWith("/signal ")) {
