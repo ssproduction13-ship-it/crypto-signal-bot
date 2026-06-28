@@ -1148,35 +1148,52 @@ import { runDataCleanup } from "./data-cleanup.js";
     });
 
     // ── Text fallback ──────────────────────────────────────────────────────
-        // cleandata command
+    // cleandata — dedup phantom trades and recalculate balance
     bot.command("cleandata", async (ctx) => {
       const chatId = ctx.chat?.id;
       if (!chatId) return;
       const loading = await ctx.reply("🧹 Запускаю очистку данных... (~10 сек)");
       try {
         const result = await runDataCleanup(chatId);
-        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
-        const diff = result.newBalance - result.oldBalance;
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        const diff     = result.newBalance - result.oldBalance;
         const diffSign = diff >= 0 ? "+" : "";
         await ctx.reply(
-          "*✅ Очистка завершена*\n\n" +
-          `🗑 Удалено фантомных дублей: *${result.dupesRemoved}*\n` +
-          `📊 Реальных сделок осталось: *${result.tradesKept}*\n\n` +
-          `💰 Баланс:\n` +
-          `  Было: *${result.oldBalance.toFixed(2)}*\n` +
-          `  Стало: *${result.newBalance.toFixed(2)}*\n` +
-          `  Коррекция: *${diffSign}${diff.toFixed(2)}*\n\n` +
-          "🧠 Сброшено:\n" +
-          "  • strategy\_stats, strategy\_regime\_stats\n" +
-          "  • strategy\_loss\_reasons\n" +
-          "  • Веса стратегий → нейтральные (trust 50/100)\n" +
-          "  • time\_analytics, instrument\_analytics\n" +
-          "  • strategy\_versions, learning\_reports\n\n" +
-          "_Бот начнёт обучение заново на чистых данных_ ✨",
-          { parse_mode: "Markdown" }
+          `<b>✅ Очистка завершена</b>
+
+` +
+          `🗑 Удалено дублей: <b>${result.dupesRemoved}</b>
+` +
+          `📊 Реальных сделок: <b>${result.tradesKept}</b>
+
+` +
+          `💰 <b>Баланс</b>
+` +
+          `  Было:  <code>${result.oldBalance.toFixed(2)}</code>
+` +
+          `  Стало: <code>${result.newBalance.toFixed(2)}</code>
+` +
+          `  Коррекция: <b>${diffSign}${diff.toFixed(2)}</b>
+
+` +
+          `🧠 <b>Сброшено</b>
+` +
+          `  • strategy_stats, strategy_regime_stats
+` +
+          `  • strategy_loss_reasons
+` +
+          `  • Веса стратегий → нейтральные (trust 50/100)
+` +
+          `  • time_analytics, instrument_analytics
+` +
+          `  • strategy_versions, learning_reports
+
+` +
+          `<i>Бот начнёт обучение заново на чистых данных ✨</i>`,
+          { parse_mode: "HTML" }
         );
       } catch (err) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("❌ Ошибка при очистке: " + String(err));
       }
     });
