@@ -416,47 +416,34 @@ const MIGRATIONS = [
 
 
 
-  export async function resetAllData(): Promise<number[]> {
-    const { rows: chatRows } = await pool.query("SELECT DISTINCT chat_id FROM paper_accounts");
-    const chatIdList = chatRows.map((r: Record<string, unknown>) => Number(r["chat_id"]));
-    const client = await pool.connect();
-    try {
-      await client.query(`
-        TRUNCATE paper_positions CASCADE;
-        TRUNCATE paper_closed_trades CASCADE;
-        TRUNCATE journal_entries CASCADE;
-        TRUNCATE trade_features CASCADE;
-        TRUNCATE strategy_stats CASCADE;
-        TRUNCATE strategy_regime_stats CASCADE;
-        TRUNCATE strategy_weights CASCADE;
-        TRUNCATE strategy_history CASCADE;
-        TRUNCATE strategy_versions CASCADE;
-        TRUNCATE factor_weights CASCADE;
-        TRUNCATE paper_accounts CASCADE;
-        TRUNCATE risk_state CASCADE;
-        TRUNCATE cooldown_state CASCADE;
-        TRUNCATE time_analytics CASCADE;
-        TRUNCATE instrument_analytics CASCADE;
-        TRUNCATE walk_forward_results CASCADE;
-        TRUNCATE learning_reports CASCADE;
-        TRUNCATE shadow_closed_trades CASCADE;
-        TRUNCATE missed_trades CASCADE;
-        TRUNCATE similar_trades CASCADE;
-        TRUNCATE ab_variants CASCADE;
-        TRUNCATE decision_traces CASCADE;
-        INSERT INTO factor_weights (id) VALUES (1) ON CONFLICT DO NOTHING;
-      `);
-    } finally { client.release(); }
-    return chatIdList;
-  }
-  
-export async function initDb(): Promise<void> {
-  if (!process.env["DATABASE_URL"])
-    throw new Error("DATABASE_URL not set");
+export async function resetAllData(): Promise<number[]> {
+  // Collect chatIds BEFORE truncating so we can notify them
+  const { rows: chatRows } = await pool.query(
+    "SELECT DISTINCT chat_id FROM paper_accounts"
+  ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const chatIdList = chatRows.map((r) => Number(r["chat_id"]));
+
+  // Truncate each table individually — skip if table does not exist yet
+  const tables = [
+    "paper_positions", "paper_closed_trades", "journal_entries",
+    "trade_features", "strategy_stats", "strategy_regime_stats",
+    "strategy_weights", "strategy_history", "strategy_versions",
+    "factor_weights", "paper_accounts", "risk_state", "cooldown_state",
+    "time_analytics", "instrument_analytics", "walk_forward_results",
+    "learning_reports", "shadow_closed_trades", "missed_trades",
+    "similar_trades", "ab_variants", "decision_traces", "decision_log",
+  ];
   const client = await pool.connect();
   try {
-    await client.query(INIT_SQL);
-    for (const sql of MIGRATIONS) await client.query(sql).catch(() => {});
-    logger.info("PostgreSQL tables ready");
+    for (const t of tables) {
+      await client.query(`TRUNCATE ${t} CASCADE`).catch(() => {
+        // table does not exist yet — safe to ignore
+      });
+    }
+    await client.query(
+      "INSERT INTO factor_weights (id) VALUES (1) ON CONFLICT DO NOTHING"
+    ).catch(() => {});
+    logger.info({ tables: tables.length }, "resetAllData: all tables truncated");
   } finally { client.release(); }
+  return chatIdList;
 }
