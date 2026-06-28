@@ -396,6 +396,15 @@ const MIGRATIONS = [
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT '1h'",
+  // ── Partial entry (pending_entry) columns ────────────────────────────────
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_size    DOUBLE PRECISION",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_trigger DOUBLE PRECISION",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS llm_sentiment TEXT",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS llm_risk TEXT",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS llm_confidence INTEGER",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_sentiment TEXT",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk TEXT",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence INTEGER",
   "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_commission DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_accounts        ADD COLUMN IF NOT EXISTS total_slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   `CREATE TABLE IF NOT EXISTS decision_log (
