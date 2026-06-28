@@ -40,6 +40,17 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   let _bot: Telegraf | null = null;
   let _lastMilestoneTrades = 0;
 
+  // Restore milestone counter from DB so restarts don't re-trigger the same report
+  async function initLastMilestoneTrades(): Promise<void> {
+    try {
+      const total = await getClosedTradeCount();
+      _lastMilestoneTrades = Math.floor(total / 100) * 100;
+      logger.info({ total, _lastMilestoneTrades }, 'Milestone counter restored from DB');
+    } catch (err) {
+      logger.warn({ err }, 'Could not restore milestone counter — defaulting to 0');
+    }
+  }
+
   const recentlyProcessed = new Map<string, number>();
   const DEBOUNCE_MS = 30_000;
 
@@ -479,6 +490,7 @@ _${corrRisk.reason}_`);
   // ── Start ──────────────────────────────────────────────────────────────────
   export function startScheduler(bot: Telegraf): void {
     _bot = bot;
+    void initLastMilestoneTrades(); // restore from DB before first 30s tick
 
     kuCoinWs.onNewCandle((sym, iv) => void onNewCandle(sym, iv));
     kuCoinWs.start().catch(err => logger.error({ err }, "KuCoin WS start error"));
