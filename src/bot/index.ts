@@ -1159,37 +1159,19 @@ import { runDataCleanup } from "./data-cleanup.js";
         const diff     = result.newBalance - result.oldBalance;
         const diffSign = diff >= 0 ? "+" : "";
         await ctx.reply(
-          `<b>✅ Очистка завершена</b>
-
-` +
-          `🗑 Удалено дублей: <b>${result.dupesRemoved}</b>
-` +
-          `📊 Реальных сделок: <b>${result.tradesKept}</b>
-
-` +
-          `💰 <b>Баланс</b>
-` +
-          `  Было:  <code>${result.oldBalance.toFixed(2)}</code>
-` +
-          `  Стало: <code>${result.newBalance.toFixed(2)}</code>
-` +
-          `  Коррекция: <b>${diffSign}${diff.toFixed(2)}</b>
-
-` +
-          `🧠 <b>Сброшено</b>
-` +
-          `  • strategy_stats, strategy_regime_stats
-` +
-          `  • strategy_loss_reasons
-` +
-          `  • Веса стратегий → нейтральные (trust 50/100)
-` +
-          `  • time_analytics, instrument_analytics
-` +
-          `  • strategy_versions, learning_reports
-
-` +
-          `<i>Бот начнёт обучение заново на чистых данных ✨</i>`,
+          `<b>✅ Очистка завершена</b>\n\n` +
+          `🗑 Удалено дублей: <b>${result.dupesRemoved}</b>\n` +
+          `📊 Реальных сделок: <b>${result.tradesKept}</b>\n\n` +
+          `💰 <b>Баланс</b>\n` +
+          `  Было:  <code>${result.oldBalance.toFixed(2)}</code>\n` +
+          `  Стало: <code>${result.newBalance.toFixed(2)}</code>\n` +
+          `  Коррекция: <b>${diffSign}${diff.toFixed(2)}</b>\n\n` +
+          `🧠 <b>Статистика обучения</b>\n` +
+          `  ✅ Восстановлено в strategy_stats: <b>${result.statsRebuilt}</b> стратегий\n` +
+          `  • Веса → нейтральные (trust 50/100)\n` +
+          `  • time_analytics, instrument_analytics — очищены\n` +
+          `  • strategy_versions, learning_reports — очищены\n\n` +
+          `<i>Бот обучается на реальных ${result.tradesKept} сделках ✨</i>`,
           { parse_mode: "HTML" }
         );
       } catch (err) {
