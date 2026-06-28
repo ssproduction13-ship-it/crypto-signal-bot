@@ -53,7 +53,7 @@ async function gatherWeeklyStats(): Promise<{
   const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 3600 * 1000).toISOString();
 
   const { rows: weekTrades } = await pool.query(
-    `SELECT pnl_percent FROM paper_closed_trades WHERE closed_at >= $1 AND outcome IS NOT NULL`,
+    `SELECT pnl_percent FROM paper_closed_trades WHERE closed_at::timestamptz >= $1::timestamptz AND outcome IS NOT NULL`,
     [weekAgo]
   );
   const weekPnls = (weekTrades as Record<string, unknown>[]).map(r => Number(r["pnl_percent"]));
@@ -63,7 +63,7 @@ async function gatherWeeklyStats(): Promise<{
   const weekWR = weekPnls.length > 0 ? weekPnls.filter(v => v > 0).length / weekPnls.length : 0;
 
   const { rows: prevTrades } = await pool.query(
-    `SELECT pnl_percent FROM paper_closed_trades WHERE closed_at >= $1 AND closed_at < $2 AND outcome IS NOT NULL`,
+    `SELECT pnl_percent FROM paper_closed_trades WHERE closed_at::timestamptz >= $1::timestamptz AND closed_at::timestamptz < $2::timestamptz AND outcome IS NOT NULL`,
     [twoWeeksAgo, weekAgo]
   );
   const prevPnls = (prevTrades as Record<string, unknown>[]).map(r => Number(r["pnl_percent"]));
@@ -78,7 +78,7 @@ async function gatherWeeklyStats(): Promise<{
        SUM(CASE WHEN pnl_percent > 0 THEN pnl_percent ELSE 0 END) as win_pnl,
        SUM(CASE WHEN pnl_percent <= 0 THEN ABS(pnl_percent) ELSE 0 END) as loss_pnl
      FROM paper_closed_trades
-     WHERE closed_at >= $1 AND outcome IS NOT NULL
+     WHERE closed_at::timestamptz >= $1::timestamptz AND outcome IS NOT NULL
      GROUP BY strategy ORDER BY SUM(pnl_percent) DESC`,
     [weekAgo]
   );
@@ -89,7 +89,7 @@ async function gatherWeeklyStats(): Promise<{
        SUM(CASE WHEN pnl_percent > 0 THEN 1 ELSE 0 END) as wins,
        AVG(pnl_percent) as avg_pnl
      FROM paper_closed_trades
-     WHERE closed_at >= $1 AND outcome IS NOT NULL
+     WHERE closed_at::timestamptz >= $1::timestamptz AND outcome IS NOT NULL
      GROUP BY symbol ORDER BY AVG(pnl_percent) DESC`,
     [weekAgo]
   );
