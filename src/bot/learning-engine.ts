@@ -276,7 +276,7 @@ export async function selectBestStrategy(
 
     // Final Score = Signal Score × Trust × Strategy Weight × Regime Score (TZ §1)
     const finalScore = sig.score
-      * Math.max(0.01, trustScore / 100)
+      * Math.max(0.15, trustScore / 100)  // floor 15%: prevents near-zero finalScore at bootstrap
       * Math.max(0.10, weight)
       * Math.max(0.10, regimePF);
 
