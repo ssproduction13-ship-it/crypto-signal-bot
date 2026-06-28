@@ -1,7 +1,7 @@
 import { getPrice } from "./binance.js";
 import {
   loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
-  tryClaimPosition, tryMarkTP1,
+  tryClaimPosition, tryMarkTP1, updateJournalClose,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
@@ -17,7 +17,6 @@ import { updateTradeResult } from "./similar-trades.js";
 
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
 // Stores TP1 PnL per posId so the final close records ONE stat entry (signal = 1 trade).
-const _tp1PnlAccum = new Map<string, number>(); // posId → TP1 pnl ($)
 
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
@@ -158,6 +157,9 @@ export async function checkPaperPositions(
   for (const pos of account.positions) {
     try {
       const price = await getPrice(pos.symbol);
+      const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
+      const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
+      const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
 
         // ── Position Timeout ─────────────────────────────────────────────────────
         if (!pos.breakevenMoved) {
@@ -176,7 +178,10 @@ export async function checkPaperPositions(
               recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
               const regime = pos.marketRegime ?? "sideways";
               recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+              recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
+              recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
+              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct).catch(() => {});
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
               const timeoutMsg =
                 `⏱ *Позиция закрыта по таймауту — ${pos.symbol} ${pos.direction}*\n` +
@@ -190,9 +195,6 @@ export async function checkPaperPositions(
             }
           }
         }
-      const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
-      const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
-      const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
 
       // ── Pending Second Entry: fill remaining 40% on pullback ──────────────
       if (pos.pendingEntrySize != null && pos.pendingEntrySize > 0 && pos.pendingEntryTrigger != null) {
@@ -271,8 +273,14 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        // Accumulate TP1 PnL — stat recorded once at final close (Variant B: 1 signal = 1 trade)
-        _tp1PnlAccum.set(pos.id, (_tp1PnlAccum.get(pos.id) ?? 0) + pnl);
+        // Record TP1 as its own stat entry — consistent with paper_closed_trades (1 row per execution)
+        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, true).catch(() => {});
+        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true).catch(() => {});
+        recordTimeTrade(pos.openedAt, pnlEquityPct, true).catch(() => {});
+        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, true).catch(() => {});
+        updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
+        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct).catch(() => {});
+        recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true).catch(() => {});
 
         pos.size              = pos.size * 0.5;
         pos.stopLoss          = pos.entryPrice;
@@ -340,21 +348,18 @@ export async function checkPaperPositions(
         await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Combined PnL: TP1 portion (if any) + final close portion → 1 stat entry per signal
-        const tp1Pnl = _tp1PnlAccum.get(pos.id) ?? 0;
-        _tp1PnlAccum.delete(pos.id);
-        const totalPnl = tp1Pnl + pnl;
-        const totalPnlEquityPct = equityAtOpen > 0 ? (totalPnl / equityAtOpen) * 100 : pnlEquityPct;
-        recordStrategyTrade(pos.strategy ?? "TREND", totalPnlEquityPct, totalPnl > 0).catch(() => {});
-
+        // Each partial close is its own stat entry — consistent with paper_closed_trades
+        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
         const regime = pos.marketRegime ?? "sideways";
-        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, totalPnlEquityPct, totalPnl > 0).catch(() => {});
-        recordTimeTrade(pos.openedAt, totalPnlEquityPct, totalPnl > 0).catch(() => {});
-        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, totalPnlEquityPct, totalPnl > 0).catch(() => {});
-        if (totalPnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
+        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
+        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct).catch(() => {});
+        if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
           const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
           recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
         }
-        updateTradeResult(pos.id, totalPnlEquityPct, totalPnl > 0, closeReason).catch(() => {});
+        updateTradeResult(pos.id, pnlEquityPct, pnl > 0, closeReason).catch(() => {});
 
         const isProfit    = pnl > 0;
         // True BE only when close price ≈ entry (within 0.01%).
@@ -431,6 +436,9 @@ export async function getPaperStats(chatId: number): Promise<string> {
   const gW      = wins.reduce((a,t)=>a+t.pnl,0);
   const gL      = Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
   const pf      = gL>0 ? gW/gL : gW>0?999:0;
+  const expectancy = trades.length
+    ? (wins.length / trades.length) * avgW - (losses.length / trades.length) * avgL
+    : 0;
   const ret     = ((account.balance-account.initialBalance)/account.initialBalance)*100;
   const totalComm = account.totalCommission ?? 0;
   const totalSlip = account.totalSlippage ?? 0;
@@ -449,7 +457,8 @@ export async function getPaperStats(chatId: number): Promise<string> {
     `${ret>=0?"📈":"📉"} P&L: ${ret>=0?"+":""}${ret.toFixed(2)}%`, "",
     `📊 Сделок: ${trades.length} | WR: ${trades.length?(wins.length/trades.length*100).toFixed(1):0}%`,
     `Win avg: +${avgW.toFixed(2)}% | Loss avg: -${avgL.toFixed(2)}%`,
-    `Profit Factor: ${pf===999?"∞":pf.toFixed(2)}`, "",
+    `Profit Factor: ${pf===999?"∞":pf.toFixed(2)}`,
+    `Expectancy: ${expectancy>=0?"+":""}${expectancy.toFixed(2)}%`, "",
     `💸 Комиссии: -$${totalComm.toFixed(2)} | Проскальзывание: -$${totalSlip.toFixed(2)}`,
     `Потери на издержках: -$${(totalComm + totalSlip).toFixed(2)} (${account.initialBalance > 0 ? ((totalComm + totalSlip) / account.initialBalance * 100).toFixed(2) : "0"}% депозита)`, "",
     `📂 Открытых позиций (${account.positions.length}/10):`,

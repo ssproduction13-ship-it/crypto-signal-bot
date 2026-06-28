@@ -6,7 +6,7 @@ import cron from "node-cron";
   import { loadSettings, loadPaperAccount, loadWeights } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
   import { evaluateABVariants, checkDegradation } from "./ab-testing.js";
-  import { pool , resetAllData, pool } from "../lib/db.js";
+  import { pool, resetAllData } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
   import {

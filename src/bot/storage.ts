@@ -178,6 +178,31 @@ import { pool } from "../lib/db.js";
     const {rowCount} = await pool.query(`UPDATE journal_entries SET ${sets.join(",")} WHERE id=$${i}`,vals);
     return (rowCount??0)>0;
   }
+
+  /**
+   * Close the most recent open journal_entry for a given chatId+symbol+direction.
+   * Called whenever a paper position closes (TP1, TP2, SL, BE, TIMEOUT).
+   * Uses the LATEST unclosed entry to handle positions opened without a journal link.
+   */
+  export async function updateJournalClose(
+    chatId: number,
+    symbol: string,
+    direction: "LONG"|"SHORT",
+    closePrice: number,
+    outcome: string,
+    pnlPercent: number
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE journal_entries
+       SET closed_at=$1, close_price=$2, outcome=$3, pnl_percent=$4
+       WHERE id = (
+         SELECT id FROM journal_entries
+         WHERE chat_id=$5 AND symbol=$6 AND direction=$7 AND closed_at IS NULL
+         ORDER BY timestamp DESC LIMIT 1
+       )`,
+      [new Date().toISOString(), closePrice, outcome, pnlPercent, chatId, symbol, direction]
+    );
+  }
   export async function loadPaperAccount(chatId: number): Promise<PaperAccount> {
     const [a,p,t] = await Promise.all([
       pool.query("SELECT * FROM paper_accounts WHERE chat_id=$1",[chatId]),
