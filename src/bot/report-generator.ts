@@ -891,16 +891,25 @@ tr:hover td{background:#263348}
 <details>
   <summary>⏰ Статистика по времени</summary>
   <div class="section-body">
-    ${allStats && Object.keys(allStats.byHour).length > 0 ? `
-    <table>
-      <tr><th>Час UTC</th><th>Сделок</th><th>WR</th><th>Оценка</th></tr>
-      ${Object.entries(allStats.byHour).sort(([a],[b]) => Number(a)-Number(b)).map(([h,v]) => {
-        const wr2 = v.wins/v.total*100;
-        return `<tr><td>${String(h).padStart(2,"0")}:00</td><td>${v.total}</td>
-          <td class="${wrClass(wr2)}">${wr2.toFixed(0)}%</td>
-          <td>${wr2>=60?"🔥 Лучший":wr2>=50?"✅ Хороший":wr2>=40?"⚠️ Слабый":"❌ Плохой"}</td></tr>`;
-      }).join("")}
-    </table>` : '<div class="empty">Недостаточно данных</div>'}
+    ${ (() => {
+      const byH: Record<string,{w:number;t:number}> = {};
+      for (const t of d.closedTrades) {
+        const h = String(new Date(t.closedAt).getUTCHours());
+        if (!byH[h]) byH[h] = {w:0,t:0};
+        byH[h]!.t++; if (t.pnl>0) byH[h]!.w++;
+      }
+      const hrs = Object.keys(byH);
+      if (!hrs.length) return '<div class="empty">Недостаточно данных</div>';
+      return `<table>
+        <tr><th>Час UTC</th><th>Сделок</th><th>WR</th><th>Оценка</th></tr>
+        ${hrs.sort((a,b)=>Number(a)-Number(b)).map(h => {
+          const v = byH[h]!; const wr2 = v.w/v.t*100;
+          return `<tr><td>${String(h).padStart(2,"0")}:00</td><td>${v.t}</td>
+            <td class="${wrClass(wr2)}">${wr2.toFixed(0)}%</td>
+            <td>${wr2>=60?"🔥 Лучший":wr2>=50?"✅ Хороший":wr2>=40?"⚠️ Слабый":"❌ Плохой"}</td></tr>`;
+        }).join("")}
+      </table>`;
+    })()}
   </div>
 </details>
 
