@@ -10,7 +10,7 @@
 import axios from "axios";
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
-import { getCandles } from "./binance.js";
+import { getCandles, validateSymbol } from "./binance.js";
 
 const KC_BASE = "https://api.kucoin.com";
 
@@ -180,6 +180,15 @@ export async function checkNewListings(
         continue;
       }
 
+      // Явная проверка: пара существует на бирже (KuCoin — тот же API что использует бот)
+      await new Promise(r => setTimeout(r, 300));
+      const onExchange = await validateSymbol(stdSym);
+      if (!onExchange) {
+        await saveListingRecord(stdSym, listedAt, volume, 0, "not_on_exchange");
+        logger.warn({ symbol: stdSym }, "ListingWatcher: символ не найден на бирже — пропуск");
+        continue;
+      }
+
       // Проверяем количество свечей
       await new Promise(r => setTimeout(r, 300));
       const { ok, count } = await hasEnoughCandles(stdSym);
@@ -237,7 +246,7 @@ export async function getListingsReport(): Promise<string> {
     const lines = ["📋 *Найденные листинги (последние 20)*\n"];
     for (const r of rows as Record<string, unknown>[]) {
       const status = String(r["status"]);
-      const icon = status === "subscribed" ? "✅" : status === "low_volume" ? "📉" : "⏳";
+      const icon = status === "subscribed" ? "✅" : status === "low_volume" ? "📉" : status === "not_on_exchange" ? "🚫" : "⏳";
       const vol = r["volume_24h"] ? `$${(Number(r["volume_24h"]) / 1_000_000).toFixed(2)}M` : "—";
       const dt = r["listed_at"] ? new Date(String(r["listed_at"])).toLocaleDateString("ru") : "—";
       lines.push(`${icon} *${r["symbol"]}* | ${dt} | Vol: ${vol} | ${status}`);
