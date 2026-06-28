@@ -15,6 +15,10 @@ import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
 
 
+// ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
+// Stores TP1 PnL per posId so the final close records ONE stat entry (signal = 1 trade).
+const _tp1PnlAccum = new Map<string, number>(); // posId → TP1 pnl ($)
+
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
 const COMMISSION_RATE = 0.001;
@@ -267,7 +271,8 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, true).catch(() => {});
+        // Accumulate TP1 PnL — stat recorded once at final close (Variant B: 1 signal = 1 trade)
+        _tp1PnlAccum.set(pos.id, (_tp1PnlAccum.get(pos.id) ?? 0) + pnl);
 
         pos.size              = pos.size * 0.5;
         pos.stopLoss          = pos.entryPrice;
@@ -334,7 +339,12 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
+        // Combined PnL: TP1 portion (if any) + final close portion → 1 stat entry per signal
+        const tp1Pnl = _tp1PnlAccum.get(pos.id) ?? 0;
+        _tp1PnlAccum.delete(pos.id);
+        const totalPnl = tp1Pnl + pnl;
+        const totalPnlEquityPct = equityAtOpen > 0 ? (totalPnl / equityAtOpen) * 100 : pnlEquityPct;
+        recordStrategyTrade(pos.strategy ?? "TREND", totalPnlEquityPct, totalPnl > 0).catch(() => {});
 
         const regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
