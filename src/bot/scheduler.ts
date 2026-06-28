@@ -43,6 +43,12 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   const recentlyProcessed = new Map<string, number>();
   const DEBOUNCE_MS = 30_000;
 
+  // ── Concurrency guard: prevents checkPositions from running in parallel ──────
+  // Without this, setInterval fires a new cycle every 30s regardless of whether
+  // the previous one finished. With 18+ open positions (18 API calls + DB ops),
+  // execution takes >30s and two concurrent cycles double-close the same positions.
+  let _checkPositionsRunning = false;
+
   function key(chatId: number, symbol: string) { return `${chatId}:${symbol}`; }
 
   async function safeSend(chatId: number, text: string) {
@@ -98,14 +104,13 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
     return [...subs.values()].filter(s => s.chatId === chatId);
   }
 
-  // ── Dynamic score threshold ─────────────────────────────────────────────────
-  // Learning mode: lower thresholds to collect more trade data
   function dynamicMinScore(marketIndex: number): number {
     if (marketIndex >= 70) return 30;
     if (marketIndex >= 50) return 33;
     if (marketIndex >= 30) return 36;
     return 40;
   }
+
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
   async function analyzeAndTrade(sub: Sub): Promise<void> {
     const debounceKey = `${sub.chatId}:${sub.symbol}`;
@@ -118,7 +123,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
 
-      // ── Build strategy selection ───────────────────────────────────────────
       const strategySignals: StrategySignalInput[] = [];
       if (sig.strategies?.length) {
         for (const s of sig.strategies) {
@@ -147,7 +151,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const stratRanking = selectionResult?.ranking ?? [];
       const isExploration = selectionResult?.isExploration ?? false;
 
-      // ── Load strategy status for gate checks ──────────────────────────────
       const [stratStatuses, stratWeights] = await Promise.all([
         getAllStrategyStatuses().catch(() => [] as any[]),
         loadStrategyWeights(),
@@ -156,24 +159,20 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const stratWeight = stratWeights[strat] ?? 1;
       const minScore = dynamicMinScore(sig.marketRating.index);
 
-      // ── TRADE QUALITY GATE — 8 sequential checks ──────────────────────────
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
-      // 1. Market Chaos
       if (sig.market.isChaotic) {
         gate.fail("Рынок: хаос", "Хаотичный рынок", `ATR ${sig.market.atrPercent?.toFixed(1)}%`);
       } else {
         gate.pass("Рынок: хаос", "OK");
       }
 
-      // 2. Signal Direction
       if (!gate.rejected && sig.score.direction === "NEUTRAL") {
         gate.fail("Направление", "Нейтральный сигнал", "NEUTRAL");
       } else if (!gate.rejected) {
         gate.pass("Направление", sig.score.direction);
       }
 
-      // 3. Score & Confidence
       if (!gate.rejected && sig.score.total < minScore) {
         gate.fail("Score", `Score ниже порога`, sig.score.total, minScore);
       } else if (!gate.rejected) {
@@ -186,7 +185,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }
 
-      // 4. Strategy Trust Score — skip until 20 trades (matches PF gate threshold)
       const minTrust = stratStatus?.quarantine ? 45 : 20;
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
@@ -194,14 +192,12 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
-      // 5. Strategy Profit Factor (minimum 0.75 unless too few trades)
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.75) {
         gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
       } else {
         if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
       }
 
-      // 6. Market Regime compatibility
       const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime);
       if (!gate.rejected && regimeBlocked) {
         gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
@@ -209,14 +205,12 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Режим рынка", `${regime} → ${strat} OK`);
       }
 
-      // 7. Strategy weight (disabled = 0)
       if (!gate.rejected && stratWeight === 0) {
         gate.fail("Вес стратегии", "Стратегия отключена движком адаптации", "0%");
       } else if (!gate.rejected) {
         gate.pass("Вес стратегии", `${(stratWeight * 100).toFixed(0)}%`);
       }
 
-      // 8. Time restriction (historically bad hour/day)
       const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
         now.getHours(), (now.getDay() + 6) % 7
       );
@@ -226,8 +220,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Временной слот", `${now.getHours()}h OK`);
       }
 
-
-      // 9. MTF Alignment — block trades against 4H trend
       if (!gate.rejected) {
         const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch(() => ({ allowed: true, trend4h: 'NEUTRAL' as const, reason: 'MTF ошибка — пропуск', ema20_4h: null, ema50_4h: null }));
         if (!mtf.allowed) {
@@ -239,8 +231,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
       }
 
-      // ── Save decision trace async (non-blocking) ───────────────────────────
-      // TZ §6: Enhanced transparency — include trust, weight, exploration flag, strategy ranking
       const rankingNote = stratRanking.length > 1
         ? stratRanking.slice(1).map(r =>
             `${r.strategy}: score=${r.finalScore.toFixed(1)} trust=${r.trustScore} w=${(r.weight*100).toFixed(0)}%`
@@ -270,14 +260,12 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       }
 
       logger.debug({ symbol: sub.symbol, strat, regime, score: sig.score.total }, "Trade Quality Gate: PASS");
-      // ── End Trade Quality Gate ─────────────────────────────────────────────
 
       const settings = await loadSettings(sub.chatId);
       if (!settings.autoPaperTrade) return;
 
       const account  = await loadPaperAccount(sub.chatId);
       const openSyms = account.positions.map(p => p.symbol);
-      // Pass actual positions count as source of truth (avoids risk_state counter desync)
       const { allowed, reason } = await canOpenTrade(sub.symbol, openSyms, account.positions.length, sig.score.direction as "LONG"|"SHORT", account.positions);
 
       if (!allowed) {
@@ -287,8 +275,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         return;
       }
 
-
-      // ── Correlation Guard ──────────────────────────────────────────────────
       const corrRisk = await checkCorrelationRisk(
         sub.chatId, sub.symbol,
         sig.score.direction as 'LONG'|'SHORT',
@@ -315,7 +301,6 @@ _${corrRisk.reason}_`);
       );
 
       if (res.success) {
-        // AI Learning Engine v3: save trade features for Similar Trades Engine
         if (res.position) {
           const now = new Date();
           const features: TradeFeatures = {
@@ -325,7 +310,7 @@ _${corrRisk.reason}_`);
             interval: sub.interval,
             score: sig.score.total,
             confidence: sig.confidence.score,
-            rsi: sig.confidence.factors.recentPerformance, // use available data
+            rsi: sig.confidence.factors.recentPerformance,
             macdHistogram: 0,
             adxValue: 0,
             atrPercent: sig.risk.atr ? (sig.risk.atr / sig.risk.entryPrice) * 100 : 1,
@@ -350,7 +335,6 @@ _${corrRisk.reason}_`);
         };
         logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
 
-        // Open shadow position in parallel for comparison
         loadWeights().then(w =>
           openShadowPosition(sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
             sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
@@ -358,7 +342,6 @@ _${corrRisk.reason}_`);
           ).catch(() => {})
         ).catch(() => {});
 
-        // Build strategy ranking lines for transparency (TZ §6)
         const rankLines = stratRanking.length > 1
           ? stratRanking.map((r, i) => {
               const medal = i === 0 ? (isExploration ? "🎲" : "👑") : ["2️⃣","3️⃣","4️⃣"][i-1] ?? `${i+1}.`;
@@ -386,50 +369,61 @@ _${corrRisk.reason}_`);
   }
 
   // ── Position monitor + Learning milestone check ─────────────────────────────
+  // IMPORTANT: Uses _checkPositionsRunning guard to prevent concurrent execution.
+  // Without the guard, setInterval fires a new cycle every 30s even if the previous
+  // one is still running, causing multiple cycles to double-close the same positions.
   async function checkPositions(): Promise<void> {
-    for (const chatId of chatIds) {
-      const sendFn = (msg: string) => safeSend(chatId, msg);
-      const msgs = await checkPaperPositions(chatId, sendFn).catch(() => []);
-      for (const m of msgs) await safeSend(chatId, m);
+    if (_checkPositionsRunning) {
+      logger.debug("checkPositions already running — skipping this 30s tick to prevent double-close");
+      return;
     }
-
-    // Self Learning: every 100 trades → adapt weights, snapshot version, send report
+    _checkPositionsRunning = true;
     try {
-      const total = await getClosedTradeCount();
-      const milestone = Math.floor(total / 100) * 100;
-      if (milestone > 0 && milestone > _lastMilestoneTrades) {
-        _lastMilestoneTrades = milestone;
-        logger.info({ total, milestone }, "100-trade milestone — running Self Learning cycle");
-        const changes = await runAdaptationCycle(chatIds);
-        await snapshotStrategyVersion(changes);
-        const report = await generateLearningReport();
-        for (const chatId of chatIds) await safeSend(chatId, report);
-
-        // AI Learning Engine v3: Feature Importance + AI Researcher
-        try {
-          const importances = await calcFeatureImportance();
-          if (importances.length) {
-            const weightChanges = await applyFeatureWeightAdjustments(importances);
-            const importanceReport = formatFeatureImportance(importances);
-            const weightNote = weightChanges.length
-              ? `\n\n⚙️ *Веса факторов скорректированы:*\n${weightChanges.join("\n")}`
-              : "\n\n_Веса факторов не изменились_";
-            for (const chatId of chatIds)
-              await safeSend(chatId, importanceReport + weightNote);
-          }
-        } catch (err) {
-          logger.error({ err }, "Feature importance cycle error");
-        }
-
-        try {
-          const researchReport = await runAIResearch(total);
-          for (const chatId of chatIds) await safeSend(chatId, researchReport);
-        } catch (err) {
-          logger.error({ err }, "AI Researcher cycle error");
-        }
+      for (const chatId of chatIds) {
+        const sendFn = (msg: string) => safeSend(chatId, msg);
+        const msgs = await checkPaperPositions(chatId, sendFn).catch(() => []);
+        for (const m of msgs) await safeSend(chatId, m);
       }
-    } catch (err) {
-      logger.error({ err }, "Learning milestone cycle error");
+
+      // Self Learning: every 100 trades → adapt weights, snapshot version, send report
+      try {
+        const total = await getClosedTradeCount();
+        const milestone = Math.floor(total / 100) * 100;
+        if (milestone > 0 && milestone > _lastMilestoneTrades) {
+          _lastMilestoneTrades = milestone;
+          logger.info({ total, milestone }, "100-trade milestone — running Self Learning cycle");
+          const changes = await runAdaptationCycle(chatIds);
+          await snapshotStrategyVersion(changes);
+          const report = await generateLearningReport();
+          for (const chatId of chatIds) await safeSend(chatId, report);
+
+          try {
+            const importances = await calcFeatureImportance();
+            if (importances.length) {
+              const weightChanges = await applyFeatureWeightAdjustments(importances);
+              const importanceReport = formatFeatureImportance(importances);
+              const weightNote = weightChanges.length
+                ? `\n\n⚙️ *Веса факторов скорректированы:*\n${weightChanges.join("\n")}`
+                : "\n\n_Веса факторов не изменились_";
+              for (const chatId of chatIds)
+                await safeSend(chatId, importanceReport + weightNote);
+            }
+          } catch (err) {
+            logger.error({ err }, "Feature importance cycle error");
+          }
+
+          try {
+            const researchReport = await runAIResearch(total);
+            for (const chatId of chatIds) await safeSend(chatId, researchReport);
+          } catch (err) {
+            logger.error({ err }, "AI Researcher cycle error");
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, "Learning milestone cycle error");
+      }
+    } finally {
+      _checkPositionsRunning = false;
     }
   }
 
@@ -492,19 +486,16 @@ _${corrRisk.reason}_`);
       .then(() => sendStartupSummary())
       .catch(err => logger.error({ err }, "initSubscriptions error"));
 
-    // Position monitor + learning milestone check every 30 seconds
+    // Position monitor every 30 seconds — guarded by _checkPositionsRunning to prevent overlap
     setInterval(() => { void checkPositions(); }, 30_000);
 
-    // Shadow positions check every 5 minutes
     cron.schedule("*/5 * * * *", async () => {
       checkShadowPositions().catch(() => {});
     });
 
-    // Silent fallback: re-analyze all subscriptions every 15 minutes
     cron.schedule("*/15 * * * *", async () => {
       if (!subs.size) return;
       logger.debug({ count: subs.size }, "Silent fallback scan");
-      // Stagger: 250ms delay per pair to avoid KuCoin API rate limit burst
       let _stagger = 0;
       for (const sub of subs.values()) {
         const _s = sub;
@@ -513,10 +504,8 @@ _${corrRisk.reason}_`);
       }
     });
 
-    // A/B evaluation + degradation check every 6 hours
     cron.schedule("0 */6 * * *", async () => { void runABEvaluation(); });
 
-    // Market rating broadcast every 4 hours (only on extremes)
     cron.schedule("0 */4 * * *", async () => {
       if (!chatIds.size) return;
       try {
@@ -535,8 +524,6 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.debug({ err }, "Market rating broadcast error"); }
     });
 
-    // ── Release Candidate: New module cron jobs ──────────────────────────
-    // Market Drift Detection — every 6 hours
     cron.schedule("0 */6 * * *", async () => {
       try {
         const drift = await detectMarketDrift();
@@ -548,8 +535,6 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
 
-    // Learning Health Monitor — silent data collection every hour (TZ §5: no auto-stops in paper mode)
-    // evaluateCooldown and checkLearningHealth write to DB for /health command — no notifications here
     cron.schedule("0 * * * *", async () => {
       try {
         await checkLearningHealth();
@@ -559,18 +544,16 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Health monitor silent collection error"); }
     });
 
-    // Daily health digest — 18:00, calm summary only, no alarms (TZ §5)
     cron.schedule("0 18 * * *", async () => {
       try {
         const health = await checkLearningHealth();
-        // Only send if there's something meaningful to report (not just noise)
         if (health.overall === "excellent" || health.overall === "good") return;
 
         const trendIcon = health.trend === "improving" ? "📈" : health.trend === "degrading" ? "📉" : "➡️";
         const p30 = health.periods[0];
         const p100 = health.periods[1];
 
-        if (!p30 || p30.trades < 15) return; // not enough data yet
+        if (!p30 || p30.trades < 15) return;
 
         const lines = [
           `📊 *Ежедневная статистика обучения*`,
@@ -592,7 +575,6 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Daily health digest error"); }
     });
 
-    // Walk-Forward Testing — after every adaptation cycle (every 12 hours)
     cron.schedule("0 */12 * * *", async () => {
       try {
         const strategies: Array<"TREND" | "BREAKOUT" | "VOLUME_IMPULSE" | "MEAN_REVERSION"> = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
@@ -602,7 +584,6 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Walk-forward / snapshot error"); }
     });
 
-    // Weekly strategy ranking — every Sunday 20:00 (TZ §4)
     cron.schedule("0 20 * * 0", async () => {
       try {
         const ranking = await generateWeeklyRanking();
@@ -610,7 +591,6 @@ _${corrRisk.reason}_`);
       } catch (err) { logger.warn({ err }, "Weekly ranking error"); }
     });
 
-    // AI Weekly Research — every 7 days at Monday 09:00
     cron.schedule("0 9 * * 1", async () => {
       try {
         const report = await generateWeeklyResearch();
@@ -621,4 +601,3 @@ _${corrRisk.reason}_`);
 
     logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");
   }
-  
