@@ -6,7 +6,7 @@ import cron from "node-cron";
   import { loadSettings, loadPaperAccount, loadWeights } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
   import { evaluateABVariants, checkDegradation } from "./ab-testing.js";
-  import { pool } from "../lib/db.js";
+  import { pool , resetAllData, pool } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
   import {
@@ -129,10 +129,10 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   }
 
   function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 28;
-    if (marketIndex >= 50) return 30;
-    if (marketIndex >= 30) return 33;
-    return 36;
+    if (marketIndex >= 70) return 45;
+    if (marketIndex >= 50) return 48;
+    if (marketIndex >= 30) return 52;
+    return 55;
   }
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
@@ -203,7 +203,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
-      if (!gate.rejected && sig.confidence.score < 5) {
+      if (!gate.rejected && sig.confidence.score < 25) {
         gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
       } else if (!gate.rejected) {
         gate.pass("Confidence", `${sig.confidence.score}%`);
@@ -222,7 +222,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
       }
 
-      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime).catch(() => ({ blocked: false, reason: '' }));
+      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime, sub.interval).catch(() => ({ blocked: false, reason: '' }));
       if (!gate.rejected && regimeBlocked) {
         gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
       } else if (!gate.rejected) {
@@ -292,8 +292,8 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       if (!settings.autoPaperTrade) return;
 
       const account  = await loadPaperAccount(sub.chatId);
-      const openSyms = account.positions.map(p => p.symbol);
-      const { allowed, reason } = await canOpenTrade(sub.symbol, openSyms, account.positions.length, sig.score.direction as "LONG"|"SHORT", account.positions);
+      const openSyms = account.positions.map(p => `${p.symbol}:${p.interval ?? '1h'}`);
+      const { allowed, reason } = await canOpenTrade(`${sub.symbol}:${sub.interval}`, openSyms, account.positions.length, sig.score.direction as "LONG"|"SHORT", account.positions);
 
       if (!allowed) {
         if (reason.includes("DAILY_LIMIT") || reason.includes("WEEKLY_LIMIT") || reason.includes("3 убытка")) {
@@ -516,6 +516,12 @@ _${corrRisk.reason}_`);
   // ── Start ──────────────────────────────────────────────────────────────────
   export function startScheduler(bot: Telegraf): void {
     _bot = bot;
+    if (process.env["RESET_DATA"] === "true") {
+      const resetChatIds = await resetAllData();
+      const resetMsg = "♻️ База данных сброшена. Виртуальный счёт и вся статистика обнулены. Бот начинает обучение с нуля.";
+      for (const cid of resetChatIds) await bot.telegram.sendMessage(cid, resetMsg).catch(() => {});
+      logger.warn("RESET_DATA completed — all tables truncated");
+    }
     void initLastMilestoneTrades();    // restore from DB before first 30s tick
     void initLastAdaptationTrades();   // restore adaptation baseline from DB
 
@@ -572,6 +578,26 @@ _${corrRisk.reason}_`);
           for (const chatId of chatIds) await safeSend(chatId, msg);
         }
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
+    });
+
+    cron.schedule("0 */6 * * *", async () => {
+      // Watchdog: alert if bot stopped trading for 24+ hours
+      try {
+        const { rows } = await pool.query(`
+          SELECT GREATEST(
+            (SELECT MAX(closed_at) FROM paper_closed_trades),
+            (SELECT MAX(opened_at) FROM paper_positions)
+          ) AS last_activity`,
+        );
+        const lastActivity = rows[0]?.last_activity as string | null;
+        if (lastActivity) {
+          const hoursAgo = (Date.now() - new Date(lastActivity).getTime()) / 3_600_000;
+          if (hoursAgo > 24) {
+            const warnMsg = `⚠️ Бот не совершал сделок больше 24 часов. Проверь Railway logs и состояние подписок.`;
+            for (const chatId of chatIds) await safeSend(chatId, warnMsg);
+          }
+        }
+      } catch (err) { logger.error({ err }, "Watchdog check failed"); }
     });
 
     cron.schedule("0 * * * *", async () => {
@@ -662,6 +688,25 @@ _${corrRisk.reason}_`);
         const { html, filename, summary } = await generateDailyReport(chatId);
         await _bot?.telegram.sendMessage(chatId, summary, { parse_mode: "Markdown" });
         await _bot?.telegram.sendDocument(chatId, { source: html, filename }, { caption: "📄 Полный HTML-отчёт" });
+        // Daily backup of strategy weights
+        try {
+          const [ss, fw, sw, srs] = await Promise.all([
+            pool.query("SELECT * FROM strategy_stats"),
+            pool.query("SELECT * FROM factor_weights"),
+            pool.query("SELECT * FROM strategy_weights"),
+            pool.query("SELECT * FROM strategy_regime_stats"),
+          ]);
+          const backupData = {
+            strategy_stats: ss.rows, factor_weights: fw.rows,
+            strategy_weights: sw.rows, strategy_regime_stats: srs.rows,
+            exported_at: new Date().toISOString(),
+          };
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const backupFilename = `backup-${dateStr}.json`;
+          const backupSource = Buffer.from(JSON.stringify(backupData, null, 2));
+          await _bot?.telegram.sendDocument(chatId, { source: backupSource, filename: backupFilename },
+            { caption: "📦 Бэкап весов стратегий" });
+        } catch (backupErr) { logger.error({ err: backupErr, chatId }, "Daily backup failed"); }
         logger.info({ chatId, filename }, "Daily HTML report sent");
       } catch (err) {
         logger.error({ err, chatId }, "Daily HTML report failed");
