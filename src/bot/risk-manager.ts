@@ -79,6 +79,8 @@ import { pool } from "../lib/db.js";
       direction?: "LONG" | "SHORT",
       openPositions?: Array<{ symbol: string; direction: string }>,
     ): Promise<{ allowed: boolean; reason: string }> {
+      const s = await loadRiskState();
+      if ((openPositionsCount ?? s.openPositions) >= 10) return { allowed: false, reason: "Лимит: 10 открытых позиций" };
       if (openSymbols.includes(symbol))  return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
       return { allowed: true, reason: "" };
     }
