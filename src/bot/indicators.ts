@@ -85,8 +85,11 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   const ema200 = ema200Values.length ? ema200Values[ema200Values.length - 1]! : null;
 
   let emaCrossSignal: "buy" | "sell" | "neutral" = "neutral";
-  if (ema20 != null && ema50 != null) {
-    emaCrossSignal = ema20 > ema50 ? "buy" : "sell";
+  const prevEma20 = ema20Values.length > 1 ? ema20Values[ema20Values.length - 2]! : null;
+  const prevEma50 = ema50Values.length > 1 ? ema50Values[ema50Values.length - 2]! : null;
+  if (ema20 != null && ema50 != null && prevEma20 != null && prevEma50 != null) {
+    if (prevEma20 < prevEma50 && ema20 > ema50) emaCrossSignal = "buy";
+    else if (prevEma20 > prevEma50 && ema20 < ema50) emaCrossSignal = "sell";
   }
 
   const stochValues = StochasticRSI.calculate({
