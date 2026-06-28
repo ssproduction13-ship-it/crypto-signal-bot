@@ -218,6 +218,11 @@ import { runDataCleanup } from "./data-cleanup.js";
       );
     });
 
+    // ── /menu command — persistent shortcut to main menu ──────────────────
+    bot.command("menu", async (ctx) => {
+      await ctx.reply("Главное меню:", mainMenu());
+    });
+
     // ── Navigation ─────────────────────────────────────────────────────────
     bot.action("menu_main", async (ctx) => {
       await ctx.answerCbQuery();
@@ -1085,6 +1090,18 @@ import { runDataCleanup } from "./data-cleanup.js";
     initABVariants().catch(err => logger.error({ err }, "initABVariants failed"));
     startScheduler(bot);
     bot.launch().catch(err => logger.error({ err }, "Bot launch error"));
+    // Register commands so Telegram shows the ☰ Menu button automatically
+    bot.telegram.setMyCommands([
+      { command: "menu",        description: "📋 Главное меню" },
+      { command: "start",       description: "🚀 Запустить / перезапустить бота" },
+      { command: "status",      description: "📊 Статус бота и позиций" },
+      { command: "report",      description: "📄 Полный HTML-отчёт" },
+      { command: "scan",        description: "🔍 Ручное сканирование сигналов" },
+      { command: "listings",    description: "🆕 Новые листинги монет" },
+      { command: "whynotrade",  description: "❓ Почему нет сделок" },
+      { command: "adapt",       description: "🧠 Запустить цикл адаптации" },
+      { command: "cleandata",   description: "🗑 Очистка устаревших данных" },
+    ]).catch(err => logger.warn({ err }, "setMyCommands failed"));
     logger.info("Telegram bot started");
   }
   
