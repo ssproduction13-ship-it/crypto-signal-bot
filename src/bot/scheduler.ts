@@ -244,12 +244,15 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Временной слот", `${now.getHours()}h OK`);
       }
 
+      let mtfSizeMultiplier = 1.0;
       if (!gate.rejected) {
-        const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch(() => ({ allowed: true, trend4h: 'NEUTRAL' as const, reason: 'MTF ошибка — пропуск', ema20_4h: null, ema50_4h: null }));
+        const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch(() => ({ allowed: true, trend4h: 'NEUTRAL' as const, reason: 'MTF ошибка — пропуск', ema20_4h: null, ema50_4h: null, sizeMultiplier: 1.0 }));
+        mtfSizeMultiplier = mtf.sizeMultiplier ?? 1.0;
         if (!mtf.allowed) {
           gate.fail('MTF фильтр (4H)', mtf.reason, `4H: ${mtf.trend4h}`);
         } else {
-          gate.pass('MTF фильтр (4H)', `4H ${mtf.trend4h} → ${sig.score.direction} OK`);
+          const mtfNote = mtfSizeMultiplier < 1 ? ` (контртренд ×${mtfSizeMultiplier})` : ' OK';
+          gate.pass('MTF фильтр (4H)', `4H ${mtf.trend4h} → ${sig.score.direction}${mtfNote}`);
         }
       } else {
         gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
@@ -312,9 +315,10 @@ ${corrRisk.message}
 _${corrRisk.reason}_`);
         return;
       }
-      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier;
-      if (corrRisk.sizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, sizeMultiplier: corrRisk.sizeMultiplier }, 'Correlation Guard: size reduced');
+      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier;
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier }, 'Size reduced by guards');
+      }
       }
 
       const res = await openPaperPosition(
