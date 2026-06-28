@@ -187,7 +187,7 @@ import { runDataCleanup } from "./data-cleanup.js";
       await saveSettings(chatId, s);
       for (const { symbol, interval } of AUTO_PAIRS) subscribe(chatId, symbol, interval);
       await ctx.reply(
-        `✅ *Автоторговля запущена!*\n\nСлежу за *21 монетой* в реальном времени\n` +
+        `✅ *Автоторговля запущена!*\n\nСлежу за *${AUTO_PAIRS.length} монетами* в реальном времени\n` +
         `🧠 Динамический порог по активности рынка\n_Бот работает 24/7_ 😴`,
         { parse_mode: "Markdown", ...mainMenu() }
       );
@@ -350,7 +350,7 @@ import { runDataCleanup } from "./data-cleanup.js";
 
       if (account.positions.length === 0) {
         await ctx.reply(
-          `📂 *Открытых позиций нет*\n\n_Бот следит за 21 монетой и откроет сделку при сигнале._`,
+          `📂 *Открытых позиций нет*\n\n_Бот следит за ${AUTO_PAIRS.length} монетами и откроет сделку при сигнале._`,
           { parse_mode: "Markdown", ...posMenu }
         );
         return;
