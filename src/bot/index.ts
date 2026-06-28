@@ -65,6 +65,21 @@ import { runDataCleanup } from "./data-cleanup.js";
     { symbol: "SEIUSDT",    interval: "15m" }, { symbol: "JUPUSDT",    interval: "15m" },
     { symbol: "ORDIUSDT",   interval: "15m" }, { symbol: "NOTUSDT",    interval: "15m" },
     { symbol: "PYTHUSDT",   interval: "15m" }, { symbol: "EIGENUSDT",  interval: "15m" },
+    // ── Tier 1 (4h timeframe — parallel analysis) ────────────────────────────
+    { symbol: "BTCUSDT",   interval: "4h" }, { symbol: "ETHUSDT",   interval: "4h" },
+    { symbol: "SOLUSDT",   interval: "4h" }, { symbol: "BNBUSDT",   interval: "4h" },
+    { symbol: "XRPUSDT",   interval: "4h" }, { symbol: "AVAXUSDT",  interval: "4h" },
+    { symbol: "LINKUSDT",  interval: "4h" }, { symbol: "DOTUSDT",   interval: "4h" },
+    { symbol: "ATOMUSDT",  interval: "4h" }, { symbol: "LTCUSDT",   interval: "4h" },
+    // ── Tier 3 ────────────────────────────────────────────────────────────────
+    { symbol: "AAVEUSDT",  interval: "1h"  }, { symbol: "UNIUSDT",   interval: "1h"  },
+    { symbol: "ONDOUSDT",  interval: "1h"  }, { symbol: "ICPUSDT",   interval: "1h"  },
+    { symbol: "FILUSDT",   interval: "1h"  }, { symbol: "LDOUSDT",   interval: "1h"  },
+    { symbol: "STRKUSDT",  interval: "15m" }, { symbol: "BONKUSDT",  interval: "15m" },
+    { symbol: "FLOKIUSDT", interval: "15m" }, { symbol: "BOMEUSDT",  interval: "15m" },
+    { symbol: "ZKUSDT",    interval: "15m" }, { symbol: "TNSRUSDT",  interval: "15m" },
+    { symbol: "ETHFIUSDT", interval: "15m" }, { symbol: "REZUSDT",   interval: "15m" },
+    { symbol: "BBUSDT",    interval: "15m" },
   ];
   const ALL_PAIRS = AUTO_PAIRS.map(p => p.symbol);
 
@@ -99,7 +114,14 @@ import { runDataCleanup } from "./data-cleanup.js";
       [Markup.button.callback("🔷 MNT",   `${action}_MNTUSDT`),   Markup.button.callback("🤖 FET",    `${action}_FETUSDT`),   Markup.button.callback("🌌 TIA",   `${action}_TIAUSDT`)],
       [Markup.button.callback("🌍 WLD",   `${action}_WLDUSDT`),   Markup.button.callback("⚡ SEI",    `${action}_SEIUSDT`),   Markup.button.callback("🪐 JUP",   `${action}_JUPUSDT`)],
       [Markup.button.callback("🔸 ORDI",  `${action}_ORDIUSDT`),  Markup.button.callback("🔔 NOT",    `${action}_NOTUSDT`),   Markup.button.callback("🔭 PYTH",  `${action}_PYTHUSDT`)],
-      [Markup.button.callback("⚖ EIGEN", `${action}_EIGENUSDT`), Markup.button.callback("◀️ Назад", back)],
+      [Markup.button.callback("⚖ EIGEN", `${action}_EIGENUSDT`)],
+      // Tier 3
+      [Markup.button.callback("🏦 AAVE",   `${action}_AAVEUSDT`),  Markup.button.callback("🦄 UNI",    `${action}_UNIUSDT`),   Markup.button.callback("💧 ONDO",  `${action}_ONDOUSDT`)],
+      [Markup.button.callback("🌐 ICP",    `${action}_ICPUSDT`),   Markup.button.callback("📁 FIL",    `${action}_FILUSDT`),   Markup.button.callback("🔵 LDO",   `${action}_LDOUSDT`)],
+      [Markup.button.callback("⚡ STRK",  `${action}_STRKUSDT`),  Markup.button.callback("🐶 BONK",   `${action}_BONKUSDT`),  Markup.button.callback("🐸 FLOKI", `${action}_FLOKIUSDT`)],
+      [Markup.button.callback("🅱 BOME",   `${action}_BOMEUSDT`),  Markup.button.callback("⬡ ZK",     `${action}_ZKUSDT`),    Markup.button.callback("🧠 TNSR",  `${action}_TNSRUSDT`)],
+      [Markup.button.callback("🔷 ETHFI",  `${action}_ETHFIUSDT`), Markup.button.callback("🟥 REZ",    `${action}_REZUSDT`),   Markup.button.callback("🅱 BB",    `${action}_BBUSDT`)],
+      [Markup.button.callback("◀️ Назад", back)],
     ]);
   }
 
