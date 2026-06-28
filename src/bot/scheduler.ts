@@ -166,7 +166,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         });
       }
       const selectionResult: StrategySelectionResult | null = strategySignals.length > 0
-        ? await selectBestStrategy(strategySignals, regime)
+        ? await selectBestStrategy(strategySignals, regime).catch(() => null)
         : null;
       const bestSig = selectionResult?.selected ?? null;
       const strat = bestSig?.strategy ?? sig.bestStrategy?.strategy ?? "TREND";
@@ -177,7 +177,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       const [stratStatuses, stratWeights] = await Promise.all([
         getAllStrategyStatuses().catch(() => [] as any[]),
-        loadStrategyWeights(),
+        loadStrategyWeights().catch(() => ({} as Record<string,number>)),
       ]);
       const stratStatus = stratStatuses.find((s: any) => s.strategy === strat);
       const stratWeight = stratWeights[strat] ?? 1;
@@ -222,7 +222,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
       }
 
-      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime);
+      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime).catch(() => ({ blocked: false, reason: '' }));
       if (!gate.rejected && regimeBlocked) {
         gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
       } else if (!gate.rejected) {
@@ -237,7 +237,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
         now.getHours(), (now.getDay() + 6) % 7
-      );
+      ).catch(() => ({ restricted: false, reason: '' }));
       if (!gate.rejected && timeBlocked) {
         gate.fail("Временной слот", timeReason);
       } else if (!gate.rejected) {
@@ -288,7 +288,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       logger.debug({ symbol: sub.symbol, strat, regime, score: sig.score.total }, "Trade Quality Gate: PASS");
 
-      const settings = await loadSettings(sub.chatId);
+      const settings = await loadSettings(sub.chatId).catch(async () => { const def = await loadSettings(sub.chatId).catch(() => null); return def ?? { autoPaperTrade: true, riskPercent: 1, minScore: 62, noTradeMode: false, accountSize: 10000 }; });
       if (!settings.autoPaperTrade) return;
 
       const account  = await loadPaperAccount(sub.chatId);
@@ -391,7 +391,9 @@ _${corrRisk.reason}_`);
         );
       }
     } catch (err) {
-      logger.error({ err, symbol: sub.symbol }, "analyzeAndTrade error");
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? (err.stack ?? '').slice(0, 400) : '';
+      logger.error({ err, symbol: sub.symbol, errorMessage: errMsg, errorStack: errStack }, "analyzeAndTrade error");
     }
   }
 
