@@ -447,3 +447,15 @@ export async function resetAllData(): Promise<number[]> {
   } finally { client.release(); }
   return chatIdList;
 }
+
+  export async function initDb(): Promise<void> {
+    if (!process.env["DATABASE_URL"])
+      throw new Error("DATABASE_URL not set");
+    const client = await pool.connect();
+    try {
+      await client.query(INIT_SQL);
+      for (const sql of MIGRATIONS) await client.query(sql).catch(() => {});
+      logger.info("PostgreSQL tables ready");
+    } finally { client.release(); }
+  }
+  
