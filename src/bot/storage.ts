@@ -53,12 +53,12 @@ import { pool } from "../lib/db.js";
     accountSize: number; autoPaperTrade: boolean;
   }
   export interface GeminiWeights {
-    minConfidence: number;       // adaptive confidence gate (starts 45%)
-    blockOnConflict: boolean;    // block trade when news conflicts with direction
-    highRiskMultiplier: number;  // position size multiplier for high-risk signals (starts 0.5)
-    conflictAccuracy: number;    // how much worse conflict trades perform vs average (0–1)
-    confidenceAccuracy: number;  // correlation between Gemini confidence and win rate
-    tradesAnalyzed: number;      // total trades used for last adaptation
+    minConfidence: number;
+    blockOnConflict: boolean;
+    highRiskMultiplier: number;
+    conflictAccuracy: number;
+    confidenceAccuracy: number;
+    tradesAnalyzed: number;
   }
 
   const DEF_W: FactorWeights = {trend:0.30,volume:0.25,momentum:0.20,levels:0.15,pattern:0.10};
@@ -256,7 +256,6 @@ import { pool } from "../lib/db.js";
       [w.minConfidence,w.blockOnConflict,w.highRiskMultiplier,w.conflictAccuracy,w.confidenceAccuracy,w.tradesAnalyzed]
     );
   }
-  /** Called every 100 trades — analyzes Gemini prediction accuracy and adapts thresholds */
   export async function adaptGeminiWeights(): Promise<GeminiWeights|null> {
     const {rows} = await pool.query(
       `SELECT pnl_percent, llm_sentiment, llm_risk, llm_confidence, direction
@@ -274,34 +273,29 @@ import { pool } from "../lib/db.js";
 
     const allWR = trades.filter(t=>t.win).length / trades.length;
 
-    // 1. Conflict accuracy: when sentiment opposes direction, do we lose more?
     const conflict = trades.filter(t=>
       (t.sentiment==="bearish"&&t.direction==="LONG")||
       (t.sentiment==="bullish"&&t.direction==="SHORT")
     );
     const conflictWR  = conflict.length ? conflict.filter(t=>t.win).length/conflict.length : allWR;
     const conflictAcc = conflict.length>=20 ? Math.max(0, 1 - conflictWR/Math.max(allWR,0.01)) : current.conflictAccuracy;
-    // Keep blocking if conflict trades lose ≥15% more than average
     const blockOnConflict = conflictAcc > 0.15;
 
-    // 2. Confidence accuracy: do high-confidence signals win more?
     const hiConf = trades.filter(t=>t.confidence>=70);
     const loConf = trades.filter(t=>t.confidence<40);
     const hiWR   = hiConf.length ? hiConf.filter(t=>t.win).length/hiConf.length : allWR;
     const loWR   = loConf.length ? loConf.filter(t=>t.win).length/loConf.length : allWR;
     const confAcc = hiConf.length>=10&&loConf.length>=10 ? hiWR-loWR : current.confidenceAccuracy;
-    // Adjust threshold: raise if confidence predicts wins, lower if not
     let minConf = current.minConfidence;
     if(confAcc > 0.10) minConf = Math.min(minConf + 3, 65);
     else if(confAcc < 0.02) minConf = Math.max(minConf - 3, 30);
 
-    // 3. High-risk multiplier: do high-risk signals underperform?
     const hiRisk  = trades.filter(t=>t.risk==="high");
     const hiRiskWR = hiRisk.length ? hiRisk.filter(t=>t.win).length/hiRisk.length : allWR;
     let riskMult = current.highRiskMultiplier;
     if(hiRisk.length>=10) {
-      if(hiRiskWR < allWR - 0.10) riskMult = Math.max(riskMult - 0.05, 0.25); // high risk really hurts → reduce more
-      else if(hiRiskWR >= allWR)   riskMult = Math.min(riskMult + 0.10, 1.00); // high risk not predictive → loosen
+      if(hiRiskWR < allWR - 0.10) riskMult = Math.max(riskMult - 0.05, 0.25);
+      else if(hiRiskWR >= allWR)   riskMult = Math.min(riskMult + 0.10, 1.00);
     }
 
     const updated: GeminiWeights = {minConfidence:minConf,blockOnConflict,highRiskMultiplier:riskMult,
@@ -379,5 +373,32 @@ import { pool } from "../lib/db.js";
   }
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 
+  /**
+   * Atomically claim a position for closing by deleting it from the DB.
+   * Returns true if we deleted exactly 1 row (this caller "won" the race).
+   * Returns false if 0 rows deleted (another concurrent cycle already closed it).
+   * This is the primary guard against double-close in concurrent checkPaperPositions calls.
+   */
+  export async function tryClaimPosition(chatId: number, posId: string): Promise<boolean> {
+    const result = await pool.query(
+      "DELETE FROM paper_positions WHERE chat_id=$1 AND id=$2",
+      [chatId, posId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Atomically mark TP1 as processed (sets breakeven_moved = true).
+   * Returns true if the update succeeded (position existed with breakeven_moved=false).
+   * Returns false if already true — another concurrent cycle already processed TP1.
+   */
+  export async function tryMarkTP1(chatId: number, posId: string): Promise<boolean> {
+    const result = await pool.query(
+      `UPDATE paper_positions SET breakeven_moved=true
+       WHERE chat_id=$1 AND id=$2 AND breakeven_moved=false`,
+      [chatId, posId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   logger.info("PostgreSQL storage initialized");
-  
