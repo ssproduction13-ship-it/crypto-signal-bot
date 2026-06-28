@@ -20,6 +20,7 @@ import { Telegraf, Markup } from "telegraf";
   import {
     getAllStrategyStatuses, getLearningHistory, generateLearningReport,
     getStrategyEvolutionHistory, detectMarketRegime,
+    runAdaptationCycle, snapshotStrategyVersion,
   } from "./learning-engine.js";
   import { getTimeAnalytics } from "./time-analytics.js";
   import { getInstrumentAnalytics } from "./instrument-analytics.js";
@@ -1148,6 +1149,30 @@ import { runDataCleanup } from "./data-cleanup.js";
     });
 
     // ── Text fallback ──────────────────────────────────────────────────────
+    // /adapt — manually trigger strategy weight adaptation
+    bot.command("adapt", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (!chatId) return;
+      const loading = await ctx.reply("⚙️ Запускаю адаптацию весов стратегий...");
+      try {
+        const chatIds = new Set([chatId]);
+        const changes = await runAdaptationCycle(chatIds);
+        await snapshotStrategyVersion(changes);
+        const report  = await generateLearningReport();
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        const bulletLines = changes.split("\n").filter(Boolean).map((l: string) => "• " + l).join("\n");
+        const summary = bulletLines
+          ? "<b>⚙️ Адаптация выполнена</b>\n\n" + bulletLines
+          : "<b>⚙️ Адаптация выполнена</b>\n\n<i>Веса не изменились — данных ещё мало.</i>";
+        await ctx.reply(summary, { parse_mode: "HTML" });
+        await ctx.reply(report, { parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]) });
+      } catch (err) {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("❌ Ошибка адаптации: " + String(err));
+      }
+    });
+
     // cleandata — dedup phantom trades and recalculate balance
     bot.command("cleandata", async (ctx) => {
       const chatId = ctx.chat?.id;
