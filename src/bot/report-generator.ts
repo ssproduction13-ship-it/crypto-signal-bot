@@ -637,7 +637,7 @@ tr:hover td{background:#263348}
     <div class="sub">${ps(d.balance - d.initialBalance)}$${fmt(Math.abs(d.balance - d.initialBalance))}</div></div>
   <div class="kpi"><div class="label">WinRate</div>
     <div class="value ${wrClass(allStats?.wr ?? 0)}">${fmt(allStats?.wr ?? 0)}%</div>
-    <div class="sub">${allStats?.wins.length ?? 0}W / ${allStats?.losses.length ?? 0}L</div></div>
+    <div class="sub">${allStats ? Math.round(allStats.wr / 100 * allStats.trades) : 0}W / ${allStats ? allStats.trades - Math.round(allStats.wr / 100 * allStats.trades) : 0}L</div></div>
   <div class="kpi"><div class="label">Profit Factor</div>
     <div class="value ${pfClass(allStats?.pf ?? 0)}">${allStats ? (allStats.pf >= 999 ? "∞" : fmt(allStats.pf)) : "—"}</div>
     <div class="sub">Целевой: 1.3+</div></div>
