@@ -101,7 +101,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     pool.query("SELECT strategy FROM strategy_weights WHERE quarantine=true"),
     pool.query("SELECT version_label,profit_factor,created_at FROM strategy_versions ORDER BY created_at DESC LIMIT 2"),
     pool.query(`SELECT strategy, MAX(changed_at) last_adapt,
-                       SUM(CASE WHEN changed_at > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
+                       SUM(CASE WHEN changed_at::timestamptz > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
                 FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });

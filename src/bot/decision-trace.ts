@@ -94,7 +94,7 @@ export async function getDecisionStats(): Promise<{
   const { rows } = await pool.query(`
     SELECT verdict, reject_reason, COUNT(*) as cnt
     FROM decision_log
-    WHERE timestamp > NOW() - INTERVAL '7 days'
+    WHERE timestamp::timestamptz > NOW() - INTERVAL '7 days'
     GROUP BY verdict, reject_reason
     ORDER BY cnt DESC
     LIMIT 20
