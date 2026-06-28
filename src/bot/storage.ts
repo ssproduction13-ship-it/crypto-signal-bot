@@ -24,6 +24,7 @@ import { pool } from "../lib/db.js";
     pendingEntrySize?: number;
     /** Partial entry: price level that triggers the second entry */
     pendingEntryTrigger?: number;
+    marketRegime?: string;
   }
   export interface ClosedPaperTrade {
     id: string; symbol: string; direction: "LONG"|"SHORT";
@@ -99,6 +100,7 @@ import { pool } from "../lib/db.js";
       equityAtOpen:r["equity_at_open"]!=null?Number(r["equity_at_open"]):undefined,
       pendingEntrySize:r["pending_entry_size"]!=null?Number(r["pending_entry_size"]):undefined,
       pendingEntryTrigger:r["pending_entry_trigger"]!=null?Number(r["pending_entry_trigger"]):undefined,
+      marketRegime:(r["market_regime"] as string|null)??undefined,
     };
   }
   function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
@@ -343,12 +345,12 @@ import { pool } from "../lib/db.js";
   }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
        pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
        pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null,
-       pos.pendingEntrySize??null,pos.pendingEntryTrigger??null]
+       pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways']
     );
   }
   export async function deletePosition(chatId: number, posId: string): Promise<void> {
@@ -356,9 +358,9 @@ import { pool } from "../lib/db.js";
   }
   export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6 WHERE chat_id=$7 AND id=$8`,
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7 WHERE chat_id=$8 AND id=$9`,
       [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, pos.size,
-       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, chatId, pos.id]
+       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', chatId, pos.id]
     );
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
