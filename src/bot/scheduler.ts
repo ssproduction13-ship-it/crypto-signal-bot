@@ -481,7 +481,7 @@ _${corrRisk.reason}_`);
           `${statusIcon} Позиций: *${pos.length}* | Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
           (pos.length > 0
             ? `📂 *Открытые позиции:*\n${posLines.join("\n")}\n\n_Уведомлю когда закроются_ 🔔`
-            : `_Жду сигнал ≥48/100 по 21 монете_ 👀`)
+            : `_Жду сигнал ≥48/100 по ${subs.size} монетам_ 👀`)
         );
       } catch (err) { logger.error({ err, chatId }, "sendStartupSummary failed"); }
     }
