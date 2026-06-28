@@ -79,8 +79,11 @@ import { pool } from "../lib/db.js";
     direction?: "LONG" | "SHORT",
     openPositions?: Array<{ symbol: string; direction: string }>,
   ): Promise<{ allowed: boolean; reason: string }> {
-    // Data collection mode: only block duplicate symbol
-    if (openSymbols.includes(symbol)) return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
+  // Block duplicate symbol:interval key (allows BTCUSDT:1h + BTCUSDT:4h simultaneously)
+    if (openSymbols.includes(symbol)) {
+        const displaySymbol = symbol.includes(':') ? symbol.split(':')[0]! : symbol;
+        return { allowed: false, reason: `Позиция ${displaySymbol} уже открыта на этом таймфрейме` };
+      }
     return { allowed: true, reason: "" };
   }
 
