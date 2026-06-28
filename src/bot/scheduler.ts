@@ -315,9 +315,17 @@ ${corrRisk.message}
 _${corrRisk.reason}_`);
         return;
       }
-      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier;
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier }, 'Size reduced by guards');
+      const cooldown = await evaluateCooldown(sub.chatId).catch(() => ({
+        level: 'none' as const, sizeMultiplier: 1.0, minConfidenceBoost: 0,
+        skipProbability: 0, reason: '', lastChecked: '',
+      }));
+      if (Math.random() < cooldown.skipProbability) {
+        logger.debug({ symbol: sub.symbol, prob: cooldown.skipProbability, level: cooldown.level }, 'Auto-cooldown: trade skipped');
+        return;
+      }
+      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier;
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier }, 'Size reduced by guards');
       }
 
       const res = await openPaperPosition(
