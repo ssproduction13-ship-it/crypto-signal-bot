@@ -129,10 +129,10 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   }
 
   function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 30;
-    if (marketIndex >= 50) return 33;
-    if (marketIndex >= 30) return 36;
-    return 40;
+    if (marketIndex >= 70) return 40;
+    if (marketIndex >= 50) return 45;
+    if (marketIndex >= 30) return 50;
+    return 58;
   }
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
