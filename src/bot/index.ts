@@ -306,7 +306,29 @@ import { runDataCleanup } from "./data-cleanup.js";
           lines.push(`🏆 Лучшая стратегия: _накапливаю данные..._`, ``);
         }
 
-        if (readiness) {
+        
+          // Per-strategy breakdown
+          const stratLines: string[] = [``, `📋 *Стратегии — состояние:*`];
+          const stratEmoji: Record<string, string> = {
+            TREND: "📈", BREAKOUT: "🚀", VOLUME_IMPULSE: "⚡", MEAN_REVERSION: "↩️"
+          };
+          const stratLabel: Record<string, string> = {
+            TREND: "Тренд", BREAKOUT: "Пробой", VOLUME_IMPULSE: "Импульс", MEAN_REVERSION: "Возврат"
+          };
+          for (const s of (statuses as any[])) {
+            const icon = stratEmoji[s.strategy] ?? "▪️";
+            const name = stratLabel[s.strategy] ?? s.strategy;
+            const statusMark = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
+            const wr   = s.trades > 0 ? (s.winRate * 100).toFixed(0) + "%" : "—";
+            const pf   = s.trades > 0 ? (s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2)) : "—";
+            const wPct = Math.round((s.weight ?? 1) * 100);
+            const trust = s.trades >= 5 ? `${s.trustScore}/100` : `boot(${s.trades})`;
+            stratLines.push(`${statusMark}${icon} *${name}*  вес ${wPct}% | Trust ${trust}`);
+            stratLines.push(`   WR ${wr} | PF ${pf} | сделок ${s.trades}`);
+          }
+          lines.push(...stratLines);
+
+  if (readiness) {
           const ri = readiness.percent;
           const riIcon = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
           lines.push(`${riIcon} Готовность: *${ri}/100*`);
@@ -423,16 +445,7 @@ import { runDataCleanup } from "./data-cleanup.js";
       await ctx.reply(analysis, { parse_mode:"Markdown", ...backMenu() });
     });
 
-    bot.action("menu_learning", async (ctx) => {
-        await ctx.answerCbQuery();
-        const loading = await ctx.reply("⏳ Загружаю историю обучения...");
-        try {
-          const history = await getLearningHistory();
-          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-          await ctx.reply(history, { parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню","menu_main")]]) });
-        } catch { await ctx.reply("❌ Ошибка загрузки истории"); }
-      });
+    
       bot.action("menu_aireport", async (ctx) => {
         await ctx.answerCbQuery();
         const loading = await ctx.reply("⏳ Генерирую AI отчёт...");
