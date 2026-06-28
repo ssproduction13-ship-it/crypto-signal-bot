@@ -70,10 +70,9 @@ import { runDataCleanup } from "./data-cleanup.js";
   // ── Menus ─────────────────────────────────────────────────────────────────
   function mainMenu() {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("📂 Позиции",    "menu_positions"),
-       Markup.button.callback("💰 Заработок",  "menu_earnings")],
-      [Markup.button.callback("🧠 Обучение",   "menu_learning"),
-       Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+      [Markup.button.callback("💰 Заработок",  "menu_earnings"),
+       Markup.button.callback("🧠 Обучение",   "menu_learning")],
+      [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
       [Markup.button.callback("⚙️ Настройки",  "menu_settings")],
     ]);
   }
