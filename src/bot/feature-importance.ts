@@ -229,6 +229,6 @@ export function formatFeatureImportance(importances: FactorImportance[]): string
     lines.push(`${icon} *${r.label}* ${bar} ${sign}${r.importanceScore}%`);
     lines.push(`  WR: ${r.winRateLift >= 0 ? "+" : ""}${r.winRateLift}пп | PF: ${r.pfLift >= 0 ? "+" : ""}${r.pfLift} | n=${r.trades}`);
   }
-  lines.push("", "_Веса факторов автоматически скорректированы_");
+  // Weight-change status is appended by the caller after applyFeatureWeightAdjustments()
   return lines.join("\n");
 }
