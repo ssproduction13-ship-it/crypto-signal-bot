@@ -514,7 +514,7 @@ _${corrRisk.reason}_`);
   }
 
   // ── Start ──────────────────────────────────────────────────────────────────
-  export function startScheduler(bot: Telegraf): void {
+  export async function startScheduler(bot: Telegraf): Promise<void> {
     _bot = bot;
     if (process.env["RESET_DATA"] === "true") {
       const resetChatIds = await resetAllData();
