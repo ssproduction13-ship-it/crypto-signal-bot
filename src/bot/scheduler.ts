@@ -319,7 +319,6 @@ _${corrRisk.reason}_`);
       if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0) {
         logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier }, 'Size reduced by guards');
       }
-      }
 
       const res = await openPaperPosition(
         sub.chatId, sub.symbol, sig.score.direction,
