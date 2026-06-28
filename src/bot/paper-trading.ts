@@ -1,6 +1,7 @@
 import { getPrice } from "./binance.js";
 import {
   loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
+  tryClaimPosition, tryMarkTP1,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
@@ -19,22 +20,15 @@ const positionRegimes = new Map<string, MarketRegime>();
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
 const COMMISSION_RATE = 0.001;
-/** Slippage range: min 0.02%, max 0.10% (realistic for KuCoin liquid pairs <$20k notional) */
+/** Slippage range: min 0.02%, max 0.10% */
 const SLIPPAGE_MIN_PCT = 0.0002;
 const SLIPPAGE_MAX_PCT = 0.001;
-/**
- * Max position notional as fraction of account balance (25%).
- * Prevents going all-in on a single trade when stop is tight.
- * With 10 max positions this implies up to 250% total exposure (≈2.5x leverage cap).
- */
 const MAX_POSITION_NOTIONAL_PCT = 0.25;
 
-/** Generate random slippage fraction */
 function randomSlippagePct(): number {
   return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
 }
 
-/** Helper: record one closed leg (partial or full) and return the notification message */
 function buildCloseRecord(
   pos: PaperPosition,
   closePrice: number,
@@ -83,23 +77,20 @@ export async function openPaperPosition(
   let size       = stopDist > 0 ? maxLoss / stopDist : 0;
   if (size <= 0) return {success:false,message:"❌ Ошибка расчёта размера позиции"};
 
-  // ── Notional cap: max 25% of balance per position ──────────────────────
   const maxNotional = account.balance * MAX_POSITION_NOTIONAL_PCT;
   const rawNotional = size * entryPrice;
   if (rawNotional > maxNotional) {
     size = maxNotional / entryPrice;
   }
 
-  // ── Partial entry: open 60% now, add remaining 40% on pullback ─────────
-  // Requires ATR to set the pullback trigger level.
   let pendingEntrySize: number | undefined;
   let pendingEntryTrigger: number | undefined;
   if (atr != null && atr > 0) {
     const initialSize   = size * 0.6;
     pendingEntrySize    = size * 0.4;
     pendingEntryTrigger = direction === "LONG"
-      ? entryPrice - atr * 0.3   // wait for slight dip
-      : entryPrice + atr * 0.3;  // wait for slight bounce
+      ? entryPrice - atr * 0.3
+      : entryPrice + atr * 0.3;
     size = initialSize;
   }
 
@@ -108,7 +99,6 @@ export async function openPaperPosition(
   const existing = account.positions.find(p=>p.symbol===symbol&&p.direction===direction);
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
 
-  // ── Realistic: deduct open commission from balance ─────────────────────
   const openCommission = entryPrice * size * COMMISSION_RATE;
   account.balance -= openCommission;
   addAccountCosts(chatId, openCommission, 0).catch(() => {});
@@ -179,7 +169,6 @@ export async function checkPaperPositions(
           const addCommission = price * addSize * COMMISSION_RATE;
           account.balance -= addCommission;
           addAccountCosts(chatId, addCommission, 0).catch(() => {});
-          // Recalculate blended entry price
           const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
           pos.entryPrice = blended;
           pos.size += addSize;
@@ -194,7 +183,7 @@ export async function checkPaperPositions(
         }
       }
 
-      // ── Trailing stop: after TP1 partial (breakevenMoved), trail by 1.0×ATR ─
+      // ── Trailing stop ──────────────────────────────────────────────────────
       if (pos.breakevenMoved && pos.trailAtr != null && pos.trailAtr > 0) {
         const trail = pos.direction === "LONG"
           ? price - pos.trailAtr * 1.0
@@ -203,9 +192,7 @@ export async function checkPaperPositions(
         if (pos.direction === "SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
       }
 
-      // ── Early Breakeven: unrealized profit ≥ 2× initial risk ──────────────
-      // Fires while en route to TP1 (before partial close).
-      // Guard: SL not yet at entry prevents re-triggering after BE move.
+      // ── Early Breakeven ────────────────────────────────────────────────────
       if (!pos.breakevenMoved) {
         const originalStopDist = Math.abs(pos.entryPrice - pos.stopLoss);
         const unrealizedGain   = pos.direction === "LONG"
@@ -225,14 +212,23 @@ export async function checkPaperPositions(
         }
       }
 
-      // ── TP1 Partial Close: 50% at TP1, move SL to breakeven ───────────────
-      // Fires only once (breakevenMoved guards re-entry).
+      // ── TP1 Partial Close ──────────────────────────────────────────────────
+      // Guard: breakevenMoved=false ensures this fires only once per position.
+      // Additional atomic guard: tryMarkTP1 prevents double-fire in concurrent cycles.
       const tp1Hit = !pos.breakevenMoved && (
         (pos.direction === "LONG"  && price >= pos.tp1) ||
         (pos.direction === "SHORT" && price <= pos.tp1)
       );
 
       if (tp1Hit) {
+        // Atomically claim TP1 processing — if another concurrent cycle beat us, skip
+        const tp1Claimed = await tryMarkTP1(chatId, pos.id);
+        if (!tp1Claimed) {
+          // Another cycle already processed TP1 for this position — keep it in remaining
+          remaining.push(pos);
+          continue;
+        }
+
         const partialSize = pos.size * 0.5;
         const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
           buildCloseRecord(pos, pos.tp1, partialSize, "TP1", equityAtOpen);
@@ -243,24 +239,25 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, true).catch(() => {});
 
-        // Update position: halve size, move SL to breakeven, cancel pending entry
         pos.size              = pos.size * 0.5;
         pos.stopLoss          = pos.entryPrice;
         pos.breakevenMoved    = true;
         pos.pendingEntrySize  = undefined;
         pos.pendingEntryTrigger = undefined;
 
-        // ── Pyramiding: add 50% of remaining (= 25% of original) at TP1 price ──
-        // SL is now at breakeven → zero extra risk on pyramid units.
+        // ── Pyramiding ────────────────────────────────────────────────────────
         const pyramidUnits      = pos.size * 0.5;
         const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
         let pyramidNote = "";
         if (account.balance > pyramidCommission * 2) {
           account.balance -= pyramidCommission;
-          pos.size        += pyramidUnits;
+          // Update blended entry price to accurately reflect pyramid cost
+          const blendedEntry = (pos.entryPrice * pos.size + realisticPrice * pyramidUnits) / (pos.size + pyramidUnits);
+          pos.entryPrice = blendedEntry;
+          pos.size       += pyramidUnits;
           addAccountCosts(chatId, pyramidCommission, 0).catch(() => {});
           pyramidNote = `\n📈 *Пирамидинг*: +${pyramidUnits.toFixed(4)} ед. добавлено по TP1 (риска нет — стоп в BE)\n` +
-                        `Итого в позиции: ${pos.size.toFixed(4)} ед. → TP2: \`${formatPrice(pos.tp2)}\``;
+                        `Средний вход скорректирован: \`${formatPrice(blendedEntry)}\` | TP2: \`${formatPrice(pos.tp2)}\``;
         }
 
         msgs.push(
@@ -278,7 +275,7 @@ export async function checkPaperPositions(
         continue;
       }
 
-      // ── Full Close: SL / BE / TP2 ─────────────────────────────────────────
+      // ── Full Close: SL / BE / TP2 ──────────────────────────────────────────
       let closeReason: string | null = null;
       let closePrice = price;
 
@@ -291,6 +288,15 @@ export async function checkPaperPositions(
       }
 
       if (closeReason) {
+        // Atomically claim the position — DELETE it from DB before computing P&L.
+        // If another concurrent cycle already deleted it, rowCount=0 → skip to prevent double-close.
+        const claimed = await tryClaimPosition(chatId, pos.id);
+        if (!claimed) {
+          logger.debug({ posId: pos.id, symbol: pos.symbol }, "Position already claimed by concurrent close cycle — skipping");
+          // Position is gone from DB — don't add to remaining
+          continue;
+        }
+
         const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
           buildCloseRecord(pos, closePrice, pos.size, closeReason, equityAtOpen);
 
@@ -352,6 +358,8 @@ export async function checkPaperPositions(
           await checkMilestone(chatId, account.balance, account.initialBalance, sendNotification);
         }
         if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
+
+        // Position already deleted from DB via tryClaimPosition — do NOT add to remaining
       } else {
         remaining.push(pos);
       }
@@ -361,10 +369,10 @@ export async function checkPaperPositions(
     }
   }
 
-  const remainingIds = new Set(remaining.map(p => p.id));
-  for (const p of account.positions) {
-    if (!remainingIds.has(p.id)) await deletePosition(chatId, p.id);
-    else await updatePosition(chatId, p);
+  // Update only the positions that are still open (remaining).
+  // Closed positions were already deleted atomically via tryClaimPosition.
+  for (const p of remaining) {
+    await updatePosition(chatId, p);
   }
   account.positions = remaining;
   await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
