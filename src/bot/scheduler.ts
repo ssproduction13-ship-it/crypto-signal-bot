@@ -38,7 +38,8 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
   let _bot: Telegraf | null = null;
-  let _lastMilestoneTrades = 0;
+  let _lastMilestoneTrades  = 0;
+  let _lastAdaptationTrades = 0; // for 12h time-based adaptation guard
 
   // Restore milestone counter from DB so restarts don't re-trigger the same report
   async function initLastMilestoneTrades(): Promise<void> {
@@ -48,6 +49,17 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       logger.info({ total, _lastMilestoneTrades }, 'Milestone counter restored from DB');
     } catch (err) {
       logger.warn({ err }, 'Could not restore milestone counter — defaulting to 0');
+    }
+  }
+
+  // Restore timed-adaptation baseline from DB so restarts don't re-trigger immediately
+  async function initLastAdaptationTrades(): Promise<void> {
+    try {
+      const total = await getClosedTradeCount();
+      _lastAdaptationTrades = total;
+      logger.info({ total }, 'Adaptation baseline restored from DB');
+    } catch (err) {
+      logger.warn({ err }, 'Could not restore adaptation baseline');
     }
   }
 
@@ -490,7 +502,8 @@ _${corrRisk.reason}_`);
   // ── Start ──────────────────────────────────────────────────────────────────
   export function startScheduler(bot: Telegraf): void {
     _bot = bot;
-    void initLastMilestoneTrades(); // restore from DB before first 30s tick
+    void initLastMilestoneTrades();    // restore from DB before first 30s tick
+    void initLastAdaptationTrades();   // restore adaptation baseline from DB
 
     kuCoinWs.onNewCandle((sym, iv) => void onNewCandle(sym, iv));
     kuCoinWs.start().catch(err => logger.error({ err }, "KuCoin WS start error"));
@@ -594,6 +607,30 @@ _${corrRisk.reason}_`);
         await autoSnapshotAfterLearning();
         await calcReadinessIndex().catch(() => {});
       } catch (err) { logger.warn({ err }, "Walk-forward / snapshot error"); }
+    });
+
+    // ── Timed strategy adaptation every 12h (only if ≥5 new trades since last run) ──
+    cron.schedule("0 */12 * * *", async () => {
+      if (!chatIds.size) return;
+      try {
+        const total    = await getClosedTradeCount();
+        const newTrades = total - _lastAdaptationTrades;
+        if (newTrades < 5) {
+          logger.debug({ total, newTrades }, "12h adaptation skipped — fewer than 5 new trades");
+          return;
+        }
+        logger.info({ total, newTrades }, "12h adaptation cycle triggered");
+        _lastAdaptationTrades = total;
+        const changes = await runAdaptationCycle(chatIds);
+        await snapshotStrategyVersion(changes);
+        const report  = await generateLearningReport();
+        for (const chatId of chatIds) {
+          await safeSend(chatId, "⚙️ *Авто-адаптация стратегий* (12ч)
+
+" + (changes || "_Изменений нет_"));
+          await safeSend(chatId, report);
+        }
+      } catch (err) { logger.warn({ err }, "12h adaptation error"); }
     });
 
     cron.schedule("0 20 * * 0", async () => {
