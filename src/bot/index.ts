@@ -852,32 +852,19 @@ import { runDataCleanup } from "./data-cleanup.js";
     bot.action("menu_fullreport", async (ctx) => {
       await ctx.answerCbQuery();
       const chatId = ctx.chat!.id;
-      const loading = await ctx.reply("⏳ Собираю полный отчёт (16 блоков)...");
+      const loading = await ctx.reply("⏳ Генерирую HTML-отчёт...");
       try {
-        const chunks = await generateFullReport(chatId);
-        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        for (let i = 0; i < chunks.length; i++) {
-          const isLast = i === chunks.length - 1;
-          await ctx.reply(
-            `\`\`\`\n${chunks[i]}\n\`\`\``,
-            {
-              parse_mode: "Markdown",
-              ...(isLast ? Markup.inlineKeyboard([
-                [Markup.button.callback("🔄 Обновить", "menu_fullreport")],
-                [Markup.button.callback("◀️ Меню",     "menu_main")],
-              ]) : {}),
-            }
-          );
-        }
-        // Also send HTML report as document
-        try {
-          const { html, filename } = await generateDailyReport(chatId);
-          await ctx.telegram.sendDocument(chatId, { source: html, filename }, { caption: "📄 HTML-отчёт — открой в браузере для полного просмотра" });
-        } catch (htmlErr) {
-          logger.error({ htmlErr }, "HTML report in fullreport failed");
-        }
+        const { html, filename } = await generateDailyReport(chatId);
+        await ctx.telegram.deleteMessage(chatId, loading.message_id).catch(() => {});
+        await ctx.telegram.sendDocument(chatId, { source: html, filename }, {
+          caption: "📄 HTML-отчёт — открой в браузере для полного просмотра",
+          reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Обновить", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",     "menu_main")],
+          ]).reply_markup,
+        });
       } catch (err) {
-        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.telegram.deleteMessage(chatId, loading.message_id).catch(() => {});
         logger.error({ err }, "full report error");
         await ctx.reply("❌ Ошибка при формировании отчёта: " + String(err).slice(0,200), backMenu());
       }
