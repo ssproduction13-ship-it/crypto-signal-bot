@@ -15,6 +15,7 @@ import type { Interval } from "./binance.js";
 import type { SupportResistance } from "./levels.js";
 import type { PatternResult } from "./patterns.js";
 import { logger } from "../lib/logger.js";
+import { detectMarketRegime } from "./learning-engine.js";
 
 export interface TradeSignal {
   symbol: string; price: number; interval: string;
@@ -53,9 +54,7 @@ export async function generateSignal(
   const strategies   = evalAllStrategies(ind, levels, pattern, candles);
   const bestStrategy = getBestStrategy(strategies);
   const marketRating = calcMarketRating(ind, market, candles);
-  // Detect regime for Confidence Engine v2
-    const { detectMarketRegime } = await import("./learning-engine.js").catch(() => ({ detectMarketRegime: () => "sideways" as const }));
-    const regime = detectMarketRegime(market, marketRating);
+  const regime = detectMarketRegime(market, marketRating);
     const confidence   = await calcConfidence(ind, market, bestStrategy?.strategy, score.total, symbol, regime);
 
   let filtered = false, filterReason: string | null = null;
