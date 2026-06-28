@@ -347,14 +347,14 @@ export async function checkPaperPositions(
         recordStrategyTrade(pos.strategy ?? "TREND", totalPnlEquityPct, totalPnl > 0).catch(() => {});
 
         const regime = pos.marketRegime ?? "sideways";
-        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
-        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
-        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-        if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
+        recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, totalPnlEquityPct, totalPnl > 0).catch(() => {});
+        recordTimeTrade(pos.openedAt, totalPnlEquityPct, totalPnl > 0).catch(() => {});
+        recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, totalPnlEquityPct, totalPnl > 0).catch(() => {});
+        if (totalPnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
           const lossReason = classifyLossReason(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, closeReason);
           recordLossReason(pos.strategy ?? "TREND" as StrategyName, lossReason).catch(() => {});
         }
-        updateTradeResult(pos.id, pnlEquityPct, pnl > 0, closeReason).catch(() => {});
+        updateTradeResult(pos.id, totalPnlEquityPct, totalPnl > 0, closeReason).catch(() => {});
 
         const isProfit    = pnl > 0;
         // True BE only when close price ≈ entry (within 0.01%).
