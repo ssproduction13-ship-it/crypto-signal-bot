@@ -67,6 +67,10 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   const recentlyProcessed = new Map<string, number>();
   const DEBOUNCE_MS = 30_000;
 
+  // ── One-per-hour notification dedup maps ──────────────────────────────────
+  const lastCorrGuardNotify = new Map<number, number>(); // chatId → timestamp
+  const CORR_GUARD_NOTIFY_MS = 60 * 60 * 1000; // 1 hour
+
   // ── Concurrency guard: prevents checkPositions from running in parallel ──────
   // Without this, setInterval fires a new cycle every 30s regardless of whether
   // the previous one finished. With 18+ open positions (18 API calls + DB ops),
@@ -310,9 +314,11 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       if (!corrRisk.allowed) {
         logger.debug({ symbol: sub.symbol, reason: corrRisk.reason }, 'Correlation Guard: REJECT');
-        await safeSend(sub.chatId, `🚫 *Correlation Guard*
-${corrRisk.message}
-_${corrRisk.reason}_`);
+        const lastNotify = lastCorrGuardNotify.get(sub.chatId) ?? 0;
+        if (Date.now() - lastNotify > CORR_GUARD_NOTIFY_MS) {
+          lastCorrGuardNotify.set(sub.chatId, Date.now());
+          await safeSend(sub.chatId, `🚫 *Correlation Guard*\n${corrRisk.message}\n_${corrRisk.reason}_`);
+        }
         return;
       }
       const cooldown = await evaluateCooldown(sub.chatId).catch(() => ({
