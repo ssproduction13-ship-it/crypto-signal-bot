@@ -318,7 +318,10 @@ export async function checkPaperPositions(
         updateTradeResult(pos.id, pnlEquityPct, pnl > 0, closeReason).catch(() => {});
 
         const isProfit    = pnl > 0;
-        const isBreakeven = closeReason === "BE";
+        // True BE only when close price ≈ entry (within 0.01%).
+        // After trailing stop, stopLoss can sit above/below entry → real P&L, not zero.
+        const epsilon     = pos.entryPrice * 0.0001;
+        const isBreakeven = closeReason === "BE" && Math.abs(closePrice - pos.entryPrice) <= epsilon;
         const isTP2       = closeReason === "TP2";
         const wasPartial  = pos.breakevenMoved && (closeReason === "TP2" || isBreakeven);
 
