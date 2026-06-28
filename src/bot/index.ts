@@ -22,6 +22,7 @@ import { Telegraf, Markup } from "telegraf";
     getStrategyEvolutionHistory, detectMarketRegime,
     runAdaptationCycle, snapshotStrategyVersion,
   } from "./learning-engine.js";
+import { generateFullReport } from "./full-report.js";
   import { getTimeAnalytics } from "./time-analytics.js";
   import { getInstrumentAnalytics } from "./instrument-analytics.js";
   import { loadFeatureImportance, formatFeatureImportance } from "./feature-importance.js";
@@ -850,195 +851,10 @@ import { runDataCleanup } from "./data-cleanup.js";
     bot.action("menu_fullreport", async (ctx) => {
       await ctx.answerCbQuery();
       const chatId = ctx.chat!.id;
-      const loading = await ctx.reply("⏳ Собираю полный отчёт...");
-
+      const loading = await ctx.reply("⏳ Собираю полный отчёт (16 блоков)...");
       try {
-        const now = new Date();
-        const ts  = now.toISOString().slice(0, 16).replace("T", " ");
-
-        // ── 1. Счёт ──────────────────────────────────────────────────────
-        const account = await loadPaperAccount(chatId);
-        const trades  = account.closedTrades;
-        const wins    = trades.filter(t => t.pnl > 0);
-        const losses  = trades.filter(t => t.pnl <= 0);
-        const ret     = ((account.balance - account.initialBalance) / account.initialBalance) * 100;
-        const dd      = (account.peakBalance ?? account.balance) > 0
-          ? (((account.peakBalance ?? account.balance) - account.balance) / (account.peakBalance ?? account.balance)) * 100
-          : 0;
-        const gW = wins.reduce((a, t) => a + t.pnl, 0);
-        const gL = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-        const pf = gL > 0 ? gW / gL : gW > 0 ? 999 : 0;
-        const avgWin  = wins.length   ? gW / wins.length   : 0;
-        const avgLoss = losses.length ? gL / losses.length : 0;
-        const rrr     = avgLoss > 0 ? avgWin / avgLoss : 0;
-
-        const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
-        const weekStart  = new Date(todayStart);
-        weekStart.setDate(todayStart.getDate() - ((todayStart.getDay() + 6) % 7));
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const pnlD = trades.filter(t => new Date(t.closedAt) >= todayStart).reduce((a,t) => a+t.pnl, 0);
-        const pnlW = trades.filter(t => new Date(t.closedAt) >= weekStart ).reduce((a,t) => a+t.pnl, 0);
-        const pnlM = trades.filter(t => new Date(t.closedAt) >= monthStart).reduce((a,t) => a+t.pnl, 0);
-
-        // ── 2. Стратегии ─────────────────────────────────────────────────
-        const statuses = await getAllStrategyStatuses().catch(() => [] as any[]);
-        const regime   = await (async () => {
-          try {
-            const { getCandles }    = await import("./binance.js");
-            const { calcIndicators } = await import("./indicators.js");
-            const { assessMarket }  = await import("./chaos-filter.js");
-            const candles = await getCandles("BTCUSDT","1h",200);
-            const ind     = calcIndicators(candles);
-            const market  = assessMarket(candles, ind);
-            const rating  = calcMarketRating(ind, market, candles);
-            return detectMarketRegime(market, rating);
-          } catch { return "unknown"; }
-        })();
-
-        // ── 3. Обучение ───────────────────────────────────────────────────
-        const [health, readiness] = await Promise.all([
-          checkLearningHealth(chatId).catch(() => null),
-          calcReadinessIndex(chatId).catch(() => null),
-        ]);
-
-        // ── 4. Последние 20 сделок ────────────────────────────────────────
-        const last20 = [...trades].sort((a,b) =>
-          new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime()
-        ).slice(0, 20);
-
-        // ── Форматирование ────────────────────────────────────────────────
-        const fmt = (n: number, d = 2) => (n >= 0 ? "+" : "") + n.toFixed(d);
-        const pct = (n: number) => fmt(n) + "%";
-
-        const regimeMap: Record<string,string> = {
-          trend_up:"Тренд вверх", trend_down:"Тренд вниз",
-          sideways:"Боковик", high_vol:"Высокая волатильность", low_vol:"Затишье",
-        };
-
-        const parts: string[] = [];
-
-        // Заголовок
-        parts.push(
-          `📋 ПОЛНЫЙ ОТЧЁТ AI-ТРЕЙДЕРА`,
-          `Дата: ${ts} UTC`,
-          `Бот: Crypto Signal Bot (RC)`,
-          `Режим: Paper Trading (виртуальный счёт)`,
-          ``,
-        );
-
-        // Счёт
-        parts.push(
-          `═══ 💰 СЧЁТ ═══`,
-          `Начальный депозит:  $${account.initialBalance.toFixed(2)}`,
-          `Текущий баланс:     $${account.balance.toFixed(2)}`,
-          `Общий P&L:          ${pct(ret)}  ($${(account.balance - account.initialBalance).toFixed(2)})`,
-          `Просадка от пика:   ${dd.toFixed(2)}%`,
-          ``,
-          `Сегодня:   ${fmt(pnlD, 2)}$`,
-          `Неделя:    ${fmt(pnlW, 2)}$`,
-          `Месяц:     ${fmt(pnlM, 2)}$`,
-          ``,
-        );
-
-        // Статистика сделок
-        parts.push(
-          `═══ 📊 СТАТИСТИКА СДЕЛОК ═══`,
-          `Всего сделок:       ${trades.length}`,
-          `Прибыльных:         ${wins.length} (${trades.length ? (wins.length/trades.length*100).toFixed(1) : 0}%)`,
-          `Убыточных:          ${losses.length} (${trades.length ? (losses.length/trades.length*100).toFixed(1) : 0}%)`,
-          `Profit Factor:      ${pf >= 999 ? "∞" : pf.toFixed(3)}`,
-          `Gross Profit:       +${gW.toFixed(2)}`,
-          `Gross Loss:         -${gL.toFixed(2)}`,
-          `Сред. прибыль:      +${avgWin.toFixed(2)}`,
-          `Сред. убыток:       -$${avgLoss.toFixed(2)}`,
-          `Risk/Reward:        ${rrr.toFixed(2)}`,
-          ``,
-        );
-
-        // Открытые позиции
-        if (account.positions.length > 0) {
-          parts.push(`═══ 📂 ОТКРЫТЫЕ ПОЗИЦИИ (${account.positions.length}) ═══`);
-          for (const p of account.positions) {
-            const dir = p.direction === "LONG" ? "LONG 🟢" : "SHORT 🔴";
-            const be  = p.breakevenMoved ? " [BE]" : "";
-            parts.push(
-              `${p.symbol} | ${dir}${be}`,
-              `  Вход: $${formatPrice(p.entryPrice)} | SL: $${formatPrice(p.stopLoss)} | TP1: $${formatPrice(p.tp1)}`,
-              `  Стратегия: ${p.strategy ?? "N/A"} | Открыта: ${new Date(p.openedAt).toISOString().slice(0,16)}`,
-            );
-          }
-          parts.push(``);
-        } else {
-          parts.push(`═══ 📂 ОТКРЫТЫЕ ПОЗИЦИИ ═══`, `нет`, ``);
-        }
-
-        // Стратегии
-        parts.push(`═══ 🏆 СТРАТЕГИИ ═══`, `Текущий режим рынка: ${regimeMap[regime] ?? regime}`);
-        for (const s of statuses) {
-          const statusMap: Record<string,string> = { active:"✅ Активна", quarantine:"⚠️ Карантин", disabled:"🚫 Выкл" };
-          const wr = (s.winRate * 100).toFixed(1);
-          const spf = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
-          const ADAPT_THR = 30;
-          const adaptStatus = s.trades >= ADAPT_THR
-            ? "Адаптация активна"
-            : `До адаптации: ${ADAPT_THR - s.trades} сделок`;
-          parts.push(
-            `${s.strategy}: ${statusMap[s.status] ?? s.status}`,
-            `  Сделок: ${s.trades} | ${adaptStatus}`,
-            `  Trust Score: ${s.trustScore}/100 | Вес: ${(s.weight*100).toFixed(0)}%`,
-            `  WR: ${wr}% | PF: ${spf}`,
-          );
-        }
-        parts.push(``);
-
-        // Обучение
-        parts.push(
-          `═══ 🧠 СОСТОЯНИЕ ОБУЧЕНИЯ ═══`,
-          `Здоровье: ${health?.overall ?? "нет данных"} (${health?.trend ?? "—"})`,
-          `Готовность к продакшну: ${readiness ? readiness.percent + "/100" : "нет данных"}`,
-          `PF в расчёте Readiness: ${readiness ? "последние " + readiness.pfWindow + " сделок = " + readiness.pfValue.toFixed(2) : "—"} (нужно ≥1.50)`,
-          `Причины не готов: ${readiness?.recommendations?.join(", ") || "нет"}`,
-          ``,
-        );
-
-        // Последние 20 сделок
-        parts.push(`═══ 📜 ПОСЛЕДНИЕ ${last20.length} СДЕЛОК ═══`);
-        if (last20.length === 0) {
-          parts.push(`нет закрытых сделок`);
-        } else {
-          for (const t of last20) {
-            const d    = t.direction === "LONG" ? "L" : "S";
-            const sign = t.pnl >= 0 ? "+" : "";
-            const date = new Date(t.closedAt).toISOString().slice(5,16);
-            parts.push(`${date} | ${t.symbol} ${d} | ${sign}$${t.pnl.toFixed(2)} | ${t.strategy ?? "?"} | ${t.exitReason ?? "?"}`);
-          }
-        }
-        parts.push(``);
-
-        // Подсказка
-        parts.push(
-          `═══ 💡 КАК ИСПОЛЬЗОВАТЬ ═══`,
-          `Скопируй этот отчёт и вставь в ChatGPT или отправь аналитику.`,
-          `Формат: текстовый, структурированный, без лишних символов.`,
-        );
-
-        const fullText = parts.join("\n");
-
+        const chunks = await generateFullReport(chatId);
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-
-        // Разбиваем на части по 4000 символов (лимит Telegram)
-        const chunks: string[] = [];
-        let cur = "";
-        for (const line of parts) {
-          if ((cur + "\n" + line).length > 3900) {
-            chunks.push(cur);
-            cur = line;
-          } else {
-            cur = cur ? cur + "\n" + line : line;
-          }
-        }
-        if (cur) chunks.push(cur);
-
         for (let i = 0; i < chunks.length; i++) {
           const isLast = i === chunks.length - 1;
           await ctx.reply(
@@ -1054,9 +870,11 @@ import { runDataCleanup } from "./data-cleanup.js";
         }
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        await ctx.reply("❌ Ошибка при формировании отчёта. Попробуй позже.", backMenu());
+        logger.error({ err }, "full report error");
+        await ctx.reply("❌ Ошибка при формировании отчёта: " + String(err).slice(0,200), backMenu());
       }
     });
+
 
     // ── Настройки ──────────────────────────────────────────────────────────
     bot.action("menu_settings", async (ctx) => {
