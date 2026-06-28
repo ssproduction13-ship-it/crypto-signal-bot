@@ -129,10 +129,10 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   }
 
   function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 45;
-    if (marketIndex >= 50) return 48;
-    if (marketIndex >= 30) return 52;
-    return 55;
+    if (marketIndex >= 70) return 32;
+    if (marketIndex >= 50) return 35;
+    if (marketIndex >= 30) return 38;
+    return 42;
   }
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
@@ -203,7 +203,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
-      if (!gate.rejected && sig.confidence.score < 25) {
+      if (!gate.rejected && sig.confidence.score < 8) {
         gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
       } else if (!gate.rejected) {
         gate.pass("Confidence", `${sig.confidence.score}%`);
