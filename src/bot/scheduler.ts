@@ -332,7 +332,7 @@ _${corrRisk.reason}_`);
         sub.chatId, sub.symbol, sig.score.direction,
         sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
         effectiveRiskPct, sig.risk.atr,
-        strat, regime
+        strat, regime, sub.interval
       );
 
       if (res.success) {
