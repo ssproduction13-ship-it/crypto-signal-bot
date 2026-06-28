@@ -72,18 +72,17 @@ import { pool } from "../lib/db.js";
     // Learning mode — все лимиты по количеству позиций сняты.
     // Бот открывает столько сделок, сколько считает нужным, чтобы собрать максимум данных.
     // Единственная защита: нельзя открыть две позиции по одному символу одновременно.
-    export async function canOpenTrade(
-      symbol: string,
-      openSymbols: string[],
-      openPositionsCount?: number,
-      direction?: "LONG" | "SHORT",
-      openPositions?: Array<{ symbol: string; direction: string }>,
-    ): Promise<{ allowed: boolean; reason: string }> {
-      const s = await loadRiskState();
-      if ((openPositionsCount ?? s.openPositions) >= 10) return { allowed: false, reason: "Лимит: 10 открытых позиций" };
-      if (openSymbols.includes(symbol))  return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
-      return { allowed: true, reason: "" };
-    }
+  export async function canOpenTrade(
+    symbol: string,
+    openSymbols: string[],
+    openPositionsCount?: number,
+    direction?: "LONG" | "SHORT",
+    openPositions?: Array<{ symbol: string; direction: string }>,
+  ): Promise<{ allowed: boolean; reason: string }> {
+    // Data collection mode: only block duplicate symbol
+    if (openSymbols.includes(symbol)) return { allowed: false, reason: `Позиция ${symbol} уже открыта` };
+    return { allowed: true, reason: "" };
+  }
 
     // Sync the risk_state counter with the actual positions in DB (call on startup or repair)
     export async function syncPositionsCount(): Promise<void> {
