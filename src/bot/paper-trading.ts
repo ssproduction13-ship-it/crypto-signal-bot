@@ -65,7 +65,8 @@ export async function openPaperPosition(
   entryPrice: number, stopLoss: number, tp1: number, tp2: number,
   riskPercent?: number, atr?: number,
   strategy: StrategyName = "TREND",
-  marketRegime: MarketRegime = "sideways"
+  marketRegime: MarketRegime = "sideways",
+  interval: string = "1h"
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
@@ -106,7 +107,7 @@ export async function openPaperPosition(
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
     equityAtOpen: account.balance,
-    pendingEntrySize, pendingEntryTrigger, marketRegime,
+    pendingEntrySize, pendingEntryTrigger, marketRegime, interval,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
@@ -153,6 +154,38 @@ export async function checkPaperPositions(
   for (const pos of account.positions) {
     try {
       const price = await getPrice(pos.symbol);
+
+        // ── Position Timeout ─────────────────────────────────────────────────────
+        if (!pos.breakevenMoved) {
+          const hoursOpen = (Date.now() - new Date(pos.openedAt).getTime()) / 3_600_000;
+          const iv = pos.interval ?? "1h";
+          const maxHours = iv === "15m" ? 48 : iv === "4h" ? 336 : 168;
+          if (hoursOpen > maxHours) {
+            const claimed = await tryClaimPosition(chatId, pos.id);
+            if (claimed) {
+              const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+                buildCloseRecord(pos, price, pos.size, "TIMEOUT", equityAtOpen);
+              account.balance += pnl;
+              account.closedTrades.unshift(trade);
+              await insertClosedTrade(chatId, trade);
+              addAccountCosts(chatId, commission, slippage).catch(() => {});
+              recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
+              const regime = pos.marketRegime ?? "sideways";
+              recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+              updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
+              if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
+              const timeoutMsg =
+                `⏱ *Позиция закрыта по таймауту — ${pos.symbol} ${pos.direction}*\n` +
+                `${dirLabel} | Открыта ${Math.floor(hoursOpen)}ч. назад\n` +
+                `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticPrice)}\`\n` +
+                `P&L: *${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}* (${pnlPct.toFixed(2)}%)\n` +
+                `💰 Баланс: *${account.balance.toFixed(2)}*`;
+              msgs.push(timeoutMsg);
+              if (sendNotification) await sendNotification(timeoutMsg).catch(() => {});
+              continue;
+            }
+          }
+        }
       const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
       const stratLabel = stratNames[pos.strategy ?? "TREND"] ?? pos.strategy ?? "TREND";
       const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
