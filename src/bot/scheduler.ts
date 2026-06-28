@@ -337,7 +337,7 @@ _${corrRisk.reason}_`);
             interval: sub.interval,
             score: sig.score.total,
             confidence: sig.confidence.score,
-            rsi: sig.confidence.factors.recentPerformance,
+            rsi: sig.score.factorScores["momentum"] ?? 50,
             macdHistogram: 0,
             adxValue: 0,
             atrPercent: sig.risk.atr ? (sig.risk.atr / sig.risk.entryPrice) * 100 : 1,
