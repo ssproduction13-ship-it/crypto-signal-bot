@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   strategy TEXT NOT NULL DEFAULT 'TREND',
   opened_at TEXT NOT NULL,
   breakeven_moved BOOLEAN NOT NULL DEFAULT false,
-  trail_atr DOUBLE PRECISION
+  trail_atr DOUBLE PRECISION,
+  market_regime TEXT NOT NULL DEFAULT 'sideways'
 );
 CREATE TABLE IF NOT EXISTS paper_closed_trades (
   id TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, symbol TEXT NOT NULL,
