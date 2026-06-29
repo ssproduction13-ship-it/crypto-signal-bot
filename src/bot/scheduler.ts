@@ -213,6 +213,24 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }
 
+      // ── ATR Filter ────────────────────────────────────────────────────────────────────────
+      let atrSizeMultiplier = 1.0;
+      if (!gate.rejected && sig.risk.atr != null && sig.risk.entryPrice > 0) {
+        const atrPercent = (sig.risk.atr / sig.risk.entryPrice) * 100;
+        if (atrPercent > 4.0) {
+          gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 4%");
+        } else if (atrPercent >= 2.5) {
+          atrSizeMultiplier = 0.5;
+          gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — размер снижен до 50%`);
+        } else {
+          gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — OK`);
+        }
+      } else if (!gate.rejected) {
+        gate.pass("ATR Filter", "ATR недоступен — пропуск фильтра");
+      } else {
+        gate.skip("ATR Filter", "Предыдущий шаг не прошёл");
+      }
+
       const minTrust = stratStatus?.quarantine ? 20 : 5;
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
@@ -329,9 +347,9 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         logger.debug({ symbol: sub.symbol, prob: cooldown.skipProbability, level: cooldown.level }, 'Auto-cooldown: trade skipped');
         return;
       }
-      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier;
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier }, 'Size reduced by guards');
+      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier;
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier }, 'Size reduced by guards');
       }
 
       const res = await openPaperPosition(
