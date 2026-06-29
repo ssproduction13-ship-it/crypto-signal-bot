@@ -163,7 +163,7 @@ import { pool } from "../lib/db.js";
       `INSERT INTO journal_entries(id,chat_id,symbol,interval,direction,entry_price,stop_loss,tp1,tp2,score,confidence,strategy,timestamp,factors)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(id) DO NOTHING`,
       [e.id,e.chatId??0,e.symbol,e.interval,e.direction,e.entryPrice,e.stopLoss,
-       e.tp1,e.tp2,e.score,e.confidence,e.strategy??'TREND',e.timestamp,JSON.stringify(e.factors)]
+       e.tp1,e.tp2,e.score,e.confidence,e.strategy??'UNKNOWN',e.timestamp,JSON.stringify(e.factors)]
     );
   }
   export async function updateJournalEntry(id: string, u: Partial<JournalEntry>): Promise<boolean> {
@@ -182,7 +182,8 @@ import { pool } from "../lib/db.js";
   /**
    * Close the most recent open journal_entry for a given chatId+symbol+direction.
    * Called whenever a paper position closes (TP1, TP2, SL, BE, TIMEOUT).
-   * Uses the LATEST unclosed entry to handle positions opened without a journal link.
+   * positionId (H2 fix): when provided, restricts update to the specific linked position,
+   * preventing accidental closure of a wrong journal entry if two entries exist.
    */
   export async function updateJournalClose(
     chatId: number,
@@ -190,7 +191,8 @@ import { pool } from "../lib/db.js";
     direction: "LONG"|"SHORT",
     closePrice: number,
     outcome: string,
-    pnlPercent: number
+    pnlPercent: number,
+    positionId?: string
   ): Promise<void> {
     await pool.query(
       `UPDATE journal_entries
@@ -198,9 +200,32 @@ import { pool } from "../lib/db.js";
        WHERE id = (
          SELECT id FROM journal_entries
          WHERE chat_id=$5 AND symbol=$6 AND direction=$7 AND closed_at IS NULL
+           AND ($8::TEXT IS NULL OR position_id = $8)
          ORDER BY timestamp DESC LIMIT 1
        )`,
-      [new Date().toISOString(), closePrice, outcome, pnlPercent, chatId, symbol, direction]
+      [new Date().toISOString(), closePrice, outcome, pnlPercent, chatId, symbol, direction, positionId ?? null]
+    );
+  }
+
+  /**
+   * Links a journal entry to the paper position that was opened for it.
+   * Called in scheduler.ts after openPaperPosition returns position.id.
+   * Enables updateJournalClose to find the exact right entry on close.
+   */
+  export async function linkJournalToPosition(
+    chatId: number,
+    symbol: string,
+    direction: "LONG"|"SHORT",
+    positionId: string
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE journal_entries SET position_id=$1
+       WHERE id = (
+         SELECT id FROM journal_entries
+         WHERE chat_id=$2 AND symbol=$3 AND direction=$4 AND closed_at IS NULL AND position_id IS NULL
+         ORDER BY timestamp DESC LIMIT 1
+       )`,
+      [positionId, chatId, symbol, direction]
     );
   }
   export async function loadPaperAccount(chatId: number): Promise<PaperAccount> {

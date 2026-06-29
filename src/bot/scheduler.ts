@@ -3,7 +3,7 @@ import cron from "node-cron";
   import { generateSignal } from "./signals.js";
   import { checkPaperPositions, openPaperPosition, getPaperStats } from "./paper-trading.js";
   import { canOpenTrade } from "./risk-manager.js";
-  import { loadSettings, loadPaperAccount, loadWeights } from "./storage.js";
+  import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
   import { evaluateABVariants, checkDegradation } from "./ab-testing.js";
   import { pool, resetAllData } from "../lib/db.js";
@@ -404,6 +404,14 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       if (res.success) {
         if (res.position) {
+          // H2: link the journal entry to the position ID so updateJournalClose
+          // finds the exact right entry on close (prevents wrong-entry closure)
+          linkJournalToPosition(
+            sub.chatId, sub.symbol,
+            sig.score.direction as "LONG"|"SHORT",
+            res.position.id
+          ).catch(() => {});
+
           const now = new Date();
           const features: TradeFeatures = {
             symbol: sub.symbol,

@@ -182,7 +182,7 @@ export async function checkPaperPositions(
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
-              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct).catch(() => {});
+              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct, pos.id).catch(() => {});
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
               const timeoutMsg =
                 `⏱ *Позиция закрыта по таймауту — ${pos.symbol} ${pos.direction}*\n` +
@@ -222,7 +222,7 @@ export async function checkPaperPositions(
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE").catch(() => {});
-              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct).catch(() => {});
+              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct, pos.id).catch(() => {});
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
               const staleMsg =
                 `⏱ *Позиция закрыта — нет движения ${pos.symbol} ${pos.direction} (${Math.floor(hoursOpenStale)}ч)*\n`
@@ -319,7 +319,7 @@ export async function checkPaperPositions(
         recordTimeTrade(pos.openedAt, pnlEquityPct, true).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, true).catch(() => {});
         updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
-        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct).catch(() => {});
+        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct, pos.id).catch(() => {});
         recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true).catch(() => {});
 
         pos.size              = pos.size * 0.5;
@@ -394,7 +394,7 @@ export async function checkPaperPositions(
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct).catch(() => {});
+        updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct, pos.id).catch(() => {});
         if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
           const lossReason = classifyLossReason((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, closeReason);
           recordLossReason((pos.strategy ?? "UNKNOWN") as StrategyName, lossReason).catch(() => {});

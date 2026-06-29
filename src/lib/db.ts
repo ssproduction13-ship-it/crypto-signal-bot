@@ -421,6 +421,9 @@ const MIGRATIONS = [
     score         DOUBLE PRECISION,
     confidence    DOUBLE PRECISION
   )`,
+  // ── H2: link journal entries to paper positions ───────────────────────────
+  "ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS position_id TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_je_position_id ON journal_entries(position_id)",
   // ── v1.1 DB Indexes — prevent full-table scans as trade history grows ────
   "CREATE INDEX IF NOT EXISTS idx_pct_strategy   ON paper_closed_trades(strategy)",
   "CREATE INDEX IF NOT EXISTS idx_pct_closed_at  ON paper_closed_trades(closed_at DESC)",

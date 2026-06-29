@@ -110,10 +110,14 @@ export async function runBacktest(
 
     if (outcome === "OPEN") continue;
 
-    const pnlPercent =
+    // H4: include round-trip commission (0.1% × 2 = 0.2%) so backtest PnL
+    // is closer to live results. Slippage is NOT modelled here (simplified).
+    const COMMISSION_RT = 0.002; // 0.1% entry + 0.1% exit
+    const rawPnlPct =
       scoreResult.direction === "LONG"
         ? ((closePrice - risk.entryPrice) / risk.entryPrice) * 100
         : ((risk.entryPrice - closePrice) / risk.entryPrice) * 100;
+    const pnlPercent = rawPnlPct - COMMISSION_RT * 100;
 
     trades.push({
       entryIdx: i,
@@ -170,6 +174,8 @@ export async function runBacktest(
       : profitFactor >= 1
       ? "⚠️ Стратегия в плюсе, но слабо — улучши фильтры"
       : "❌ Стратегия убыточна на истории — пересмотри параметры",
+    ``,
+    `⚠️ _Упрощённая симуляция: комиссия 0.2% учтена, слиппедж и частичный TP1-выход — нет. Реальные результаты могут отличаться._`,
   ].join("\n");
 
   return {

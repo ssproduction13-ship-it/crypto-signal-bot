@@ -76,7 +76,9 @@ export async function calcTrustScore(
 ): Promise<number> {
   if (trades === 0) return 0;
 
-  const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 5 : 0;
+  // PF fallback capped at 2.0 (was 5): a strategy with 0 losses gets PF=2.0 max,
+  // preventing over-inflation of pfScore during bootstrap (H3 fix)
+  const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
   const wr = wins / trades;
 
   // PF score (0–35)
@@ -104,14 +106,16 @@ export async function calcTrustScore(
   else if (avgLoss > 2) ddScore = 10;
 
   // Stability of recent trades (0–10)
+  // Uses pnl_equity_pct (portfolio impact %) — same scale as strategy_stats accumulator.
+  // pnl_percent is raw price % and uses a different scale, mixing them broke PF vs stability comparison.
   let stabilityScore = 0;
   try {
     const {rows} = await pool.query(
-      `SELECT pnl_percent FROM paper_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 20`,
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 20`,
       [strategy]
     );
     if (rows.length >= 10) {
-      const pnls = (rows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
+      const pnls = (rows as Record<string,unknown>[]).map(r => Number(r["pnl"]));
       const recentWins = pnls.filter(p => p > 0).length;
       const recentWR = recentWins / pnls.length;
       if (recentWR >= 0.55) stabilityScore = 10;
@@ -139,7 +143,7 @@ export async function calcTrustScore(
       const r = rows[0] as Record<string,unknown>;
       const rt=Number(r["trades"]),rw=Number(r["wins"]),rwp=Number(r["win_pnl"]),rlp=Number(r["loss_pnl"]);
       if (rt >= 5) {
-        const rpf = rlp > 0 ? rwp / rlp : rwp > 0 ? 5 : 0;
+        const rpf = rlp > 0 ? rwp / rlp : rwp > 0 ? 2.0 : 0; // cap at 2.0 — consistent with H3
         regimeFit = rpf >= 1.3 ? 5 : rpf >= 1.0 ? 3 : rpf >= 0.8 ? 1 : 0;
       }
     }
@@ -450,7 +454,8 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
     const winPnl  = statRow ? Number(statRow["win_pnl"]) : 0;
     const lossPnl = statRow ? Number(statRow["loss_pnl"]): 0;
     const totalPnl= statRow ? Number(statRow["total_pnl"]): 0;
-    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 99 : 0;
+    // PF fallback 2.0 (was 99): prevents runaway weight for strategies with zero losses
+    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 2.0 : 0;
     const isNegativeReturn = totalPnl < 0;
 
     const cur = curW[strat] ?? {weight:1,cycles:0,disabled:false,quarantine:false};
@@ -535,7 +540,11 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
         const targetW = pfToTargetWeight(pf);
         const blendSpeed = 0.15; // max 15% of gap per cycle
         const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
-        newW = Math.max(0.10, Math.min(1.50, blendedW));
+        // H3 warm-up cap: limit weight growth to 0.80 until 30 trades are collected.
+        // Prevents a lucky bootstrap streak (PF=2.0 with 5 wins, 0 losses) from
+        // immediately reaching max weight (1.50) before the strategy is proven.
+        const warmupCap = trades < 30 ? 0.80 : 1.50;
+        newW = Math.max(0.10, Math.min(warmupCap, blendedW));
         newCycles = pf < 0.8 ? cur.cycles + 1 : Math.max(0, cur.cycles - 1);
         if (Math.abs(newW - cur.weight) > 0.005) {
           const dir = newW > cur.weight ? "📈" : "📉";
