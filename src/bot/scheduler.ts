@@ -217,9 +217,9 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       let atrSizeMultiplier = 1.0;
       if (!gate.rejected && sig.risk.atr != null && sig.risk.entryPrice > 0) {
         const atrPercent = (sig.risk.atr / sig.risk.entryPrice) * 100;
-        if (atrPercent > 4.0) {
-          gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 4%");
-        } else if (atrPercent >= 2.5) {
+        if (atrPercent > 6.0) {
+          gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 6%");
+        } else if (atrPercent >= 4.0) {
           atrSizeMultiplier = 0.5;
           gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — размер снижен до 50%`);
         } else {
