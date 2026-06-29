@@ -172,12 +172,16 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const selectionResult: StrategySelectionResult | null = strategySignals.length > 0
         ? await selectBestStrategy(strategySignals, regime).catch(() => null)
         : null;
-      const bestSig = selectionResult?.selected ?? null;
-      const strat = bestSig?.strategy ?? sig.bestStrategy?.strategy ?? "TREND";
-      const stratTrust  = selectionResult?.trustScore ?? 0;
-      const stratFScore = selectionResult?.finalScore ?? 0;
-      const stratRanking = selectionResult?.ranking ?? [];
-      const isExploration = selectionResult?.isExploration ?? false;
+      if (!selectionResult) {
+        logger.debug({ symbol: sub.symbol }, "analyzeAndTrade: нет подходящей стратегии — NO TRADE");
+        return;
+      }
+      const bestSig = selectionResult.selected;
+      const strat = bestSig.strategy;
+      const stratTrust  = selectionResult.trustScore;
+      const stratFScore = selectionResult.finalScore;
+      const stratRanking = selectionResult.ranking ?? [];
+      const isExploration = selectionResult.isExploration ?? false;
 
       const [stratStatuses, stratWeights] = await Promise.all([
         getAllStrategyStatuses().catch(() => [] as any[]),
@@ -231,7 +235,27 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.skip("ATR Filter", "Предыдущий шаг не прошёл");
       }
 
-      const minTrust = stratStatus?.quarantine ? 20 : 5;
+      // ── Quarantine gate ───────────────────────────────────────────────────────────────────────
+      // Стратегия в карантине допускается только при высоком качестве сигнала
+      if (!gate.rejected && stratStatus?.status === "quarantine") {
+        const qScore = sig.score.total >= 75;
+        const qConf  = sig.confidence.score >= 40;
+        const qFS    = stratFScore >= 20;
+        if (!qScore || !qConf || !qFS) {
+          const why = !qScore
+            ? `Score ${sig.score.total} < 75`
+            : !qConf
+            ? `Conf ${sig.confidence.score}% < 40%`
+            : `FinalScore ${stratFScore.toFixed(1)} < 20`;
+          gate.fail("Карантин", "Стратегия в карантине — недостаточное качество сигнала", why, "Score≥75 | Conf≥40% | FS≥20");
+        } else {
+          gate.pass("Карантин", `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)} — допуск`);
+        }
+      } else if (!gate.rejected) {
+        gate.skip("Карантин", "Стратегия активна");
+      }
+
+      const minTrust = stratStatus?.status === "quarantine" ? 20 : 5;
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
       } else {
@@ -278,6 +302,17 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         }
       } else {
         gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
+      }
+
+      // ── FinalScore gate ─────────────────────────────────────────────────────────────────────
+      // Итоговый композитный счёт: score × trust × weight × regimePF
+      const MIN_FINAL_SCORE = 10;
+      if (!gate.rejected && stratFScore < MIN_FINAL_SCORE) {
+        gate.fail("FinalScore", "Итоговый счёт стратегии ниже порога", stratFScore.toFixed(1), MIN_FINAL_SCORE);
+      } else if (!gate.rejected) {
+        gate.pass("FinalScore", `${stratFScore.toFixed(1)} / мин ${MIN_FINAL_SCORE}`);
+      } else {
+        gate.skip("FinalScore", "Предыдущий шаг не прошёл");
       }
 
       const rankingNote = stratRanking.length > 1
