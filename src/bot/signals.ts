@@ -75,7 +75,7 @@ export async function generateSignal(
       direction: score.direction, entryPrice: risk.entryPrice,
       stopLoss: risk.stopLoss, tp1: risk.tp1, tp2: risk.tp2,
       score: score.total, confidence: confidence.score,
-      strategy: bestStrategy?.strategy ?? "TREND",
+      strategy: bestStrategy?.strategy ?? "UNKNOWN",
       timestamp: new Date().toISOString(), factors: score.factorScores,
     }).catch(err => logger.error({ err }, "addJournalEntry failed"));
   }

@@ -173,7 +173,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         ? await selectBestStrategy(strategySignals, regime).catch(() => null)
         : null;
       if (!selectionResult) {
-        logger.debug({ symbol: sub.symbol }, "analyzeAndTrade: нет подходящей стратегии — NO TRADE");
+        logger.warn({ symbol: sub.symbol, reason: 'NO_STRATEGY_SELECTED' }, 'Decision Engine: NO TRADE — no valid strategy selected');
         return;
       }
       const bestSig = selectionResult.selected;
@@ -304,15 +304,16 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
       }
 
-      // ── FinalScore gate ─────────────────────────────────────────────────────────────────────
-      // Итоговый композитный счёт: score × trust × weight × regimePF
+      // ── FinalScore Gate (Decision Engine v1.1) — MIN_FINAL_SCORE = 10 ─────────────────────
       const MIN_FINAL_SCORE = 10;
       if (!gate.rejected && stratFScore < MIN_FINAL_SCORE) {
-        gate.fail("FinalScore", "Итоговый счёт стратегии ниже порога", stratFScore.toFixed(1), MIN_FINAL_SCORE);
+        gate.fail("FinalScore Gate", "FinalScore ниже минимального порога", stratFScore.toFixed(1), MIN_FINAL_SCORE);
+        logger.warn({ symbol: sub.symbol, strat, finalScore: stratFScore, min: MIN_FINAL_SCORE, reason: 'FINAL_SCORE_TOO_LOW' },
+          `Decision Engine: FINAL_SCORE_TOO_LOW — ${stratFScore.toFixed(1)} < ${MIN_FINAL_SCORE}`);
       } else if (!gate.rejected) {
-        gate.pass("FinalScore", `${stratFScore.toFixed(1)} / мин ${MIN_FINAL_SCORE}`);
+        gate.pass("FinalScore Gate", `${stratFScore.toFixed(1)} >= ${MIN_FINAL_SCORE} ✓`);
       } else {
-        gate.skip("FinalScore", "Предыдущий шаг не прошёл");
+        gate.skip("FinalScore Gate", "Предыдущий шаг не прошёл");
       }
 
       const rankingNote = stratRanking.length > 1
@@ -339,7 +340,14 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       }).catch(() => {});
 
       if (gate.rejected) {
-        logger.debug({ symbol: sub.symbol, reason: gate.rejectReason, strat }, "Trade Quality Gate: REJECT");
+        const rejectCode =
+          gate.rejectReason?.toLowerCase().includes('карантин')
+            ? 'QUARANTINE_RULE'
+            : gate.rejectReason?.includes('FinalScore')
+            ? 'FINAL_SCORE_TOO_LOW'
+            : 'GATE_REJECTED';
+        logger.warn({ symbol: sub.symbol, reason: rejectCode, rejectDetail: gate.rejectReason, strat },
+          `Decision Engine: ${rejectCode}`);
         return;
       }
 
@@ -447,7 +455,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         await safeSend(sub.chatId,
           `🤖 *Новая позиция${isExploration ? " 🎲 [Exploration]" : ""}*\n\n` +
           `${dir} *${sub.symbol}*\n` +
-          `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratTrust}/100)\n` +
+          `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratStatus?.trustScore ?? stratTrust}/100)\n` +
           `Режим: ${regimeLabels[regime] ?? regime} | FinalScore: ${stratFScore.toFixed(1)}\n` +
           `Score: ${sig.score.total}/100 | Min: ${minScore} | Conf: ${sig.confidence.score}%\n` +
           `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
