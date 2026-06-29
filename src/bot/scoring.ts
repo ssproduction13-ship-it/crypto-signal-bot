@@ -68,21 +68,27 @@ export function calcScore(
 
   let volumeRaw = 50;
   const volumes = candles.map((c) => c.volume);
-  const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const volSlice = volumes.slice(-20);
+  const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
   const lastVol = volumes[volumes.length - 1]!;
-  const volRatio = lastVol / avgVol;
 
-  if (volRatio > 2) {
-    volumeRaw += 40;
-    reasons.push(`📊 Аномальный объём: ${(volRatio * 100).toFixed(0)}% от среднего`);
-  } else if (volRatio > 1.3) {
-    volumeRaw += 25;
-    reasons.push(`📊 Объём выше среднего: ${(volRatio * 100).toFixed(0)}%`);
-  } else if (volRatio < 0.7) {
-    volumeRaw -= 25;
-    reasons.push(`📊 Слабый объём: ${(volRatio * 100).toFixed(0)}% от среднего`);
+  if (avgVol <= 0) {
+    // No volume data — keep neutral score, note it
+    reasons.push(`📊 Объём: нет данных`);
   } else {
-    reasons.push(`📊 Объём в норме: ${(volRatio * 100).toFixed(0)}%`);
+    const volRatio = lastVol / avgVol;
+    if (volRatio > 2) {
+      volumeRaw += 40;
+      reasons.push(`📊 Аномальный объём: ${(volRatio * 100).toFixed(0)}% от среднего`);
+    } else if (volRatio > 1.3) {
+      volumeRaw += 25;
+      reasons.push(`📊 Объём выше среднего: ${(volRatio * 100).toFixed(0)}%`);
+    } else if (volRatio < 0.7) {
+      volumeRaw -= 25;
+      reasons.push(`📊 Слабый объём: ${(volRatio * 100).toFixed(0)}% от среднего`);
+    } else {
+      reasons.push(`📊 Объём в норме: ${(volRatio * 100).toFixed(0)}%`);
+    }
   }
 
   const volumeScore = clamp(volumeRaw);

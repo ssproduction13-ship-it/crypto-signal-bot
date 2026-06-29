@@ -120,9 +120,11 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   const atr = atrValues.length ? atrValues[atrValues.length - 1]! : null;
   const atrPercent = atr != null ? (atr / currentClose) * 100 : null;
 
-  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const volSlice20 = volumes.slice(-20);
+  const avgVolume = volSlice20.length > 0 ? volSlice20.reduce((a, b) => a + b, 0) / volSlice20.length : 0;
   const lastVolume = volumes[volumes.length - 1]!;
-  const volumeSignal: "above_avg" | "below_avg" = lastVolume > avgVolume ? "above_avg" : "below_avg";
+  // avgVolume > 0 guard prevents Infinity/NaN on zero-volume (illiquid or new-listing) candles
+  const volumeSignal: "above_avg" | "below_avg" = avgVolume > 0 && lastVolume > avgVolume ? "above_avg" : "below_avg";
 
   return {
     rsi,

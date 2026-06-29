@@ -5,7 +5,7 @@ import type { PatternResult } from "./patterns.js";
 import type { Candle } from "./binance.js";
 import { logger } from "../lib/logger.js";
 
-export type StrategyName = "TREND" | "BREAKOUT" | "VOLUME_IMPULSE" | "MEAN_REVERSION";
+export type StrategyName = "TREND" | "BREAKOUT" | "VOLUME_IMPULSE" | "MEAN_REVERSION" | "UNKNOWN";
 
 export interface StrategySignal {
   strategy: StrategyName;
@@ -230,6 +230,7 @@ export function formatStrategyStats(stats: StrategyStats[]): string {
     BREAKOUT: "🚀 Пробой",
     VOLUME_IMPULSE: "⚡ Объёмный импульс",
     MEAN_REVERSION: "↩️ Возврат к среднему",
+    UNKNOWN: "❓ Нет стратегии",
   };
 
   const lines = all.map(s => {

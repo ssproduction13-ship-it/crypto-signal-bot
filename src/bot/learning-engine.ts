@@ -270,15 +270,17 @@ export async function selectBestStrategy(
       if (regRows.length) {
         const rr = regRows[0] as Record<string,unknown>;
         const rwp=Number(rr["win_pnl"]),rlp=Number(rr["loss_pnl"]);
-        regimePF = rlp > 0 ? rwp/rlp : rwp > 0 ? 5 : 0;
+        // Cap at 2.0: unbounded regimePF (e.g. 5 when lossPnl=0) inflated finalScore up to 750
+        regimePF = Math.min(2.0, rlp > 0 ? rwp/rlp : rwp > 0 ? 2.0 : 0);
       }
     } catch { regimePF = 1; }
 
     // Final Score = Signal Score × Trust × Strategy Weight × Regime Score (TZ §1)
-    const finalScore = sig.score
+    // Math.min(100): weight≤1.5, regimePF≤2.0, trust≤1.0 → theoretical max=100*1.5*2.0=300 before cap
+    const finalScore = Math.min(100, sig.score
       * Math.max(0.15, trustScore / 100)  // floor 15%: prevents near-zero finalScore at bootstrap
       * Math.max(0.10, weight)
-      * Math.max(0.10, regimePF);
+      * Math.max(0.10, regimePF));
 
     scored.push({sig, trustScore, regimePF, weight, finalScore});
   }

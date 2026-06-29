@@ -421,6 +421,17 @@ const MIGRATIONS = [
     score         DOUBLE PRECISION,
     confidence    DOUBLE PRECISION
   )`,
+  // ── v1.1 DB Indexes — prevent full-table scans as trade history grows ────
+  "CREATE INDEX IF NOT EXISTS idx_pct_strategy   ON paper_closed_trades(strategy)",
+  "CREATE INDEX IF NOT EXISTS idx_pct_closed_at  ON paper_closed_trades(closed_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_pct_chat_id    ON paper_closed_trades(chat_id)",
+  "CREATE INDEX IF NOT EXISTS idx_pp_chat_id     ON paper_positions(chat_id)",
+  "CREATE INDEX IF NOT EXISTS idx_je_lookup      ON journal_entries(chat_id, symbol, direction)",
+  "CREATE INDEX IF NOT EXISTS idx_je_closed_at   ON journal_entries(closed_at)",
+  "CREATE INDEX IF NOT EXISTS idx_ss_strategy    ON strategy_stats(strategy)",
+  "CREATE INDEX IF NOT EXISTS idx_ia_symbol      ON instrument_analytics(symbol)",
+  "CREATE INDEX IF NOT EXISTS idx_dl_symbol      ON decision_log(symbol)",
+  "CREATE INDEX IF NOT EXISTS idx_dl_strategy    ON decision_log(strategy)",
 ];
 
 
