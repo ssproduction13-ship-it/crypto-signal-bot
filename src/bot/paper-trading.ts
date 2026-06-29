@@ -165,7 +165,7 @@ export async function checkPaperPositions(
         if (!pos.breakevenMoved) {
           const hoursOpen = (Date.now() - new Date(pos.openedAt).getTime()) / 3_600_000;
           const iv = pos.interval ?? "1h";
-          const maxHours = iv === "15m" ? 48 : iv === "4h" ? 336 : 168;
+          const maxHours = iv === "15m" ? 48 : iv === "4h" ? 120 : 72;
           if (hoursOpen > maxHours) {
             const claimed = await tryClaimPosition(chatId, pos.id);
             if (claimed) {
@@ -191,6 +191,45 @@ export async function checkPaperPositions(
                 `💰 Баланс: *${account.balance.toFixed(2)}*`;
               msgs.push(timeoutMsg);
               if (sendNotification) await sendNotification(timeoutMsg).catch(() => {});
+              continue;
+            }
+          }
+        }
+
+        // ── Stale Position Early Timeout ─────────────────────────────────────────────────────────────
+        {
+          const hoursOpenStale = (Date.now() - new Date(pos.openedAt).getTime()) / 3_600_000;
+          const ivStale = pos.interval ?? "1h";
+          const pnlSign = pos.direction === "LONG" ? 1 : -1;
+          const rawPnlPct = pnlSign * (price - pos.entryPrice) / pos.entryPrice * 100;
+          const isStale = Math.abs(rawPnlPct) < 0.1;
+          const staleThreshold1h  = hoursOpenStale > 24 && ivStale === "1h";
+          const staleThreshold15m = hoursOpenStale > 12 && ivStale === "15m";
+
+          if (isStale && (staleThreshold1h || staleThreshold15m)) {
+            const claimed = await tryClaimPosition(chatId, pos.id);
+            if (claimed) {
+              const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+                buildCloseRecord(pos, price, pos.size, "TIMEOUT_STALE", equityAtOpen);
+              account.balance += pnl;
+              account.closedTrades.unshift(trade);
+              await insertClosedTrade(chatId, trade);
+              addAccountCosts(chatId, commission, slippage).catch(() => {});
+              recordStrategyTrade(pos.strategy ?? "TREND", pnlEquityPct, pnl > 0).catch(() => {});
+              const regimeStale = pos.marketRegime ?? "sideways";
+              recordRegimeTrade(pos.strategy ?? "TREND" as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+              recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
+              recordInstrumentTrade(pos.symbol, pos.strategy ?? "TREND" as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+              updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE").catch(() => {});
+              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct).catch(() => {});
+              if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
+              const staleMsg =
+                `⏱ *Позиция закрыта — нет движения ${pos.symbol} ${pos.direction} (${Math.floor(hoursOpenStale)}ч)*\n`
+                + `Вход: \`${formatPrice(pos.entryPrice)}\` → Закрыто: \`${formatPrice(realisticPrice)}\`\n`
+                + `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)\n`
+                + `💰 Баланс: *${account.balance.toFixed(2)}*`;
+              msgs.push(staleMsg);
+              if (sendNotification) await sendNotification(staleMsg).catch(() => {});
               continue;
             }
           }
