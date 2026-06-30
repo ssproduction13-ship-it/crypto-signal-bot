@@ -166,7 +166,7 @@ import { runDataCleanup } from "./data-cleanup.js";
     const posLines = account.positions.length === 0
       ? ["  нет открытых позиций"]
       : account.positions.map(p => {
-          const dir = p.direction === "LONG" ? "🟢" : "🔴";
+          const dir = p.direction === "LONG" ? "⬆️" : "⬇️";
           const be  = p.breakevenMoved ? " [BE✓]" : "";
           return `  ${dir} ${p.symbol} @ ${formatPrice(p.entryPrice)}${be}`;
         });
@@ -252,7 +252,7 @@ import { runDataCleanup } from "./data-cleanup.js";
       const posLines = account.positions.length === 0
         ? ["_нет открытых позиций_"]
         : await Promise.all(account.positions.map(async p => {
-            const dir = p.direction === "LONG" ? "🟢" : "🔴";
+            const dir = p.direction === "LONG" ? "⬆️" : "⬇️";
             try {
               const { getPrice } = await import("./binance.js");
               const price = await getPrice(p.symbol);
@@ -412,7 +412,7 @@ import { runDataCleanup } from "./data-cleanup.js";
       const lines: string[] = [`📂 *Позиции (${account.positions.length})*\n`];
 
       for (const pos of account.positions) {
-        const dir = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+        const dir = pos.direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
         const be  = pos.breakevenMoved ? " \\[BE✓\\]" : "";
         try {
           const price  = await getPrice(pos.symbol);
