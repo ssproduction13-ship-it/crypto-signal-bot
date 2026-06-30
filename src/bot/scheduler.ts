@@ -173,7 +173,6 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
     if (Date.now() - lastRun < DEBOUNCE_MS) return null;
     recentlyProcessed.set(debounceKey, Date.now());
 
-    try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
       const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
