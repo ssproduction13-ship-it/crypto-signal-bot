@@ -112,6 +112,7 @@ export async function openPaperPosition(
     chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
     equityAtOpen: account.balance,
     pendingEntrySize, pendingEntryTrigger, marketRegime, interval,
+    riskPercent: rp,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
