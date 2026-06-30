@@ -128,7 +128,7 @@ export async function openPaperPosition(
     success:true, position:pos,
     message:
       `✅ *Виртуальная позиция открыта*\n\n` +
-      `${direction==="LONG"?"🟢 LONG":"🔴 SHORT"} ${symbol}\n` +
+      `${direction==="LONG"?"⬆️ LONG":"⬇️ SHORT"} ${symbol}\n` +
       `Стратегия: ${stratNames[strategy] ?? strategy}\n` +
       `Вход: ${formatPrice(entryPrice)}\n` +
       `Стоп: ${formatPrice(stopLoss)}\n` +
@@ -161,7 +161,7 @@ export async function checkPaperPositions(
       const price = await getPrice(pos.symbol);
       const equityAtOpen = pos.equityAtOpen ?? account.initialBalance;
       const stratLabel = stratNames[pos.strategy ?? "UNKNOWN"] ?? pos.strategy ?? "UNKNOWN";
-      const dirLabel   = pos.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+      const dirLabel   = pos.direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
 
         // ── Position Timeout ─────────────────────────────────────────────────────
         if (!pos.breakevenMoved) {
@@ -487,7 +487,7 @@ export async function getPaperStats(chatId: number): Promise<string> {
   const posLines = account.positions.length===0
     ? ["  нет открытых позиций"]
     : account.positions.map(p=>{
-        const dir = p.direction==="LONG"?"🟢":"🔴";
+        const dir = p.direction==="LONG"?"⬆️":"⬇️";
         const be  = p.breakevenMoved?" [BE✓]":"";
         return `  ${dir} ${p.symbol} @ ${formatPrice(p.entryPrice)}${be} | SL: ${formatPrice(p.stopLoss)}`;
       });
