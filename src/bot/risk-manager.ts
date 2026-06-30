@@ -133,3 +133,67 @@ import { pool } from "../lib/db.js";
         `📂 Открытых позиций: ${s.openPositions} (без лимита)`,
       ].join("\n");
     }
+
+
+  // ── Concentration Risk Limits ──────────────────────────────────────────────────────
+  // Prevents risk from accumulating in a single strategy/direction/symbol/regime.
+  // Called in scheduler.ts after Correlation Guard, before opening a position.
+
+  const MAX_RISK_PER_STRATEGY = 15;  // % of deposit total in one strategy
+  const MAX_RISK_PER_DIRECTION = 25; // % of deposit total in LONG or SHORT
+  const MAX_RISK_PER_SYMBOL    = 4;  // % of deposit in one coin (across all timeframes)
+  const MAX_RISK_PER_REGIME    = 20; // % of deposit in positions opened in one market regime
+  const MAX_TOTAL_POSITIONS    = 35; // hard cap on simultaneous open positions
+
+  export interface ConcentrationPosition {
+    symbol: string;
+    strategy?: string;
+    direction?: string;
+    riskPercent?: number;
+    marketRegime?: string;
+  }
+
+  export function checkConcentrationLimits(
+    newSymbol: string,
+    newStrategy: string,
+    newDirection: "LONG" | "SHORT",
+    newRegime: string,
+    newRiskPct: number,
+    openPositions: ConcentrationPosition[]
+  ): { blocked: boolean; reason?: string } {
+
+    if (openPositions.length >= MAX_TOTAL_POSITIONS) {
+      return { blocked: true, reason: `Достигнут лимит одновременных позиций (${MAX_TOTAL_POSITIONS})` };
+    }
+
+    const riskByStrategy = openPositions
+      .filter(p => p.strategy === newStrategy)
+      .reduce((s, p) => s + (p.riskPercent ?? 0), 0) + newRiskPct;
+    if (riskByStrategy > MAX_RISK_PER_STRATEGY) {
+      return { blocked: true, reason: `Риск по стратегии ${newStrategy} превысит лимит: ${riskByStrategy.toFixed(1)}% > ${MAX_RISK_PER_STRATEGY}%` };
+    }
+
+    const riskByDirection = openPositions
+      .filter(p => p.direction === newDirection)
+      .reduce((s, p) => s + (p.riskPercent ?? 0), 0) + newRiskPct;
+    if (riskByDirection > MAX_RISK_PER_DIRECTION) {
+      return { blocked: true, reason: `Риск по направлению ${newDirection} превысит лимит: ${riskByDirection.toFixed(1)}% > ${MAX_RISK_PER_DIRECTION}%` };
+    }
+
+    const riskBySymbol = openPositions
+      .filter(p => p.symbol === newSymbol)
+      .reduce((s, p) => s + (p.riskPercent ?? 0), 0) + newRiskPct;
+    if (riskBySymbol > MAX_RISK_PER_SYMBOL) {
+      return { blocked: true, reason: `Риск по ${newSymbol} превысит лимит: ${riskBySymbol.toFixed(1)}% > ${MAX_RISK_PER_SYMBOL}%` };
+    }
+
+    const riskByRegime = openPositions
+      .filter(p => p.marketRegime === newRegime)
+      .reduce((s, p) => s + (p.riskPercent ?? 0), 0) + newRiskPct;
+    if (riskByRegime > MAX_RISK_PER_REGIME) {
+      return { blocked: true, reason: `Риск в режиме "${newRegime}" превысит лимит: ${riskByRegime.toFixed(1)}% > ${MAX_RISK_PER_REGIME}%` };
+    }
+
+    return { blocked: false };
+  }
+  
