@@ -421,6 +421,14 @@ const MIGRATIONS = [
     score         DOUBLE PRECISION,
     confidence    DOUBLE PRECISION
   )`,
+  // ── M1: add interval dimension to strategy_regime_stats ──────────────────
+  // Existing rows get interval='ALL' (cross-interval aggregate, kept for fallback).
+  // New rows store the actual trading interval so 15m and 1h stats are separate.
+  "ALTER TABLE strategy_regime_stats ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT 'ALL'",
+  // Drop old (strategy,regime) PK so we can extend it with interval.
+  // Safe: existing rows are unique on (strategy,regime,interval='ALL').
+  "ALTER TABLE strategy_regime_stats DROP CONSTRAINT IF EXISTS strategy_regime_stats_pkey",
+  "ALTER TABLE strategy_regime_stats ADD PRIMARY KEY (strategy, regime, interval)",
   // ── H2: link journal entries to paper positions ───────────────────────────
   "ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS position_id TEXT",
   "CREATE INDEX IF NOT EXISTS idx_je_position_id ON journal_entries(position_id)",

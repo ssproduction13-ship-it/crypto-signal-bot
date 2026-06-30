@@ -82,7 +82,11 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   const ema200Values = EMA.calculate({ values: closes, period: 200 });
   const ema20 = ema20Values.length ? ema20Values[ema20Values.length - 1]! : null;
   const ema50 = ema50Values.length ? ema50Values[ema50Values.length - 1]! : null;
-  const ema200 = ema200Values.length ? ema200Values[ema200Values.length - 1]! : null;
+  // L2: require at least 200 candles for a meaningful EMA-200.
+  // With fewer bars the library still computes a value but it's unreliable —
+  // silently using it would distort the trend score. Returning null makes the
+  // absence explicit and scoring.ts already handles ema200 == null correctly.
+  const ema200 = (closes.length >= 200 && ema200Values.length) ? ema200Values[ema200Values.length - 1]! : null;
 
   let emaCrossSignal: "buy" | "sell" | "neutral" = "neutral";
   const prevEma20 = ema20Values.length > 1 ? ema20Values[ema20Values.length - 2]! : null;

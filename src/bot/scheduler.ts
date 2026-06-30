@@ -35,6 +35,9 @@ import { generateDailyReport } from "./report-generator.js";
 import { checkMTFAlignment } from "./mtf-filter.js";
 import { checkCorrelationRisk } from "./correlation-risk.js";
 
+  // M5: exported so tests and external monitors can reference the same threshold
+  export const MIN_FINAL_SCORE = 10;
+
   interface Sub { chatId: number; symbol: string; interval: Interval; }
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
@@ -304,8 +307,8 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.skip('MTF фильтр (4H)', 'Предыдущий шаг не прошёл');
       }
 
-      // ── FinalScore Gate (Decision Engine v1.1) — MIN_FINAL_SCORE = 10 ─────────────────────
-      const MIN_FINAL_SCORE = 10;
+      // ── FinalScore Gate (Decision Engine v1.1) ────────────────────────────────────────────
+      // MIN_FINAL_SCORE is a module-level export (M5 fix — was local const, not testable)
       if (!gate.rejected && stratFScore < MIN_FINAL_SCORE) {
         gate.fail("FinalScore Gate", "FinalScore ниже минимального порога", stratFScore.toFixed(1), MIN_FINAL_SCORE);
         logger.warn({ symbol: sub.symbol, strat, finalScore: stratFScore, min: MIN_FINAL_SCORE, reason: 'FINAL_SCORE_TOO_LOW' },
@@ -390,7 +393,16 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         logger.debug({ symbol: sub.symbol, prob: cooldown.skipProbability, level: cooldown.level }, 'Auto-cooldown: trade skipped');
         return;
       }
-      const effectiveRiskPct = settings.riskPercent * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier;
+      // M2: guard against NaN/zero effectiveRiskPct (riskPercent null/0 in DB → silent 0-size position)
+      const baseRisk = (settings.riskPercent > 0 && isFinite(settings.riskPercent)) ? settings.riskPercent : 2;
+      if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
+        logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
+      }
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier;
+      if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
+        logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
+        return;
+      }
       if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0) {
         logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier }, 'Size reduced by guards');
       }

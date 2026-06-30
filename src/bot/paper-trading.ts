@@ -102,7 +102,8 @@ export async function openPaperPosition(
   if (existing) return {success:false,message:`⚠️ Позиция ${symbol} ${direction} уже открыта`};
 
   const openCommission = entryPrice * size * COMMISSION_RATE;
-  account.balance -= openCommission;
+  // L3: floor at 0 — accumulated commissions must never push balance negative
+  account.balance = Math.max(0, account.balance - openCommission);
   addAccountCosts(chatId, openCommission, 0).catch(() => {});
 
   const pos: PaperPosition = {
@@ -178,7 +179,7 @@ export async function checkPaperPositions(
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
               const regime = pos.marketRegime ?? "sideways";
-              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
@@ -218,7 +219,7 @@ export async function checkPaperPositions(
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
               const regimeStale = pos.marketRegime ?? "sideways";
-              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE").catch(() => {});
@@ -243,7 +244,7 @@ export async function checkPaperPositions(
         if (filled) {
           const addSize = pos.pendingEntrySize;
           const addCommission = price * addSize * COMMISSION_RATE;
-          account.balance -= addCommission;
+          account.balance = Math.max(0, account.balance - addCommission); // L3
           addAccountCosts(chatId, addCommission, 0).catch(() => {});
           const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
           pos.entryPrice = blended;
@@ -315,7 +316,7 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Record TP1 as its own stat entry — consistent with paper_closed_trades (1 row per execution)
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, true).catch(() => {});
-        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true).catch(() => {});
+        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true, pos.interval ?? "ALL").catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, true).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, true).catch(() => {});
         updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
@@ -333,7 +334,7 @@ export async function checkPaperPositions(
         const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
         let pyramidNote = "";
         if (account.balance > pyramidCommission * 2) {
-          account.balance -= pyramidCommission;
+          account.balance = Math.max(0, account.balance - pyramidCommission); // L3
           // Update blended entry price to accurately reflect pyramid cost
           const blendedEntry = (pos.entryPrice * pos.size + realisticPrice * pyramidUnits) / (pos.size + pyramidUnits);
           pos.entryPrice = blendedEntry;
@@ -391,7 +392,7 @@ export async function checkPaperPositions(
         // Each partial close is its own stat entry — consistent with paper_closed_trades
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
         const regime = pos.marketRegime ?? "sideways";
-        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct, pos.id).catch(() => {});

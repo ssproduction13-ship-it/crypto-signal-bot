@@ -96,13 +96,20 @@ export async function getActiveVariantId(): Promise<number> {
 // Returns a notification message if champion changed
 export async function evaluateABVariants(): Promise<string | null> {
   const variants = await loadABVariants();
-  const qualified = variants.filter(v => v.trades >= 20);
+  // M4 fix: 20 trades is statistically weak — require 50 trades minimum
+  // and a meaningful PF lead before displacing the current champion.
+  const AB_MIN_TRADES = 50;
+  const AB_CHAMPION_LEAD = 0.15; // challenger must exceed champion PF by ≥0.15
+  const qualified = variants.filter(v => v.trades >= AB_MIN_TRADES);
   if (qualified.length < 2) return null;
 
   const best = qualified.reduce((b, v) => v.profitFactor > b.profitFactor ? v : b);
   const currentChampion = variants.find(v => v.isChampion);
 
   if (currentChampion && best.id === currentChampion.id) return null;
+
+  // Only promote if challenger meaningfully outperforms champion (not just noise)
+  if (currentChampion && (best.profitFactor - (currentChampion.profitFactor)) < AB_CHAMPION_LEAD) return null;
 
   // Promote new champion
   await pool.query("UPDATE ab_variants SET is_champion=false WHERE is_champion=true");

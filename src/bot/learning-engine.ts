@@ -27,38 +27,50 @@ export function detectMarketRegime(market: MarketCondition, rating: MarketRating
 }
 
 export async function recordRegimeTrade(
-  strategy: StrategyName, regime: MarketRegime, pnlPercent: number, isWin: boolean
+  strategy: StrategyName, regime: MarketRegime, pnlPercent: number, isWin: boolean,
+  interval = "ALL" // M1 fix: store per-interval stats to stop 15m/1h data mixing
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO strategy_regime_stats(strategy,regime,trades,wins,win_pnl,loss_pnl,total_pnl)
-     VALUES($1,$2,1,$3,$4,$5,$6)
-     ON CONFLICT(strategy,regime) DO UPDATE SET
-       trades=strategy_regime_stats.trades+1,
-       wins=strategy_regime_stats.wins+$3,
-       win_pnl=strategy_regime_stats.win_pnl+$4,
-       loss_pnl=strategy_regime_stats.loss_pnl+$5,
-       total_pnl=strategy_regime_stats.total_pnl+$6`,
-    [strategy,regime,isWin?1:0,isWin?Math.abs(pnlPercent):0,isWin?0:Math.abs(pnlPercent),pnlPercent]
-  );
+  const vals = [strategy,regime,isWin?1:0,isWin?Math.abs(pnlPercent):0,isWin?0:Math.abs(pnlPercent),pnlPercent];
+  const upsertSql = (iv: string) =>
+    pool.query(
+      `INSERT INTO strategy_regime_stats(strategy,regime,interval,trades,wins,win_pnl,loss_pnl,total_pnl)
+       VALUES($1,$2,$7,1,$3,$4,$5,$6)
+       ON CONFLICT(strategy,regime,interval) DO UPDATE SET
+         trades=strategy_regime_stats.trades+1,
+         wins=strategy_regime_stats.wins+$3,
+         win_pnl=strategy_regime_stats.win_pnl+$4,
+         loss_pnl=strategy_regime_stats.loss_pnl+$5,
+         total_pnl=strategy_regime_stats.total_pnl+$6`,
+      [...vals, iv]
+    );
+  // Write per-interval row AND cross-interval 'ALL' aggregate in parallel
+  await Promise.all([upsertSql(interval), ...(interval !== "ALL" ? [upsertSql("ALL")] : [])]);
 }
 
 export async function isStrategyBlockedInRegime(
-  strategy: StrategyName, regime: MarketRegime
+  strategy: StrategyName, regime: MarketRegime,
+  interval = "ALL" // M1 fix: query per-interval stats first, fall back to 'ALL' aggregate
 ): Promise<{blocked:boolean;reason:string}> {
-  const {rows} = await pool.query(
-    "SELECT trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
-    [strategy,regime]
-  );
-  if (!rows.length) return {blocked:false,reason:""};
-  const r = rows[0] as Record<string,unknown>;
-  const trades=Number(r["trades"]),wins=Number(r["wins"]);
-  const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-  if (trades<10) return {blocked:false,reason:""};
-  const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 99 : 0;
-  const wr = wins/trades;
-  if (pf<0.7 && wr<0.38) {
-    const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
-    return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}" (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};
+  // Try interval-specific stats first (>=10 trades); fall back to cross-interval 'ALL'
+  const candidates = interval !== "ALL" ? [interval, "ALL"] : ["ALL"];
+  for (const iv of candidates) {
+    const {rows} = await pool.query(
+      "SELECT trades,wins,win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2 AND interval=$3",
+      [strategy, regime, iv]
+    );
+    if (!rows.length) continue;
+    const r = rows[0] as Record<string,unknown>;
+    const trades=Number(r["trades"]),wins=Number(r["wins"]);
+    const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
+    if (trades<10) continue; // not enough data in this bucket — try next
+    const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 2.0 : 0;
+    const wr = wins/trades;
+    if (pf<0.7 && wr<0.38) {
+      const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
+      const ivNote = iv !== "ALL" ? ` [${iv}]` : "";
+      return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}"${ivNote} (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};
+    }
+    return {blocked:false,reason:""};
   }
   return {blocked:false,reason:""};
 }
@@ -98,12 +110,14 @@ export async function calcTrustScore(
   else if (wr >= 0.38) wrScore = 8;
   else wrScore = 0;
 
-  // Drawdown score (0–15) — estimated from avg loss magnitude
-  const avgLoss = (trades - wins) > 0 ? lossPnl / (trades - wins) : 0;
-  let ddScore = 15;
-  if (avgLoss > 5) ddScore = 0;
-  else if (avgLoss > 3) ddScore = 5;
-  else if (avgLoss > 2) ddScore = 10;
+  // Drawdown score (0–15) — estimated from avg loss magnitude.
+  // M3 fix: blend raw ddScore toward a neutral value (7) when <5 losses exist,
+  // preventing a single outlier loss from tanking the score to 0 instantly.
+  const lossCount = trades - wins;
+  const avgLoss = lossCount > 0 ? lossPnl / lossCount : 0;
+  const rawDdScore = avgLoss > 5 ? 0 : avgLoss > 3 ? 5 : avgLoss > 2 ? 10 : 15;
+  const ddSampleConf = Math.min(1.0, lossCount / 5); // ramps from 0→1 over first 5 losses
+  const ddScore = Math.round(ddSampleConf * rawDdScore + (1 - ddSampleConf) * 7);
 
   // Stability of recent trades (0–10)
   // Uses pnl_equity_pct (portfolio impact %) — same scale as strategy_stats accumulator.
