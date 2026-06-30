@@ -27,9 +27,12 @@ export function assessMarket(
 
   const atrPercent = atr != null ? (atr / currentPrice) * 100 : null;
 
-  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  // Guard: same pattern as scoring.ts C2 fix — new listings / illiquid pairs can
+  // produce avgVolume=0 → Infinity volumeRatio → false isChaotic/isLowVolume result.
+  const volSlice = volumes.slice(-20);
+  const avgVolume = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
   const lastVolume = volumes[volumes.length - 1]!;
-  const volumeRatio = lastVolume / avgVolume;
+  const volumeRatio = avgVolume > 0 ? lastVolume / avgVolume : 0;
 
   const warnings: string[] = [];
   let isHighVolatility = false;

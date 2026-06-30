@@ -4,8 +4,10 @@ import { pool } from "../lib/db.js";
   export async function recordTimeTrade(openedAt: string, pnlPercent: number, isWin: boolean): Promise<void> {
     try {
       const d = new Date(openedAt);
-      const hour = d.getHours();
-      const dow = (d.getDay()+6)%7; // 0=Mon…6=Sun
+      // Use UTC methods: local timezone varies by Railway region → all historical
+      // hour/dow buckets must be on a single deterministic clock (UTC).
+      const hour = d.getUTCHours();
+      const dow = (d.getUTCDay()+6)%7; // 0=Mon…6=Sun (UTC)
       await pool.query(
         `INSERT INTO time_analytics(hour_of_day,day_of_week,trades,wins,win_pnl,loss_pnl,total_pnl)
          VALUES($1,$2,1,$3,$4,$5,$6)

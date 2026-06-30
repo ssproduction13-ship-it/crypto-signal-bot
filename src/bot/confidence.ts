@@ -110,8 +110,9 @@ import { pool } from "../lib/db.js";
     let timeFactor = 60;
     try {
       const now = new Date();
-      const hour = now.getHours();
-      const dow = (now.getDay() + 6) % 7;
+      // UTC to match recordTimeTrade which stores UTC buckets
+      const hour = now.getUTCHours();
+      const dow = (now.getUTCDay() + 6) % 7;
       const { rows } = await pool.query(
         "SELECT trades, wins FROM time_analytics WHERE hour_of_day=$1 AND day_of_week=$2",
         [hour, dow]

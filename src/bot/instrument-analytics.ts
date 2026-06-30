@@ -19,14 +19,29 @@ import { pool } from "../lib/db.js";
            updated_at=$7`,
         [symbol,isWin?1:0,winPnl,lossPnl,pnlPercent,strategy,new Date().toISOString()]
       );
-      // Update best_strategy based on most wins
+      // Update best_strategy by Profit Factor, not just win count.
+      // A strategy with 10 small wins + 2 large losses beat one with 5 wins + 0 losses
+      // under the old COUNT(*) approach. PF is a more reliable quality metric.
+      // HAVING COUNT(*) >= 5 avoids conclusions from 1–2 trades.
       const {rows} = await pool.query(
-        "SELECT strategy,COUNT(*) as cnt FROM paper_closed_trades WHERE symbol=$1 AND pnl>0 GROUP BY strategy ORDER BY cnt DESC LIMIT 1",
+        `SELECT strategy,
+           COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0)          AS win_pnl,
+           COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0)      AS loss_pnl
+         FROM paper_closed_trades
+         WHERE symbol=$1
+         GROUP BY strategy
+         HAVING COUNT(*) >= 5`,
         [symbol]
       );
       if (rows.length) {
-        const best=(rows[0] as Record<string,unknown>)["strategy"] as string;
-        await pool.query("UPDATE instrument_analytics SET best_strategy=$2 WHERE symbol=$1",[symbol,best]);
+        const scored = (rows as Record<string,unknown>[]).map(r => {
+          const winPnl  = Number(r["win_pnl"]);
+          const lossPnl = Number(r["loss_pnl"]);
+          const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+          return { strategy: r["strategy"] as string, pf };
+        });
+        const best = scored.reduce((a, b) => b.pf > a.pf ? b : a);
+        await pool.query("UPDATE instrument_analytics SET best_strategy=$2 WHERE symbol=$1", [symbol, best.strategy]);
       }
       // Update priority: reduce if consistently losing
       await updateInstrumentPriority(symbol);

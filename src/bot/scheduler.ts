@@ -284,13 +284,14 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.pass("Вес стратегии", `${(stratWeight * 100).toFixed(0)}%`);
       }
 
+      // UTC to match recordTimeTrade which stores UTC buckets
       const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
-        now.getHours(), (now.getDay() + 6) % 7
+        now.getUTCHours(), (now.getUTCDay() + 6) % 7
       ).catch(() => ({ restricted: false, reason: '' }));
       if (!gate.rejected && timeBlocked) {
         gate.fail("Временной слот", timeReason);
       } else if (!gate.rejected) {
-        gate.pass("Временной слот", `${now.getHours()}h OK`);
+        gate.pass("Временной слот", `${now.getUTCHours()}h UTC OK`);
       }
 
       let mtfSizeMultiplier = 1.0;
@@ -441,8 +442,8 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
             volumeAbove: 0,
             isSideways: sig.market.isSideways ? 1 : 0,
             isHighVol: sig.market.isHighVolatility ? 1 : 0,
-            hour: now.getHours(),
-            dayOfWeek: now.getDay(),
+            hour: now.getUTCHours(),      // UTC for ML feature consistency
+            dayOfWeek: now.getUTCDay(),   // UTC to match time_analytics buckets
           };
           saveTradeFeatures(res.position.id, features).catch(() => {});
         }
