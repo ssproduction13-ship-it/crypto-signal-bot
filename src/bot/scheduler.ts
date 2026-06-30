@@ -17,7 +17,7 @@ import cron from "node-cron";
     type StrategySignalInput, type StrategySelectionResult,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
-  import { getInstrumentPriority } from "./instrument-analytics.js";
+  import { getInstrumentPriority, getInstrumentStatus, updateAllInstrumentStatuses } from "./instrument-analytics.js";
 import { generateDailyReport } from "./report-generator.js";
   import { checkShadowPositions, openShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
@@ -258,6 +258,38 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.skip("Карантин", "Стратегия активна");
       }
 
+      // ── Instrument Watchlist gate ──────────────────────────────────────────────────────────
+      // Shadow-карантин на уровне символа: слабые сигналы по монетам с устойчиво плохим PF
+      // блокируются, но монета не выключается полностью — обучение и feature-логирование продолжаются.
+      let instrumentSizeMultiplier = 1.0;
+      const instrumentStatus = await getInstrumentStatus(sub.symbol).catch(() => "normal" as const);
+      if (!gate.rejected && instrumentStatus === "watchlist") {
+        if (sig.score.total < 65 || sig.confidence.score < 55 || stratFScore < 30) {
+          gate.fail(
+            "Instrument Watchlist",
+            `${sub.symbol} в watchlist — нужен сильный сигнал`,
+            `Score ${sig.score.total} Conf ${sig.confidence.score}% FS ${stratFScore.toFixed(1)}`,
+            "мин Score≥65 / Conf≥55% / FS≥30"
+          );
+        } else {
+          gate.pass("Instrument Watchlist", `${sub.symbol} watchlist, сигнал сильный — пропущено`);
+        }
+      } else if (!gate.rejected && instrumentStatus === "deep_watchlist") {
+        if (sig.score.total < 75 || sig.confidence.score < 65 || stratFScore < 40) {
+          gate.fail(
+            "Instrument Watchlist",
+            `${sub.symbol} в глубоком watchlist — нужен исключительный сигнал`,
+            `Score ${sig.score.total} Conf ${sig.confidence.score}% FS ${stratFScore.toFixed(1)}`,
+            "мин Score≥75 / Conf≥65% / FS≥40"
+          );
+        } else {
+          instrumentSizeMultiplier = 0.5;
+          gate.pass("Instrument Watchlist", `${sub.symbol} deep watchlist, сигнал прошёл повышенный порог (размер ×0.5)`);
+        }
+      } else if (!gate.rejected) {
+        gate.skip("Instrument Watchlist", instrumentStatus === "normal" ? "Инструмент в норме" : "Предыдущий шаг не прошёл");
+      }
+
       const minTrust = stratStatus?.status === "quarantine" ? 20 : 5;
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
         gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
@@ -399,13 +431,13 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier;
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return;
       }
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier }, 'Size reduced by guards');
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier }, 'Size reduced by guards');
       }
 
       const res = await openPaperPosition(
@@ -771,6 +803,36 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   cron.schedule("0 8 * * *", async () => {
     if (!chatIds.size) return;
     logger.info("Generating daily HTML report…");
+    // ── Instrument Watchlist: ежедневный пересчёт статусов монет ─────────────
+    try {
+      const statusChanges = await updateAllInstrumentStatuses();
+      for (const change of statusChanges) {
+        const toWatchlist   = change.newStatus !== "normal";
+        const fromWatchlist = change.oldStatus !== "normal" && change.newStatus === "normal";
+        if (!toWatchlist && !fromWatchlist) continue;
+        for (const chatId of chatIds) {
+          if (toWatchlist) {
+            const label = change.newStatus === "deep_watchlist" ? "🔴 Deep Watchlist" : "👁 Watchlist";
+            const icon  = change.newStatus === "deep_watchlist" ? "🔴" : "👁";
+            await safeSend(chatId,
+              `${icon} *${change.symbol} переведена в ${label}*
+` +
+              `PF: ${change.pf === 99 ? "∞" : change.pf.toFixed(2)} | WR: ${change.wr.toFixed(0)}% | Сделок: ${change.trades}
+` +
+              `Требования к сигналам повышены. Слабые сигналы по этой монете будут отклоняться.`
+            );
+          } else {
+            await safeSend(chatId,
+              `✅ *${change.symbol} снята с watchlist*
+` +
+              `PF: ${change.pf === 99 ? "∞" : change.pf.toFixed(2)} | WR: ${change.wr.toFixed(0)}% | Сделок: ${change.trades}
+` +
+              `Ограничения на сигналы сняты — инструмент в норме.`
+            );
+          }
+        }
+      }
+    } catch (err) { logger.error({ err }, "Instrument watchlist daily update failed"); }
     for (const chatId of chatIds) {
       try {
         const { html, filename, summary } = await generateDailyReport(chatId);
