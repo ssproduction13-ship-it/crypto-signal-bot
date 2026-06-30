@@ -41,22 +41,22 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
-    // ── Candidate for batch signal prioritization ────────────────────────────────
-    interface TradeCandidate {
-      sub: Sub;
-      sig: TradeSignal;
-      strat: string;
-      stratFScore: number;
-      stratTrust: number;
-      stratWeight: number;
-      stratStatus: { trades: number; trustScore: number; profitFactor: number; status: string } | undefined;
-      stratRanking: Array<{ strategy: string; finalScore: number; trustScore: number; weight: number }>;
-      isExploration: boolean;
-      regime: string;
-      minScore: number;
-      effectiveRiskPct: number;
-      gateSteps: Array<{ check: string; result: "PASS"|"FAIL"|"SKIP"; value?: unknown; note?: string }>;
-    }
+  // ── Candidate for batch signal prioritization ──────────────────────────────
+  interface TradeCandidate {
+    sub: Sub;
+    sig: TradeSignal;
+    strat: string;
+    stratFScore: number;
+    stratTrust: number;
+    stratWeight: number;
+    stratStatus: { trades: number; trustScore: number; profitFactor: number; status: string } | undefined;
+    stratRanking: Array<{ strategy: string; finalScore: number; trustScore: number; weight: number }>;
+    isExploration: boolean;
+    regime: string;
+    minScore: number;
+    effectiveRiskPct: number;
+    gateSteps: Array<{ check: string; result: "PASS"|"FAIL"|"SKIP"; value?: unknown; note?: string }>;
+  }
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
   let _bot: Telegraf | null = null;
@@ -162,17 +162,16 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
 
-    // ── Evaluate trade candidate: runs all gates + corrRisk/cooldown ────────────────────────────
-    // Returns TradeCandidate if all gates pass, or null if blocked at any step.
-    // Decision trace for rejections is saved here; for passing candidates, deferred to caller
-    // so it can include the Concentration Limit gate result.
-    async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
-      const debounceKey = `${sub.chatId}:${sub.symbol}`;
-      try {
-      const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
-    if (Date.now() - lastRun < DEBOUNCE_MS) return null;
+  // ── Signal analysis + auto-trade ─────────────────────────────────────────────
+  // ── Evaluate trade candidate: all gates + corrRisk/cooldown → candidate or null ────
+  // Trace saved immediately for rejections; deferred for passes (caller adds Concentration step).
+  async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
+    const debounceKey = `${sub.chatId}:${sub.symbol}`;
+    const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
+    if (Date.now() - lastRun < DEBOUNCE_MS) return;
     recentlyProcessed.set(debounceKey, Date.now());
 
+    try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
       const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
@@ -200,7 +199,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         : null;
       if (!selectionResult) {
         logger.warn({ symbol: sub.symbol, reason: 'NO_STRATEGY_SELECTED' }, 'Decision Engine: NO TRADE — no valid strategy selected');
-        return null;
+        return;
       }
       const bestSig = selectionResult.selected;
       const strat = bestSig.strategy;
@@ -377,9 +376,9 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
       const rankingNote = stratRanking.length > 1
         ? stratRanking.slice(1).map(r =>
-              `${r.strategy}: score=${r.finalScore.toFixed(1)} trust=${r.trustScore} w=${(r.weight*100).toFixed(0)}%`
-            ).join(" | ")
-          : undefined;
+            `${r.strategy}: score=${r.finalScore.toFixed(1)} trust=${r.trustScore} w=${(r.weight*100).toFixed(0)}%`
+          ).join(" | ")
+        : undefined;
 
         if (gate.rejected) {
           saveDecisionTrace({
@@ -412,7 +411,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         // Passing candidate — trace deferred to caller (includes Concentration Limit step)
 
         logger.debug({ symbol: sub.symbol, strat, regime, score: sig.score.total }, "Trade Quality Gate: PASS");
-        const settings = await loadSettings(sub.chatId).catch(async () => { const def = await loadSettings(sub.chatId).catch(() => null); return def ?? { autoPaperTrade: true, riskPercent: 1, minScore: 62, noTradeMode: false, accountSize: 10000 }; });
+      const settings = await loadSettings(sub.chatId).catch(async () => { const def = await loadSettings(sub.chatId).catch(() => null); return def ?? { autoPaperTrade: true, riskPercent: 1, minScore: 62, noTradeMode: false, accountSize: 10000 }; });
       if (!settings.autoPaperTrade) return null;
 
       const account  = await loadPaperAccount(sub.chatId);
@@ -462,205 +461,202 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0) {
         logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier }, 'Size reduced by guards');
       }
+
       return {
-          sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus,
-          stratRanking, isExploration, regime, minScore, effectiveRiskPct,
-          gateSteps: [
-            ...gate.steps,
-            ...(stratRanking.length > 1 ? [{
-              check: "Выбор стратегии",
-              result: "PASS" as const,
-              value: `${strat} (finalScore=${stratFScore.toFixed(1)}, trust=${stratTrust}, ${isExploration?"exploration":"best"})`,
-              note: rankingNote,
-            }] : []),
-          ],
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const errStack = err instanceof Error ? (err.stack ?? '').slice(0, 400) : '';
-        logger.error({ err, symbol: sub.symbol, errorMessage: errMsg, errorStack: errStack }, "evaluateTradeCandidate error");
-        return null;
-      }
+        sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus,
+        stratRanking, isExploration, regime, minScore, effectiveRiskPct,
+        gateSteps: [
+          ...gate.steps,
+          ...(stratRanking.length > 1 ? [{
+            check: "Выбор стратегии",
+            result: "PASS" as const,
+            value: `${strat} (finalScore=${stratFScore.toFixed(1)}, trust=${stratTrust}, ${isExploration?"exploration":"best"})`,
+            note: rankingNote,
+          }] : []),
+        ],
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? (err.stack ?? '').slice(0, 400) : '';
+      logger.error({ err, symbol: sub.symbol, errorMessage: errMsg, errorStack: errStack }, "evaluateTradeCandidate error");
+      return null;
     }
+  }
 
-    // ── Execute trade candidate: opens position + sends notification ─────────────────────────
-    async function executeTradeCandidate(candidate: TradeCandidate): Promise<void> {
-      const { sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus, stratRanking,
-        isExploration, regime, minScore, effectiveRiskPct } = candidate;
-        const res = await openPaperPosition(
-        sub.chatId, sub.symbol, sig.score.direction,
-        sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-        effectiveRiskPct, sig.risk.atr,
-        strat, regime, sub.interval
-      );
+  // ── Execute trade candidate: open position + notification ─────────────────────────
+  async function executeTradeCandidate(candidate: TradeCandidate): Promise<void> {
+    const { sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus, stratRanking,
+      isExploration, regime, minScore, effectiveRiskPct } = candidate;
+    const res = await openPaperPosition(
+      sub.chatId, sub.symbol, sig.score.direction,
+      sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+      effectiveRiskPct, sig.risk.atr,
+      strat, regime, sub.interval
+    );
 
-      if (res.success) {
-        if (res.position) {
-          // H2: link the journal entry to the position ID so updateJournalClose
-          // finds the exact right entry on close (prevents wrong-entry closure)
-          linkJournalToPosition(
-            sub.chatId, sub.symbol,
-            sig.score.direction as "LONG"|"SHORT",
-            res.position.id
-          ).catch(() => {});
-
-          const now = new Date();
-          const features: TradeFeatures = {
-            symbol: sub.symbol,
-            strategy: strat,
-            direction: sig.score.direction,
-            interval: sub.interval,
-            score: sig.score.total,
-            confidence: sig.confidence.score,
-            rsi: sig.score.factorScores["momentum"] ?? 50,
-            macdHistogram: 0,
-            adxValue: 0,
-            atrPercent: sig.risk.atr ? (sig.risk.atr / sig.risk.entryPrice) * 100 : 1,
-            bbPercent: 50,
-            ema20rel: 1, ema50rel: 1, ema200rel: 1,
-            volumeAbove: 0,
-            isSideways: sig.market.isSideways ? 1 : 0,
-            isHighVol: sig.market.isHighVolatility ? 1 : 0,
-            hour: now.getUTCHours(),      // UTC for ML feature consistency
-            dayOfWeek: now.getUTCDay(),   // UTC to match time_analytics buckets
-          };
-          saveTradeFeatures(res.position.id, features).catch(() => {});
-        }
-        const dir = sig.score.direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
-        const stratNames: Record<string, string> = {
-          TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
-          VOLUME_IMPULSE: "⚡ Объёмный импульс", MEAN_REVERSION: "↩️ Возврат к среднему",
-        };
-        const regimeLabels: Record<string, string> = {
-          trend_up: "📈 Тренд↑", trend_down: "📉 Тренд↓",
-          sideways: "↔️ Боковик", high_vol: "⚡ Волат.", low_vol: "😴 Затишье",
-        };
-        logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
-
-        loadWeights().then(w =>
-          openShadowPosition(sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
-            sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-            strat, w, regime
-          ).catch(() => {})
+    if (res.success) {
+      if (res.position) {
+        // H2: link the journal entry to the position ID so updateJournalClose
+        // finds the exact right entry on close (prevents wrong-entry closure)
+        linkJournalToPosition(
+          sub.chatId, sub.symbol,
+          sig.score.direction as "LONG"|"SHORT",
+          res.position.id
         ).catch(() => {});
 
-        const rankLines = stratRanking.length > 1
-          ? stratRanking.map((r, i) => {
-              const medal = i === 0 ? (isExploration ? "🎲" : "👑") : ["2️⃣","3️⃣","4️⃣"][i-1] ?? `${i+1}.`;
-              const chosenMark = r.strategy === strat ? " ← выбрана" : "";
-              return `${medal} ${r.strategy}: score=${r.finalScore.toFixed(1)} | trust=${r.trustScore} | w=${(r.weight*100).toFixed(0)}%${chosenMark}`;
-            }).join("\n")
-          : null;
-
-        await safeSend(sub.chatId,
-          `🤖 *Новая позиция${isExploration ? " 🎲 [Exploration]" : ""}*\n\n` +
-          `${dir} *${sub.symbol}*\n` +
-          `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratStatus?.trustScore ?? stratTrust}/100)\n` +
-          `Режим: ${regimeLabels[regime] ?? regime} | FinalScore: ${stratFScore.toFixed(1)}\n` +
-          `Score: ${sig.score.total}/100 | Min: ${minScore} | Conf: ${sig.confidence.score}%\n` +
-          `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
-          `Вход: \`${sig.risk.entryPrice.toPrecision(6)}\`\n` +
-          `Стоп: \`${sig.risk.stopLoss.toPrecision(6)}\`\n` +
-          `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\`` +
-          (rankLines ? `\n\n📊 *Рейтинг стратегий:*\n${rankLines}` : "")
-        );
-    }
-
-    // ── Single-subscription wrapper (used by WebSocket onNewCandle) ─────────────────────────
-    async function analyzeAndTrade(sub: Sub): Promise<void> {
-      try {
-        const candidate = await evaluateTradeCandidate(sub);
-        if (!candidate) return;
-        const account = await loadPaperAccount(candidate.sub.chatId);
-        const concCheck = checkConcentrationLimits(
-          candidate.sub.symbol, candidate.strat,
-          candidate.sig.score.direction as "LONG"|"SHORT",
-          candidate.regime, candidate.effectiveRiskPct, account.positions
-        );
-        if (concCheck.blocked) {
-          logger.debug({ symbol: candidate.sub.symbol, reason: concCheck.reason }, 'Concentration Limit: REJECT');
-          saveDecisionTrace({
-            symbol: candidate.sub.symbol, strategy: candidate.strat,
-            direction: candidate.sig.score.direction, regime: candidate.regime,
-            timestamp: new Date().toISOString(),
-            steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "FAIL" as const, value: concCheck.reason ?? "Лимит концентрации" }],
-            verdict: "REJECT", rejectReason: concCheck.reason,
-            score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
-          }).catch(() => {});
-          return;
-        }
-        saveDecisionTrace({
-          symbol: candidate.sub.symbol, strategy: candidate.strat,
-          direction: candidate.sig.score.direction, regime: candidate.regime,
-          timestamp: new Date().toISOString(),
-          steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "PASS" as const, value: "OK" }],
-          verdict: "OPEN",
-          score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
-        }).catch(() => {});
-        await executeTradeCandidate(candidate);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const errStack = err instanceof Error ? (err.stack ?? '').slice(0, 400) : '';
-        logger.error({ err, symbol: sub.symbol, errorMessage: errMsg, errorStack: errStack }, "analyzeAndTrade error");
+        const now = new Date();
+        const features: TradeFeatures = {
+          symbol: sub.symbol,
+          strategy: strat,
+          direction: sig.score.direction,
+          interval: sub.interval,
+          score: sig.score.total,
+          confidence: sig.confidence.score,
+          rsi: sig.score.factorScores["momentum"] ?? 50,
+          macdHistogram: 0,
+          adxValue: 0,
+          atrPercent: sig.risk.atr ? (sig.risk.atr / sig.risk.entryPrice) * 100 : 1,
+          bbPercent: 50,
+          ema20rel: 1, ema50rel: 1, ema200rel: 1,
+          volumeAbove: 0,
+          isSideways: sig.market.isSideways ? 1 : 0,
+          isHighVol: sig.market.isHighVolatility ? 1 : 0,
+          hour: now.getUTCHours(),      // UTC for ML feature consistency
+          dayOfWeek: now.getUTCDay(),   // UTC to match time_analytics buckets
+        };
+        saveTradeFeatures(res.position.id, features).catch(() => {});
       }
-    }
+      const dir = sig.score.direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
+      const stratNames: Record<string, string> = {
+        TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
+        VOLUME_IMPULSE: "⚡ Объёмный импульс", MEAN_REVERSION: "↩️ Возврат к среднему",
+      };
+      const regimeLabels: Record<string, string> = {
+        trend_up: "📈 Тренд↑", trend_down: "📉 Тренд↓",
+        sideways: "↔️ Боковик", high_vol: "⚡ Волат.", low_vol: "😴 Затишье",
+      };
+      logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
 
-    // ── Batch scan cycle: collect all candidates, sort by FinalScore, open in priority order ─
-    // Called by the 15-min cron. Prioritizes best signals across all subscriptions in one cycle,
-    // then applies Concentration Limit sequentially as positions are opened.
-    async function runBatchScanCycle(): Promise<void> {
-      if (!subs.size) return;
-      logger.debug({ count: subs.size }, "Batch scan cycle: collecting candidates");
-      const candidates: TradeCandidate[] = [];
-      for (const sub of subs.values()) {
-        const candidate = await evaluateTradeCandidate(sub).catch(err => {
-          logger.error({ err, symbol: sub.symbol }, "evaluateTradeCandidate error in batch cycle");
-          return null;
-        });
-        if (candidate) candidates.push(candidate);
-      }
-      if (!candidates.length) return;
-      // Sort by FinalScore descending — best signals open first
-      candidates.sort((a, b) => b.stratFScore - a.stratFScore);
-      logger.info(
-        { count: candidates.length, ranked: candidates.map(c => `${c.sub.symbol}:${c.stratFScore.toFixed(1)}`).join(', ') },
-        "Batch scan: candidates sorted by FinalScore"
+      loadWeights().then(w =>
+        openShadowPosition(sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
+          sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+          strat, w, regime
+        ).catch(() => {})
+      ).catch(() => {});
+
+      const rankLines = stratRanking.length > 1
+        ? stratRanking.map((r, i) => {
+            const medal = i === 0 ? (isExploration ? "🎲" : "👑") : ["2️⃣","3️⃣","4️⃣"][i-1] ?? `${i+1}.`;
+            const chosenMark = r.strategy === strat ? " ← выбрана" : "";
+            return `${medal} ${r.strategy}: score=${r.finalScore.toFixed(1)} | trust=${r.trustScore} | w=${(r.weight*100).toFixed(0)}%${chosenMark}`;
+          }).join("\n")
+        : null;
+
+      await safeSend(sub.chatId,
+        `🤖 *Новая позиция${isExploration ? " 🎲 [Exploration]" : ""}*\n\n` +
+        `${dir} *${sub.symbol}*\n` +
+        `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratStatus?.trustScore ?? stratTrust}/100)\n` +
+        `Режим: ${regimeLabels[regime] ?? regime} | FinalScore: ${stratFScore.toFixed(1)}\n` +
+        `Score: ${sig.score.total}/100 | Min: ${minScore} | Conf: ${sig.confidence.score}%\n` +
+        `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
+        `Вход: \`${sig.risk.entryPrice.toPrecision(6)}\`\n` +
+        `Стоп: \`${sig.risk.stopLoss.toPrecision(6)}\`\n` +
+        `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\`` +
+        (rankLines ? `\n\n📊 *Рейтинг стратегий:*\n${rankLines}` : "")
       );
-      for (const candidate of candidates) {
-        // Re-load account to get fresh positions after each open
-        const account = await loadPaperAccount(candidate.sub.chatId);
-        const concCheck = checkConcentrationLimits(
-          candidate.sub.symbol, candidate.strat,
-          candidate.sig.score.direction as "LONG"|"SHORT",
-          candidate.regime, candidate.effectiveRiskPct, account.positions
-        );
-        if (concCheck.blocked) {
-          logger.debug({ symbol: candidate.sub.symbol, reason: concCheck.reason }, 'Concentration Limit: REJECT (batch)');
-          saveDecisionTrace({
-            symbol: candidate.sub.symbol, strategy: candidate.strat,
-            direction: candidate.sig.score.direction, regime: candidate.regime,
-            timestamp: new Date().toISOString(),
-            steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "FAIL" as const, value: concCheck.reason ?? "Лимит концентрации" }],
-            verdict: "REJECT", rejectReason: concCheck.reason,
-            score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
-          }).catch(() => {});
-          continue;
-        }
+    }
+  }
+
+  // ── WebSocket wrapper: evaluate → concentration check → execute ─────────────────
+  async function analyzeAndTrade(sub: Sub): Promise<void> {
+    try {
+      const candidate = await evaluateTradeCandidate(sub);
+      if (!candidate) return;
+      const account = await loadPaperAccount(candidate.sub.chatId);
+      const concCheck = checkConcentrationLimits(
+        candidate.sub.symbol, candidate.strat,
+        candidate.sig.score.direction as "LONG"|"SHORT",
+        candidate.regime, candidate.effectiveRiskPct, account.positions
+      );
+      if (concCheck.blocked) {
+        logger.debug({ symbol: candidate.sub.symbol, reason: concCheck.reason }, "Concentration Limit: REJECT");
         saveDecisionTrace({
           symbol: candidate.sub.symbol, strategy: candidate.strat,
           direction: candidate.sig.score.direction, regime: candidate.regime,
           timestamp: new Date().toISOString(),
-          steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "PASS" as const, value: "OK" }],
-          verdict: "OPEN",
+          steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "FAIL" as const, value: concCheck.reason ?? "Лимит концентрации" }],
+          verdict: "REJECT", rejectReason: concCheck.reason,
           score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
         }).catch(() => {});
-        await executeTradeCandidate(candidate).catch(err => {
-          logger.error({ err, symbol: candidate.sub.symbol }, "executeTradeCandidate error in batch");
-        });
+        return;
       }
+      saveDecisionTrace({
+        symbol: candidate.sub.symbol, strategy: candidate.strat,
+        direction: candidate.sig.score.direction, regime: candidate.regime,
+        timestamp: new Date().toISOString(),
+        steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "PASS" as const, value: "OK" }],
+        verdict: "OPEN",
+        score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
+      }).catch(() => {});
+      await executeTradeCandidate(candidate);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? (err.stack ?? '').slice(0, 400) : '';
+      logger.error({ err, symbol: sub.symbol, errorMessage: errMsg, errorStack: errStack }, "analyzeAndTrade error");
     }
-  
   }
+
+  // ── Batch scan: collect all candidates, sort by FinalScore, open in priority order ─
+  async function runBatchScanCycle(): Promise<void> {
+    if (!subs.size) return;
+    logger.debug({ count: subs.size }, "Batch scan cycle: collecting candidates");
+    const candidates: TradeCandidate[] = [];
+    for (const sub of subs.values()) {
+      const c = await evaluateTradeCandidate(sub).catch(err => {
+        logger.error({ err, symbol: sub.symbol }, "evaluateTradeCandidate error in batch");
+        return null;
+      });
+      if (c) candidates.push(c);
+    }
+    if (!candidates.length) return;
+    candidates.sort((a, b) => b.stratFScore - a.stratFScore);
+    logger.info(
+      { count: candidates.length, ranked: candidates.map(c => `${c.sub.symbol}:${c.stratFScore.toFixed(1)}`).join(", ") },
+      "Batch scan: candidates sorted by FinalScore"
+    );
+    for (const candidate of candidates) {
+      const account = await loadPaperAccount(candidate.sub.chatId);
+      const concCheck = checkConcentrationLimits(
+        candidate.sub.symbol, candidate.strat,
+        candidate.sig.score.direction as "LONG"|"SHORT",
+        candidate.regime, candidate.effectiveRiskPct, account.positions
+      );
+      if (concCheck.blocked) {
+        logger.debug({ symbol: candidate.sub.symbol, reason: concCheck.reason }, "Concentration Limit: REJECT (batch)");
+        saveDecisionTrace({
+          symbol: candidate.sub.symbol, strategy: candidate.strat,
+          direction: candidate.sig.score.direction, regime: candidate.regime,
+          timestamp: new Date().toISOString(),
+          steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "FAIL" as const, value: concCheck.reason ?? "Лимит концентрации" }],
+          verdict: "REJECT", rejectReason: concCheck.reason,
+          score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
+        }).catch(() => {});
+        continue;
+      }
+      saveDecisionTrace({
+        symbol: candidate.sub.symbol, strategy: candidate.strat,
+        direction: candidate.sig.score.direction, regime: candidate.regime,
+        timestamp: new Date().toISOString(),
+        steps: [...candidate.gateSteps, { check: "Concentration Limit", result: "PASS" as const, value: "OK" }],
+        verdict: "OPEN",
+        score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
+      }).catch(() => {});
+      await executeTradeCandidate(candidate).catch(err => {
+        logger.error({ err, symbol: candidate.sub.symbol }, "executeTradeCandidate error in batch");
+      });
+    }
+  }
+
 
   // ── Position monitor + Learning milestone check ─────────────────────────────
   // IMPORTANT: Uses _checkPositionsRunning guard to prevent concurrent execution.
