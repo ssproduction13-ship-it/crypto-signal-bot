@@ -108,7 +108,7 @@ export async function generateSignal(
 export function formatSignal(sig: TradeSignal): string {
   const lbl: Record<string, string> = { "5m": "5 мин", "15m": "15 мин", "1h": "1 час", "4h": "4 часа", "1d": "1 день" };
   const dir = sig.score.direction;
-  const dirTxt = dir === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+  const dirTxt = dir === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
 
   const strategyNames: Record<string, string> = {
     TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
