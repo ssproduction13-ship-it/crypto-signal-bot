@@ -97,3 +97,79 @@ import { pool } from "../lib/db.js";
     return ["📊 *Аналитика по инструментам*","","🏆 *Рейтинг:*",...lines,...exclusions].join("\n");
   }
   
+// ── AI Watchlist (shadow-карантин на уровне инструмента) ─────────────────────
+
+export type InstrumentStatus = "normal" | "watchlist" | "deep_watchlist";
+
+function classifyInstrument(stats: { trades: number; pf: number; wr: number }): InstrumentStatus {
+  if (stats.trades < 10) return "normal";
+  if (stats.pf < 0.3 && stats.trades >= 15) return "deep_watchlist";
+  if (stats.pf < 0.6) return "watchlist";
+  return "normal";
+}
+
+export async function getInstrumentStatus(symbol: string): Promise<InstrumentStatus> {
+  try {
+    const { rows } = await pool.query(
+      "SELECT status FROM instrument_analytics WHERE symbol=$1", [symbol]
+    );
+    if (!rows.length) return "normal";
+    return ((rows[0] as Record<string, unknown>)["status"] as InstrumentStatus) ?? "normal";
+  } catch (err) {
+    logger.debug({ err }, "getInstrumentStatus failed");
+    return "normal";
+  }
+}
+
+/**
+ * Пересчитывает classifyInstrument для всех монет на основе последних 20 сделок.
+ * Вызывается раз в сутки — позволяет монете выйти из watchlist если она исправилась.
+ * Возвращает список изменений для отправки Telegram-уведомлений.
+ */
+export async function updateAllInstrumentStatuses(): Promise<
+  { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number }[]
+> {
+  const changes: { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number }[] = [];
+  try {
+    const { rows } = await pool.query(
+      "SELECT symbol, trades, wins, win_pnl, loss_pnl, status FROM instrument_analytics WHERE trades >= 10"
+    );
+    for (const row of rows as Record<string, unknown>[]) {
+      const symbol = row["symbol"] as string;
+      const oldStatus = ((row["status"] as InstrumentStatus) ?? "normal");
+      const trades    = Number(row["trades"]);
+      const wins      = Number(row["wins"]);
+      const winPnl    = Number(row["win_pnl"]);
+      const lossPnl   = Number(row["loss_pnl"]);
+
+      // Последние 20 сделок — чтобы монета могла выйти из watchlist после улучшения
+      const { rows: recentRows } = await pool.query(
+        `SELECT pnl FROM paper_closed_trades WHERE symbol=$1 ORDER BY closed_at DESC LIMIT 20`,
+        [symbol]
+      );
+      const recentN = recentRows.length;
+      let rWinPnl = 0, rLossPnl = 0, rWins = 0;
+      for (const r of recentRows as Record<string, unknown>[]) {
+        const pnl = Number(r["pnl"]);
+        if (pnl > 0) { rWinPnl += pnl; rWins++; } else { rLossPnl += Math.abs(pnl); }
+      }
+
+      const pf = recentN >= 10
+        ? (rLossPnl > 0 ? rWinPnl / rLossPnl : rWinPnl > 0 ? 99 : 0)
+        : (lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 99 : 0);
+      const wr = recentN >= 10
+        ? (recentN > 0 ? rWins / recentN : 0)
+        : (trades > 0 ? wins / trades : 0);
+      const effectiveTrades = recentN >= 10 ? recentN : trades;
+
+      const newStatus = classifyInstrument({ trades: effectiveTrades, pf, wr });
+      if (newStatus !== oldStatus) {
+        await pool.query("UPDATE instrument_analytics SET status=$2 WHERE symbol=$1", [symbol, newStatus]).catch(() => {});
+        changes.push({ symbol, oldStatus, newStatus, pf, wr: wr * 100, trades: effectiveTrades });
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, "updateAllInstrumentStatuses failed");
+  }
+  return changes;
+}
