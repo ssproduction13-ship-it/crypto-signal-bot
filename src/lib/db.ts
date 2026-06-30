@@ -443,6 +443,8 @@ const MIGRATIONS = [
   "CREATE INDEX IF NOT EXISTS idx_ia_symbol      ON instrument_analytics(symbol)",
   "CREATE INDEX IF NOT EXISTS idx_dl_symbol      ON decision_log(symbol)",
   "CREATE INDEX IF NOT EXISTS idx_dl_strategy    ON decision_log(strategy)",
+  // ── AI Watchlist: status column for instrument-level shadow-quarantine ──────
+  "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'normal'",
 ];
 
 
