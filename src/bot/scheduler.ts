@@ -170,7 +170,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const debounceKey = `${sub.chatId}:${sub.symbol}`;
       try {
       const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
-    if (Date.now() - lastRun < DEBOUNCE_MS) return;
+    if (Date.now() - lastRun < DEBOUNCE_MS) return null;
     recentlyProcessed.set(debounceKey, Date.now());
 
     try {
@@ -201,7 +201,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         : null;
       if (!selectionResult) {
         logger.warn({ symbol: sub.symbol, reason: 'NO_STRATEGY_SELECTED' }, 'Decision Engine: NO TRADE — no valid strategy selected');
-        return;
+        return null;
       }
       const bestSig = selectionResult.selected;
       const strat = bestSig.strategy;
@@ -462,8 +462,8 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       }
       if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0) {
         logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier }, 'Size reduced by guards');
-  
-        return {
+      }
+      return {
           sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus,
           stratRanking, isExploration, regime, minScore, effectiveRiskPct,
           gateSteps: [
