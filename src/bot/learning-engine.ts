@@ -433,7 +433,33 @@ function pfToTargetWeight(pf: number): number {
   return 0.10; // exploration floor — never zero in learning mode
 }
 
-export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
+// ── Sliding window PF for Adaptation Engine ────────────────────────────────
+  // Replaces lifetime cumulative strategy_stats to avoid pollution from legacy
+  // fallback "TREND" trades recorded before the C1 fix.
+  const ADAPTATION_WINDOW = 150;
+
+  async function getRecentStrategyStats(strategy: StrategyName): Promise<{
+    trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
+  }> {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+       FROM paper_closed_trades
+       WHERE strategy=$1
+       ORDER BY closed_at DESC
+       LIMIT $2`,
+      [strategy, ADAPTATION_WINDOW]
+    );
+    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+    const trades   = pnls.length;
+    const wins     = pnls.filter(p => p > 0).length;
+    const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+    const totalPnl = pnls.reduce((a, b) => a + b, 0);
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    return { trades, wins, winPnl, lossPnl, totalPnl, pf };
+  }
+
+  export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
   const {rows:statRows} = await pool.query(
     "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
   );
@@ -453,24 +479,25 @@ export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> 
   const STRATS = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
 
   for (const strat of STRATS) {
-    const statRow=(statRows as Record<string,unknown>[]).find(r => r["strategy"]===strat);
-    const trades=statRow ? Number(statRow["trades"]) : 0;
+    // ── Sliding window PF: last ADAPTATION_WINDOW trades instead of lifetime cumulative ──
+      // Prevents pollution from legacy fallback-TREND records written before fix C1.
+      const recent = await getRecentStrategyStats(strat);
+      const trades   = recent.trades;
+      const wins     = recent.wins;
+      const winPnl   = recent.winPnl;
+      const lossPnl  = recent.lossPnl;
+      const totalPnl = recent.totalPnl;
+      const pf       = recent.pf;
+      const isNegativeReturn = totalPnl < 0;
 
-    // ── 1. Gradual learning: start adapting at 20 trades (TZ §3) ───────────
-    // Confidence scale: 20-49 trades=30%, 50-99=70%, 100+=100%
-    const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0;
-    if (confidenceScale === 0) {
-      logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<20)");
-      continue;
-    }
-
-    const wins    = statRow ? Number(statRow["wins"])    : 0;
-    const winPnl  = statRow ? Number(statRow["win_pnl"]) : 0;
-    const lossPnl = statRow ? Number(statRow["loss_pnl"]): 0;
-    const totalPnl= statRow ? Number(statRow["total_pnl"]): 0;
-    // PF fallback 2.0 (was 99): prevents runaway weight for strategies with zero losses
-    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 2.0 : 0;
-    const isNegativeReturn = totalPnl < 0;
+      // ── 1. Gradual learning: start adapting at 20 trades (TZ §3) ───────────
+      // Confidence scale: 20-49 trades=30%, 50-99=70%, 100+=100%
+      // trades = min(real count, ADAPTATION_WINDOW) — threshold behaviour unchanged
+      const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0;
+      if (confidenceScale === 0) {
+        logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<20)");
+        continue;
+      }
 
     const cur = curW[strat] ?? {weight:1,cycles:0,disabled:false,quarantine:false};
     const trustScore = await calcTrustScore(strat, trades, wins, winPnl, lossPnl, totalPnl, "sideways");
