@@ -479,7 +479,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
           };
           saveTradeFeatures(res.position.id, features).catch(() => {});
         }
-        const dir = sig.score.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+        const dir = sig.score.direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
         const stratNames: Record<string, string> = {
           TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
           VOLUME_IMPULSE: "⚡ Объёмный импульс", MEAN_REVERSION: "↩️ Возврат к среднему",
@@ -617,7 +617,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         const posLines = pos.length === 0
           ? ["  нет открытых позиций"]
           : pos.map(p => {
-              const dir = p.direction === "LONG" ? "🟢" : "🔴";
+              const dir = p.direction === "LONG" ? "⬆️" : "⬇️";
               const be  = p.breakevenMoved ? " [BE✓]" : "";
               return `  ${dir} ${p.symbol} @ ${formatPrice(p.entryPrice)}${be}\n     SL: ${formatPrice(p.stopLoss)} | TP1: ${formatPrice(p.tp1)}`;
             });
