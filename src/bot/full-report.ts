@@ -459,7 +459,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
         : (p.stopLoss-p.entryPrice)/p.entryPrice*100;
       const flags = [p.breakevenMoved?"BE":"", p.trailAtr?"Trail":""].filter(Boolean).join("+");
       parts.push(
-        `${p.symbol} ${isLong?"LONG🟢":"SHORT🔴"}${flags?" ["+flags+"]":""}  |  Возраст: ${fmtDur(ageMin)}`,
+        `${p.symbol} ${isLong?"LONG⬆️":"SHORT⬇️"}${flags?" ["+flags+"]":""}  |  Возраст: ${fmtDur(ageMin)}`,
         `  Вход: $${p.entryPrice}  |  TP1: +${tpDist.toFixed(2)}%  |  SL: -${slDist.toFixed(2)}%`,
         `  Стратегия: ${p.strategy}  |  ${new Date(p.openedAt).toISOString().slice(0,16)}`,
       );
