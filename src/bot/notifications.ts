@@ -97,7 +97,7 @@ export function buildTradeOpenedMsg(
   symbol: string, direction: "LONG" | "SHORT", score: number, confidence: number,
   strategy: string, entryPrice: number, stopLoss: number, tp1: number, tp2: number
 ): string {
-  const dir = direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+  const dir = direction === "LONG" ? "⬆️ LONG" : "⬇️ SHORT";
   const stratNames: Record<string, string> = {
     TREND: "📈 Тренд", BREAKOUT: "🚀 Пробой",
     VOLUME_IMPULSE: "⚡ Объёмный импульс", MEAN_REVERSION: "↩️ Возврат к среднему",
