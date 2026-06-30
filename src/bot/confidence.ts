@@ -80,14 +80,19 @@ import { pool } from "../lib/db.js";
     if (strategy) {
       try {
         const { rows } = await pool.query(
-          "SELECT win_pnl, loss_pnl FROM strategy_stats WHERE strategy=$1", [strategy]
-        );
-        if (rows.length) {
-          const r = rows[0] as Record<string,unknown>;
-          const pf = Number(r["loss_pnl"]) > 0
-            ? Number(r["win_pnl"]) / Number(r["loss_pnl"])
-            : Number(r["win_pnl"]) > 0 ? 3 : 0;
-          strategyEffectiveness = pf >= 2 ? 90 : pf >= 1.5 ? 75 : pf >= 1.2 ? 60 : pf >= 1 ? 45 : 20;
+          `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+                   FROM paper_closed_trades
+                   WHERE strategy=$1
+                   ORDER BY closed_at DESC
+                   LIMIT 150`,
+            [strategy]
+            );
+            if (rows.length) {
+              const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+              const winPnl  = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+              const lossPnl = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+              const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 3 : 0;
+              strategyEffectiveness = pf >= 2 ? 90 : pf >= 1.5 ? 75 : pf >= 1.2 ? 60 : pf >= 1 ? 45 : 20;
         }
       } catch { /* keep default */ }
 
