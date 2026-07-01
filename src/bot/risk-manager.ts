@@ -140,10 +140,10 @@ import { pool } from "../lib/db.js";
   // Called in scheduler.ts after Correlation Guard, before opening a position.
 
   const MAX_RISK_PER_STRATEGY = 15;  // % of deposit total in one strategy
-  const MAX_RISK_PER_DIRECTION = 25; // % of deposit total in LONG or SHORT
+  const MAX_RISK_PER_DIRECTION = 15; // % of deposit total in LONG or SHORT
   const MAX_RISK_PER_SYMBOL    = 4;  // % of deposit in one coin (across all timeframes)
   const MAX_RISK_PER_REGIME    = 20; // % of deposit in positions opened in one market regime
-  const MAX_TOTAL_POSITIONS    = 35; // hard cap on simultaneous open positions
+  const MAX_TOTAL_POSITIONS    = 15; // hard cap on simultaneous open positions
 
   export interface ConcentrationPosition {
     symbol: string;
