@@ -22,23 +22,26 @@ import { pool } from "../lib/db.js";
     } catch(err) { logger.debug({err},"recordTimeTrade failed"); }
   }
 
-  export async function isTimeRestricted(hour: number, dow: number): Promise<{restricted:boolean;reason:string}> {
+  export async function isTimeRestricted(hour: number, dow: number): Promise<{restricted:boolean;reason:string;sizeMultiplier:number}> {
     const {rows} = await pool.query(
       "SELECT trades,wins,win_pnl,loss_pnl FROM time_analytics WHERE hour_of_day=$1 AND day_of_week=$2",
       [hour,dow]
     );
-    if (!rows.length) return {restricted:false,reason:""};
+    if (!rows.length) return {restricted:false,reason:"",sizeMultiplier:1.0};
     const r=rows[0] as Record<string,unknown>;
     const trades=Number(r["trades"]);
-    if (trades<10) return {restricted:false,reason:""};
+    if (trades<5) return {restricted:false,reason:"",sizeMultiplier:1.0};
     const wins=Number(r["wins"]),winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
     const wr=wins/trades;
     const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
-    if (wr<0.3&&pf<0.6) {
-      const DOW=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
-      return {restricted:true,reason:`Убыточное время: ${String(hour).padStart(2,"0")}:00 ${DOW[dow]??""} (WR ${(wr*100).toFixed(0)}%, PF ${pf.toFixed(2)})`};
+    const DOW=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+    if ((wr<0.35&&pf<0.7)||(wr<0.45&&pf<0.5)) {
+      return {restricted:true,reason:`Убыточное время: ${String(hour).padStart(2,"0")}:00 ${DOW[dow]??""} (WR ${(wr*100).toFixed(0)}%, PF ${pf.toFixed(2)})`,sizeMultiplier:0};
     }
-    return {restricted:false,reason:""};
+    if (wr<0.50&&pf<0.75&&trades>=15) {
+      return {restricted:false,reason:"",sizeMultiplier:0.5};
+    }
+    return {restricted:false,reason:"",sizeMultiplier:1.0};
   }
 
   export async function getTimeAnalytics(): Promise<string> {
