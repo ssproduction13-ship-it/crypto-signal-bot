@@ -339,9 +339,9 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       }
 
       // UTC to match recordTimeTrade which stores UTC buckets
-      const { restricted: timeBlocked, reason: timeReason } = await isTimeRestricted(
+      const { restricted: timeBlocked, reason: timeReason, sizeMultiplier: timeSizeMultiplier } = await isTimeRestricted(
         now.getUTCHours(), (now.getUTCDay() + 6) % 7
-      ).catch(() => ({ restricted: false, reason: '' }));
+      ).catch(() => ({ restricted: false, reason: '', sizeMultiplier: 1.0 }));
       if (!gate.rejected && timeBlocked) {
         gate.fail("Временной слот", timeReason);
       } else if (!gate.rejected) {
@@ -453,13 +453,13 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier;
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return null;
       }
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier }, 'Size reduced by guards');
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier }, 'Size reduced by guards');
       }
 
       return {
