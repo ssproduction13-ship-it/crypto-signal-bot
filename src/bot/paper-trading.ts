@@ -9,7 +9,7 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
-import { recordRegimeTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
+import { recordRegimeTrade, recordDirectionTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
 import { recordTimeTrade } from "./time-analytics.js";
 import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
@@ -394,6 +394,7 @@ export async function checkPaperPositions(
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
         const regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
+        recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct, pos.id).catch(() => {});
