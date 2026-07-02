@@ -47,6 +47,22 @@ export async function recordRegimeTrade(
   await Promise.all([upsertSql(interval), ...(interval !== "ALL" ? [upsertSql("ALL")] : [])]);
 }
 
+export async function recordDirectionTrade(
+  strategy: StrategyName, direction: string, pnlPercent: number, isWin: boolean
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO strategy_direction_stats(strategy,direction,trades,wins,win_pnl,loss_pnl,total_pnl)
+     VALUES($1,$2,1,$3,$4,$5,$6)
+     ON CONFLICT(strategy,direction) DO UPDATE SET
+       trades=strategy_direction_stats.trades+1,
+       wins=strategy_direction_stats.wins+$3,
+       win_pnl=strategy_direction_stats.win_pnl+$4,
+       loss_pnl=strategy_direction_stats.loss_pnl+$5,
+       total_pnl=strategy_direction_stats.total_pnl+$6`,
+    [strategy, direction, isWin?1:0, isWin?Math.abs(pnlPercent):0, isWin?0:Math.abs(pnlPercent), pnlPercent]
+  ).catch(()=>{});
+}
+
 export async function isStrategyBlockedInRegime(
   strategy: StrategyName, regime: MarketRegime,
   interval = "ALL" // M1 fix: query per-interval stats first, fall back to 'ALL' aggregate
@@ -708,12 +724,35 @@ export async function generateLearningReport(): Promise<string> {
 
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
   const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
+  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
+
+  const {rows:dirRows} = await pool.query("SELECT strategy,direction,trades,wins,win_pnl,loss_pnl FROM strategy_direction_stats");
+  const dirByStrat:Record<string,Record<string,{trades:number;wins:number;winPnl:number;lossPnl:number}>>={};
+  for (const r of dirRows as Record<string,unknown>[]) {
+    const strat=r["strategy"] as string, dir=r["direction"] as string;
+    const trades=Number(r["trades"]);
+    if (trades<5) continue;
+    if (!dirByStrat[strat]) dirByStrat[strat]={};
+    dirByStrat[strat]![dir]={trades,wins:Number(r["wins"]),winPnl:Number(r["win_pnl"]),lossPnl:Number(r["loss_pnl"])};
+  }
+  const dirLines:string[]=[];
+  for (const [strat,dirs] of Object.entries(dirByStrat)) {
+    const parts=["LONG","SHORT"].map(d=>{
+      const s=dirs[d]; if(!s) return null;
+      const wr=(s.wins/s.trades*100).toFixed(0);
+      const pf=s.lossPnl>0?(s.winPnl/s.lossPnl).toFixed(2):"∞";
+      return `${d} WR${wr}% PF${pf}`;
+    }).filter(Boolean);
+    if (parts.length) dirLines.push(`${strat.padEnd(16)}${parts.join(" | ")}`);
+  }
+  const dirSection = dirLines.length ? ["","📊 *LONG vs SHORT:*",...dirLines].join("\n") : "";
+  const fullSummary = dirSection ? summary + dirSection : summary;
 
   await pool.query(
     "INSERT INTO learning_reports(version_label,created_at,trade_count_at_report,summary,report_json) VALUES($1,$2,$3,$4,$5)",
     [reportLabel,new Date().toISOString(),tradeCount,summary,JSON.stringify({strategies:stratLines,tradeCount})]
   );
-  return summary;
+  return fullSummary;
 }
 
 export async function getLearningHistory(): Promise<string> {
