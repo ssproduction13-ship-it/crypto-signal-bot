@@ -459,9 +459,6 @@ function pfToTargetWeight(pf: number): number {
   }
 
   export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
-  const {rows:statRows} = await pool.query(
-    "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
-  );
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,quarantine,cycles_below_threshold FROM strategy_weights"
   );
