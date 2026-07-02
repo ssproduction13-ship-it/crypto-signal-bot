@@ -61,9 +61,10 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
 
   const price = candles[candles.length - 1]!.close;
   const volumes = candles.map(c => c.volume);
-  const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const volSlice = volumes.slice(-20);
+  const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
   const lastVol = volumes[volumes.length - 1]!;
-  const volRatio = lastVol / avgVol;
+  const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
 
   if (pattern.name === "BREAKOUT") {
     score += 30;
@@ -103,9 +104,10 @@ function evalVolumeImpulse(ind: IndicatorResult, candles: Candle[]): StrategySig
   let longVotes = 0, shortVotes = 0;
 
   const volumes = candles.map(c => c.volume);
-  const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const volSlice2 = volumes.slice(-20);
+  const avgVol = volSlice2.length > 0 ? volSlice2.reduce((a, b) => a + b, 0) / volSlice2.length : 0;
   const lastVol = volumes[volumes.length - 1]!;
-  const volRatio = lastVol / avgVol;
+  const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
 
   if (volRatio > 2.5)      { score += 40; reasons.push(`🔥 Аномальный объём: ${(volRatio * 100).toFixed(0)}%`); }
   else if (volRatio > 1.5) { score += 25; reasons.push(`Высокий объём: ${(volRatio * 100).toFixed(0)}%`); }
