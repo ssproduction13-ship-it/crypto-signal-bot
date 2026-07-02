@@ -447,6 +447,17 @@ const MIGRATIONS = [
   "CREATE INDEX IF NOT EXISTS idx_dl_strategy    ON decision_log(strategy)",
   // ── AI Watchlist: status column for instrument-level shadow-quarantine ──────
   "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'normal'",
+  // ── Фикс 2: LONG/SHORT direction statistics ──────────────────────────────
+  `CREATE TABLE IF NOT EXISTS strategy_direction_stats (
+    strategy   TEXT NOT NULL,
+    direction  TEXT NOT NULL,
+    trades     INTEGER NOT NULL DEFAULT 0,
+    wins       INTEGER NOT NULL DEFAULT 0,
+    win_pnl    REAL NOT NULL DEFAULT 0,
+    loss_pnl   REAL NOT NULL DEFAULT 0,
+    total_pnl  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (strategy, direction)
+  )`,
 ];
 
 
@@ -466,7 +477,7 @@ export async function resetAllData(): Promise<number[]> {
     "factor_weights", "paper_accounts", "risk_state", "cooldown_state",
     "time_analytics", "instrument_analytics", "walk_forward_results",
     "learning_reports", "shadow_closed_trades", "missed_trades",
-    "similar_trades", "ab_variants", "decision_traces", "decision_log",
+    "similar_trades", "ab_variants", "decision_traces", "decision_log", "strategy_direction_stats",
   ];
   const client = await pool.connect();
   try {
