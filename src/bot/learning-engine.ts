@@ -355,32 +355,24 @@ export async function selectBestStrategy(
 export async function getAllStrategyStatuses(
   regime: MarketRegime = "sideways"
 ): Promise<StrategyTrustResult[]> {
-  const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats");
   const {rows:wRows}    = await pool.query("SELECT * FROM strategy_weights");
   const now = new Date().toISOString();
   const results: StrategyTrustResult[] = [];
 
   for (const stratName of ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[]) {
-    const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === stratName);
     const wRow    = (wRows    as Record<string,unknown>[]).find(r => r["strategy"] === stratName);
 
-    const trades   = statRow ? Number(statRow["trades"])   : 0;
-    const wins     = statRow ? Number(statRow["wins"])     : 0;
-    const winPnl   = statRow ? Number(statRow["win_pnl"])  : 0;
-    const lossPnl  = statRow ? Number(statRow["loss_pnl"]) : 0;
-    const totalPnl = statRow ? Number(statRow["total_pnl"]): 0;
+    const recent = await getRecentStrategyStats(stratName);
     const weight   = wRow ? Number(wRow["weight"]) : 1;
     const isDisabled  = wRow ? Boolean(wRow["disabled"])   : false;
     const disabledUntil = wRow ? wRow["disabled_until"] as string|null : null;
     const isQuarantine  = wRow ? Boolean(wRow["quarantine"]) : false;
     const isActuallyDisabled = isDisabled && (!disabledUntil || disabledUntil > now);
-
-    const trustScore = await calcTrustScore(stratName, trades, wins, winPnl, lossPnl, totalPnl, regime);
-    const pf = lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 99 : 0;
-    const wr = trades > 0 ? wins/trades : 0;
-
+    const trustScore = await calcTrustScore(stratName, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
+    const pf = recent.pf;
+    const wr = recent.trades > 0 ? recent.wins / recent.trades : 0;
     const status: StrategyStatus = isActuallyDisabled ? "disabled" : isQuarantine ? "quarantine" : "active";
-    results.push({strategy:stratName, trustScore, status, weight, trades, winRate:wr, profitFactor:pf});
+    results.push({strategy:stratName, trustScore, status, weight, trades:recent.trades, winRate:wr, profitFactor:pf});
   }
   return results;
 }
