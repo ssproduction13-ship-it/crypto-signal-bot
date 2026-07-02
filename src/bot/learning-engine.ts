@@ -724,7 +724,6 @@ export async function generateLearningReport(): Promise<string> {
 
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
   const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
-  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
 
   const {rows:dirRows} = await pool.query("SELECT strategy,direction,trades,wins,win_pnl,loss_pnl FROM strategy_direction_stats");
   const dirByStrat:Record<string,Record<string,{trades:number;wins:number;winPnl:number;lossPnl:number}>>={};
