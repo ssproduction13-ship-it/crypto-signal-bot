@@ -267,9 +267,6 @@ export async function selectBestStrategy(
 ): Promise<StrategySelectionResult | null> {
   if (!signals.length) return null;
 
-  const {rows:statRows} = await pool.query(
-    "SELECT strategy,trades,wins,win_pnl,loss_pnl,total_pnl FROM strategy_stats"
-  );
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,disabled_until,quarantine,trust_score FROM strategy_weights"
   );
@@ -285,14 +282,8 @@ export async function selectBestStrategy(
     // Quarantine: only allow moderate-confidence signals (≥35%)
     if (isQuarantine && sig.confidence < 35) continue;
 
-    const statRow = (statRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
-    const trades  = statRow ? Number(statRow["trades"])   : 0;
-    const wins    = statRow ? Number(statRow["wins"])     : 0;
-    const winPnl  = statRow ? Number(statRow["win_pnl"])  : 0;
-    const lossPnl = statRow ? Number(statRow["loss_pnl"]) : 0;
-    const totalPnl= statRow ? Number(statRow["total_pnl"]): 0;
-
-    const trustScore = await calcTrustScore(sig.strategy, trades, wins, winPnl, lossPnl, totalPnl, regime);
+    const recent = await getRecentStrategyStats(sig.strategy);
+    const trustScore = await calcTrustScore(sig.strategy, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
 
     // Regime-specific PF
     let regimePF = 1;
