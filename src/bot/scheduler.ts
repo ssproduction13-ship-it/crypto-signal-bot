@@ -153,11 +153,55 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
     return [...subs.values()].filter(s => s.chatId === chatId);
   }
 
-  function dynamicMinScore(marketIndex: number): number {
-    if (marketIndex >= 70) return 32;
-    if (marketIndex >= 50) return 35;
-    if (marketIndex >= 30) return 38;
-    return 42;
+  // ── ТЗ: Динамический Score порог на основе накопленной статистики PF по бакетам ──
+  // Заменяет прежнюю dynamicMinScore(marketIndex) — теперь порог кэшируется и
+  // обновляется в cron раз в 12 часов на основе реального PF по бакетам score.
+  let cachedMinScore = 45;
+
+  async function adaptiveMinScore(): Promise<number> {
+    const BASE_MIN = 45;
+    try {
+      const { rows: totalRows } = await pool.query(
+        "SELECT COUNT(*) as total FROM trade_features WHERE pnl_percent IS NOT NULL"
+      );
+      const total = Number((totalRows[0] as Record<string, unknown> | undefined)?.["total"] ?? 0);
+      if (total < 100) return BASE_MIN;
+
+      const { rows: buckets } = await pool.query(
+        `SELECT
+           FLOOR((features->>'score')::float / 5) * 5 AS bucket,
+           COUNT(*) as trades,
+           SUM(CASE WHEN pnl_percent > 0 THEN pnl_percent ELSE 0 END) as win_pnl,
+           ABS(SUM(CASE WHEN pnl_percent < 0 THEN pnl_percent ELSE 0 END)) as loss_pnl
+         FROM trade_features
+         WHERE pnl_percent IS NOT NULL AND (features->>'score') IS NOT NULL
+         GROUP BY bucket
+         HAVING COUNT(*) >= 10
+         ORDER BY bucket DESC`
+      );
+
+      for (const row of buckets as Record<string, unknown>[]) {
+        const winPnl = Number(row["win_pnl"]);
+        const lossPnl = Number(row["loss_pnl"]);
+        const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+        if (pf >= 1.0) {
+          return Math.min(65, Math.max(BASE_MIN, Number(row["bucket"])));
+        }
+      }
+      return BASE_MIN;
+    } catch (err) {
+      logger.warn({ err }, "adaptiveMinScore: query failed, falling back to base");
+      return BASE_MIN;
+    }
+  }
+
+  async function refreshAdaptiveMinScore(): Promise<void> {
+    const oldScore = cachedMinScore;
+    const newScore = await adaptiveMinScore();
+    if (newScore !== oldScore) {
+      logger.info({ from: oldScore, to: newScore }, "Adaptive minScore updated");
+    }
+    cachedMinScore = newScore;
   }
 
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
@@ -214,7 +258,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       ]);
       const stratStatus = stratStatuses.find((s: any) => s.strategy === strat);
       const stratWeight = stratWeights[strat] ?? 1;
-      const minScore = dynamicMinScore(sig.marketRating.index);
+      const minScore = cachedMinScore;
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
@@ -330,6 +374,20 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
       } else if (!gate.rejected) {
         gate.pass("Режим рынка", `${regime} → ${strat} OK`);
+      }
+
+      // ── ТЗ: Direction Guard — раздельный карантин/вес по LONG/SHORT ────────
+      const { rows: dirWeightRows } = await pool.query(
+        "SELECT weight,quarantine,trades FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2",
+        [strat, sig.score.direction]
+      ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      const dirRow = dirWeightRows[0] as Record<string, unknown> | undefined;
+      const dirWeight = dirRow ? Number(dirRow["weight"]) : 1.0;
+      const dirQuarantine = dirRow ? Boolean(dirRow["quarantine"]) : false;
+      if (!gate.rejected && dirQuarantine) {
+        gate.fail("Direction Guard", `${strat} ${sig.score.direction} в карантине по направлению`, `PF < 0.5 на ${dirRow?.["trades"]} сделках`);
+      } else if (!gate.rejected) {
+        gate.pass("Direction Guard", dirRow ? `${strat} ${sig.score.direction} вес ${(dirWeight * 100).toFixed(0)}%` : "bootstrap");
       }
 
       if (!gate.rejected && stratWeight === 0) {
@@ -453,7 +511,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier;
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * dirWeight;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return null;
@@ -777,6 +835,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
     }
     void initLastMilestoneTrades();    // restore from DB before first 30s tick
     void initLastAdaptationTrades();   // restore adaptation baseline from DB
+    void refreshAdaptiveMinScore().catch((err) => logger.warn({ err }, "adaptiveMinScore initial refresh error"));
 
     kuCoinWs.onNewCandle((sym, iv) => void onNewCandle(sym, iv));
     kuCoinWs.start().catch(err => logger.error({ err }, "KuCoin WS start error"));
@@ -898,6 +957,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 
     // ── Timed strategy adaptation every 12h (only if ≥5 new trades since last run) ──
     cron.schedule("0 */12 * * *", async () => {
+      await refreshAdaptiveMinScore().catch((err) => logger.warn({ err }, "adaptiveMinScore refresh error"));
       if (!chatIds.size) return;
       try {
         const total    = await getClosedTradeCount();
