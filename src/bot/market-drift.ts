@@ -42,7 +42,7 @@ function calcMetrics(trades: number[], label: string): DriftMetrics {
   for (const r of trades) {
     equity += r;
     if (equity > peak) peak = equity;
-    const dd = peak > 0 ? (peak - equity) / peak * 100 : 0;
+    const dd = peak > 0.01 ? Math.min(100, Math.max(0, (peak - equity) / peak * 100)) : 0;
     if (dd > maxDD) maxDD = dd;
   }
 
@@ -153,10 +153,10 @@ export function formatDriftReport(d: DriftDetectionResult): string {
   text += `Статус: ${d.hasDrift ? `Дрейф обнаружен (${d.severity.toUpperCase()})` : "Рынок стабилен"}\n\n`;
   text += `*Последние сделки (${d.recentMetrics.trades})*\n`;
   text += `PF: ${d.recentMetrics.profitFactor.toFixed(2)} | WR: ${(d.recentMetrics.winRate * 100).toFixed(1)}%\n`;
-  text += `Просадка: ${d.recentMetrics.maxDrawdown.toFixed(1)}%\n\n`;
+  text += `Просадка: ${d.recentMetrics.maxDrawdown > 200 ? '⚠️ нет данных' : d.recentMetrics.maxDrawdown.toFixed(1) + '%'}\n\n`;
   text += `*История (${d.historicalMetrics.trades})*\n`;
   text += `PF: ${d.historicalMetrics.profitFactor.toFixed(2)} | WR: ${(d.historicalMetrics.winRate * 100).toFixed(1)}%\n`;
-  text += `Просадка: ${d.historicalMetrics.maxDrawdown.toFixed(1)}%\n\n`;
+  text += `Просадка: ${d.historicalMetrics.maxDrawdown > 200 ? '⚠️ нет данных' : d.historicalMetrics.maxDrawdown.toFixed(1) + '%'}\n\n`;
   if (d.hasDrift) {
     text += `*Меры:*\n`;
     text += `Снижение Confidence: −${d.confidenceReduction}%\n`;
