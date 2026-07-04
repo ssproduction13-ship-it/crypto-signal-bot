@@ -315,6 +315,7 @@ import { runDataCleanup } from "./data-cleanup.js";
               return sl;
             })
           : ["_нет данных о стратегиях_"];
+        const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
         const trendText = health?.trend === "improving" ? "Улучшается"
           : health?.trend === "degrading" ? "Ухудшается" : "Стабильно";
         const ri = readiness?.percent ?? 0;
