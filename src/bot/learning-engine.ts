@@ -302,8 +302,9 @@ export async function selectBestStrategy(
 
     // Final Score = Signal Score × Trust × Strategy Weight × Regime Score (TZ §1)
     // Math.min(100): weight≤1.5, regimePF≤2.0, trust≤1.0 → theoretical max=100*1.5*2.0=300 before cap
+    const trustFloor = recent.trades < 30 ? 0.25 : 0.15;
     const finalScore = Math.min(100, sig.score
-      * Math.max(0.15, trustScore / 100)  // floor 15%: prevents near-zero finalScore at bootstrap
+      * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 25% if trades<30, else 15%
       * Math.max(0.10, weight)
       * Math.max(0.10, regimePF));
 
@@ -744,24 +745,30 @@ export async function generateLearningReport(): Promise<string> {
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
   const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
 
-  const {rows:dirRows} = await pool.query("SELECT strategy,direction,trades,wins,win_pnl,loss_pnl FROM strategy_direction_stats");
-  const dirByStrat:Record<string,Record<string,{trades:number;wins:number;winPnl:number;lossPnl:number}>>={};
+  const {rows:dirRows} = await pool.query(`
+    SELECT sds.strategy, sds.direction, sds.trades, sds.wins, sds.win_pnl, sds.loss_pnl,
+      COALESCE(sw.weight, 1) AS weight, COALESCE(sw.quarantine, false) AS quarantine
+    FROM strategy_direction_stats sds
+    LEFT JOIN strategy_weights sw ON sw.strategy = sds.strategy`);
+  type DirEntry = {trades:number;wins:number;winPnl:number;lossPnl:number};
+  const dirByStrat:Record<string,{dirs:Record<string,DirEntry>;weight:number;quarantine:boolean}>={};
   for (const r of dirRows as Record<string,unknown>[]) {
     const strat=r["strategy"] as string, dir=r["direction"] as string;
     const trades=Number(r["trades"]);
     if (trades<5) continue;
-    if (!dirByStrat[strat]) dirByStrat[strat]={};
-    dirByStrat[strat]![dir]={trades,wins:Number(r["wins"]),winPnl:Number(r["win_pnl"]),lossPnl:Number(r["loss_pnl"])};
+    if (!dirByStrat[strat]) dirByStrat[strat]={dirs:{},weight:Number(r["weight"]),quarantine:Boolean(r["quarantine"])};
+    dirByStrat[strat]!.dirs[dir]={trades,wins:Number(r["wins"]),winPnl:Number(r["win_pnl"]),lossPnl:Number(r["loss_pnl"])};
   }
   const dirLines:string[]=[];
-  for (const [strat,dirs] of Object.entries(dirByStrat)) {
-    const parts=["LONG","SHORT"].map(d=>{
-      const s=dirs[d]; if(!s) return null;
+  for (const [strat,entry] of Object.entries(dirByStrat)) {
+    for (const d of ["LONG","SHORT"]) {
+      const s=entry.dirs[d]; if(!s) continue;
       const wr=(s.wins/s.trades*100).toFixed(0);
       const pf=s.lossPnl>0?(s.winPnl/s.lossPnl).toFixed(2):"∞";
-      return `${d} WR${wr}% PF${pf}`;
-    }).filter(Boolean);
-    if (parts.length) dirLines.push(`${strat.padEnd(16)}${parts.join(" | ")}`);
+      const wPct=(entry.weight*100).toFixed(0);
+      const statusIcon=entry.quarantine?"⚠️":"✅";
+      dirLines.push(`${(strat+"_"+d).padEnd(22)}WR${wr}% PF${pf} | Вес ${wPct}% ${statusIcon}`);
+    }
   }
   const dirSection = dirLines.length ? ["","📊 *LONG vs SHORT:*",...dirLines].join("\n") : "";
   const fullSummary = dirSection ? summary + dirSection : summary;
