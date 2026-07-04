@@ -72,10 +72,23 @@ import { pool } from "../lib/db.js";
   }
 
   export async function getInstrumentAnalytics(): Promise<string> {
-    const {rows} = await pool.query(
-      "SELECT * FROM instrument_analytics WHERE trades>=5 ORDER BY (CASE WHEN loss_pnl>0 THEN win_pnl/loss_pnl ELSE win_pnl+1 END) DESC"
-    );
+    const [{rows}, {rows: dirRows}] = await Promise.all([
+      pool.query("SELECT * FROM instrument_analytics WHERE trades>=5 ORDER BY (CASE WHEN loss_pnl>0 THEN win_pnl/loss_pnl ELSE win_pnl+1 END) DESC"),
+      pool.query(`SELECT symbol, direction, COUNT(*) AS trades,
+        SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN pnl>0 THEN pnl ELSE 0 END) AS win_pnl,
+        SUM(CASE WHEN pnl<0 THEN ABS(pnl) ELSE 0 END) AS loss_pnl
+        FROM paper_closed_trades GROUP BY symbol, direction HAVING COUNT(*) >= 5`),
+    ]);
     if (!rows.length) return "📊 *Аналитика по инструментам*\n\nНедостаточно данных (нужно ≥5 сделок на инструмент).";
+
+    // Build per-symbol direction map
+    const dirBySym:Record<string,Record<string,{trades:number;wins:number;winPnl:number;lossPnl:number}>>={}
+    for (const r of dirRows as Record<string,unknown>[]) {
+      const sym=r["symbol"] as string, dir=r["direction"] as string;
+      if (!dirBySym[sym]) dirBySym[sym]={};
+      dirBySym[sym]![dir]={trades:Number(r["trades"]),wins:Number(r["wins"]),winPnl:Number(r["win_pnl"]),lossPnl:Number(r["loss_pnl"])};
+    }
 
     const lines:(string)[] = [];
     for (const r of (rows as Record<string,unknown>[]).slice(0,10)) {
@@ -88,6 +101,14 @@ import { pool } from "../lib/db.js";
       const pw=Number(r["priority_weight"]);
       const icon=pw>=1.2?"🔥":pw<=0.3?"❌":pw<=0.6?"⚠️":"✅";
       lines.push(`${icon} *${sym}*: WR ${wr}% | PF ${pf===99?"∞":pf.toFixed(2)} | n=${trades} | ${best}`);
+      // LONG vs SHORT breakdown
+      const symDirs=dirBySym[sym]??{};
+      for (const d of ["LONG","SHORT"]) {
+        const sd=symDirs[d]; if(!sd) continue;
+        const dwr=(sd.wins/sd.trades*100).toFixed(0);
+        const dpf=sd.lossPnl>0?(sd.winPnl/sd.lossPnl).toFixed(2):sd.winPnl>0?"∞":"—";
+        lines.push(`  ↳ ${d}: WR ${dwr}% | PF ${dpf} | n=${sd.trades}`);
+      }
     }
 
     // Worst
