@@ -87,7 +87,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   ]);
 
   const [stratStatRows, stratWRows, regRows, timeRows, coinRows, adaptRows, quarRows,
-         versionRows, histRows, firstRow] = await Promise.all([
+         versionRows, histRows, firstRow, stratDirRows] = await Promise.all([
     pool.query("SELECT * FROM strategy_stats"),
     pool.query("SELECT strategy,weight,disabled,quarantine,trust_score FROM strategy_weights"),
     pool.query(`SELECT regime, SUM(trades) t, SUM(wins) w, SUM(win_pnl) wp, SUM(loss_pnl) lp, SUM(total_pnl) tp
@@ -104,6 +104,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                        SUM(CASE WHEN changed_at::timestamptz > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
                 FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
+    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl FROM strategy_direction_stats WHERE trades >= 5"),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
@@ -260,8 +261,18 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
       `Avg PnL: ${fmtS(avgP)}  |  Expectancy: ${fmtS(exp_s)}`,
       ...(confAvg > 0 ? [`Conf.Avg: ${confAvg.toFixed(0)}%`] : []),
       `Last adapt: ${lastAdptStr}  |  Week Δ wt: ${wkDeltaStr}`,
-      ``,
     );
+    // Direction breakdown (↳ TREND_LONG / TREND_SHORT etc.)
+    const sdrAll = stratDirRows.rows as Record<string,unknown>[];
+    for (const dir of ["LONG","SHORT"]) {
+      const dr = sdrAll.find(r => r["strategy"]===strat && r["direction"]===dir);
+      if (!dr) continue;
+      const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
+      const dwr=(dw/dt*100).toFixed(0);
+      const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
+      parts.push(`  ↳ ${strat}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt}`);
+    }
+    parts.push(``);
   }
 
   // ─ SECTION 4: Рынок ─
