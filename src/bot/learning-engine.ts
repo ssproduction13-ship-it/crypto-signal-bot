@@ -459,6 +459,29 @@ function pfToTargetWeight(pf: number): number {
     return { trades, wins, winPnl, lossPnl, totalPnl, pf };
   }
 
+  async function getRecentDirectionStats(
+    strategy: string,
+    direction: string
+  ): Promise<{ trades: number; wins: number; winPnl: number; lossPnl: number; pf: number }> {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+       FROM paper_closed_trades
+       WHERE strategy = $1
+         AND direction = $2
+         AND outcome NOT IN ('TIMEOUT_STALE')
+       ORDER BY closed_at DESC
+       LIMIT $3`,
+      [strategy, direction, ADAPTATION_WINDOW]
+    );
+    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+    const trades  = pnls.length;
+    const wins    = pnls.filter(p => p > 0).length;
+    const winPnl  = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const lossPnl = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    return { trades, wins, winPnl, lossPnl, pf };
+  }
+
   export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,quarantine,cycles_below_threshold FROM strategy_weights"
@@ -603,18 +626,23 @@ function pfToTargetWeight(pf: number): number {
 
   // ── ТЗ: адаптация весов/карантина по направлению (LONG/SHORT) ──────────
   // Работает поверх strategy-level весов как дополнительный слой (не замена).
-  const {rows:dirAdaptRows} = await pool.query(
-    "SELECT strategy,direction,trades,wins,win_pnl,loss_pnl,weight FROM strategy_direction_stats WHERE trades >= 30"
+  // Получить список уникальных strategy+direction из таблицы весов
+  const {rows:dirWeightRows} = await pool.query(
+    "SELECT strategy, direction, weight, quarantine FROM strategy_direction_stats"
   );
-  for (const row of dirAdaptRows as Record<string,unknown>[]) {
-    const strat = row["strategy"] as string;
+
+  for (const row of dirWeightRows as Record<string,unknown>[]) {
+    const strat     = row["strategy"] as string;
     const direction = row["direction"] as string;
-    const dTrades = Number(row["trades"]);
-    const dWins = Number(row["wins"]);
-    const winPnl = Number(row["win_pnl"]);
-    const lossPnl = Number(row["loss_pnl"]);
-    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
-    const wr = dTrades > 0 ? dWins / dTrades : 0;
+
+    // Использовать ту же метрику и то же окно что и основной адаптер
+    const recent = await getRecentDirectionStats(strat, direction);
+    const dTrades = recent.trades;
+    const pf      = recent.pf;
+    const wr      = dTrades > 0 ? recent.wins / dTrades : 0;
+
+    // Порог для карантина и адаптации — такой же как в основном адаптере
+    if (dTrades < 10) continue; // мало данных — не трогать
 
     let newWeight = Number(row["weight"]);
     let quarantine = false;
@@ -629,14 +657,18 @@ function pfToTargetWeight(pf: number): number {
     }
 
     if (quarantine || Math.abs(newWeight - Number(row["weight"])) > 0.005) {
-      changes.push(`${quarantine?"⚠️":newWeight>Number(row["weight"])?"📈":"📉"} ${strat} ${direction}: вес ${(Number(row["weight"])*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${dTrades})${quarantine?" — карантин по направлению":""}`);
+      changes.push(
+        `${quarantine?"⚠️":newWeight>Number(row["weight"])?"📈":"📉"} ${strat} ${direction}: ` +
+        `вес ${(Number(row["weight"])*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% ` +
+        `(PF ${pf.toFixed(2)}, n=${dTrades})${quarantine?" — карантин по направлению":""}`
+      );
     }
 
     await pool.query(
       `UPDATE strategy_direction_stats
-       SET weight=$3, quarantine=$4, trust_score=$5
+       SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6
        WHERE strategy=$1 AND direction=$2`,
-      [strat, direction, newWeight, quarantine, Math.round(wr * 100)]
+      [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString()]
     );
   }
 
