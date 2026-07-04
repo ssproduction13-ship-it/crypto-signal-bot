@@ -288,12 +288,18 @@ import { runDataCleanup } from "./data-cleanup.js";
         const sortedStrats = (statuses as any[])
           .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
         const best = sortedStrats[0];
-        const stratRow = sortedStrats.length > 0
-          ? sortedStrats.map((s: any) =>
-              `${s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴"}` +
-              `${stratEmoji[s.strategy] ?? ""} ${stratShort[s.strategy] ?? s.strategy}`
-            ).join("  ")
-          : "_нет данных_";
+        const stratLines: string[] = sortedStrats.length > 0
+          ? sortedStrats.map((s: any) => {
+              const icon   = stratEmoji[s.strategy] ?? "▪️";
+              const name   = stratShort[s.strategy] ?? s.strategy;
+              const status = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
+              if (s.trades < 3) return `${status}${icon} ${name} — _нет данных (${s.trades} сд.)_`;
+              const wr  = (s.winRate * 100).toFixed(0);
+              const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
+              const tr  = s.trustScore ?? 0;
+              return `${status}${icon} *${name}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`;
+            })
+          : ["_нет данных о стратегиях_"];
 
         // Health & readiness
         const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
@@ -336,9 +342,8 @@ import { runDataCleanup } from "./data-cleanup.js";
           `*Статистика*  ${trades.length} сделок`,
           `WR ${wr.toFixed(1)}%  ·  PF ${pf >= 999 ? "∞" : pf.toFixed(2)}`,
           "",
-          `*AI + Стратегии*  ${trendIcon} ${trendText}`,
-          stratRow,
-          `${riBar} Готовность: ${ri}/100`,
+          `*Стратегии*  ${trendIcon} ${trendText} · ${riBar} готовность ${ri}/100`,
+          ...stratLines,
           "",
           `💬 _${analysisText}_`,
         ].join("\n");
