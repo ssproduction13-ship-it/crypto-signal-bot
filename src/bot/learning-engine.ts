@@ -619,10 +619,10 @@ function pfToTargetWeight(pf: number): number {
     let newWeight = Number(row["weight"]);
     let quarantine = false;
 
-    if (pf < 0.5 && dTrades >= 30) {
+    if (pf < 0.5 && dTrades >= 10) {
       quarantine = true;
       newWeight = Math.max(0.1, newWeight * 0.7);
-    } else if (pf < 0.8) {
+    } else if (pf < 0.8 && dTrades >= 5) {
       newWeight = Math.max(0.2, newWeight * 0.9);
     } else if (pf > 1.5) {
       newWeight = Math.min(1.5, newWeight * 1.1);
