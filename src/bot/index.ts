@@ -301,16 +301,14 @@ import { runDataCleanup } from "./data-cleanup.js";
               const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
               const tr  = s.trustScore ?? 0;
               const sl: string[] = [`${status}${icon} *${name}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
-              if (s.strategy === "TREND") {
-                for (const dir of ["LONG", "SHORT"]) {
-                  const dr = dirStatRows.find(r => r["strategy"] === "TREND" && r["direction"] === dir);
-                  if (!dr) continue;
-                  const dt = Number(dr["trades"]), dw = Number(dr["wins"]);
-                  const dwp = Number(dr["win_pnl"]), dlp = Number(dr["loss_pnl"]);
-                  const dwr = dt > 0 ? (dw / dt * 100).toFixed(0) : "—";
-                  const dpf = dlp > 0 ? (dwp / dlp).toFixed(2) : dwp > 0 ? "∞" : "—";
-                  sl.push(`  ↳ ${dir === "LONG" ? "⬆️ Лонг" : "⬇️ Шорт"}  WR ${dwr}% · PF ${dpf} · n=${dt}`);
-                }
+              for (const dir of ["LONG", "SHORT"]) {
+                const dr = dirStatRows.find(r => r["strategy"] === s.strategy && r["direction"] === dir);
+                if (!dr) continue;
+                const dt = Number(dr["trades"]), dw = Number(dr["wins"]);
+                const dwp = Number(dr["win_pnl"]), dlp = Number(dr["loss_pnl"]);
+                const dwr = dt > 0 ? (dw / dt * 100).toFixed(0) : "—";
+                const dpf = dlp > 0 ? (dwp / dlp).toFixed(2) : dwp > 0 ? "∞" : "—";
+                sl.push(`  ↳ ${dir === "LONG" ? "⬆️ Лонг" : "⬇️ Шорт"}  WR ${dwr}% · PF ${dpf} · n=${dt}`);
               }
               return sl;
             })
