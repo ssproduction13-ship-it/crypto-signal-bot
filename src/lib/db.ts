@@ -464,6 +464,15 @@ const MIGRATIONS = [
     ADD COLUMN IF NOT EXISTS quarantine BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS trust_score INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
+  // ── ТЗ: выход из direction карантина — принудительный пересмотр через 7 дней ──
+  `ALTER TABLE strategy_direction_stats
+    ADD COLUMN IF NOT EXISTS quarantine_since TIMESTAMPTZ DEFAULT NULL`,
+  // ── ТЗ: выход из direction карантина — shadow trades для заблокированных направлений ──
+  `ALTER TABLE shadow_positions
+    ADD COLUMN IF NOT EXISTS is_direction_shadow BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE shadow_closed_trades
+    ADD COLUMN IF NOT EXISTS is_direction_shadow BOOLEAN NOT NULL DEFAULT false`,
+  "CREATE INDEX IF NOT EXISTS idx_sct_dir_shadow ON shadow_closed_trades(strategy, direction, is_direction_shadow, closed_at)",
 ];
 
 

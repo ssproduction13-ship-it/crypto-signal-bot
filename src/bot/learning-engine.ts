@@ -628,12 +628,13 @@ function pfToTargetWeight(pf: number): number {
   // Работает поверх strategy-level весов как дополнительный слой (не замена).
   // Получить список уникальных strategy+direction из таблицы весов
   const {rows:dirWeightRows} = await pool.query(
-    "SELECT strategy, direction, weight, quarantine FROM strategy_direction_stats"
+    "SELECT strategy, direction, weight, quarantine, quarantine_since FROM strategy_direction_stats"
   );
 
   for (const row of dirWeightRows as Record<string,unknown>[]) {
     const strat     = row["strategy"] as string;
     const direction = row["direction"] as string;
+    const wasInQuarantine = Boolean(row["quarantine"]);
 
     // Использовать ту же метрику и то же окно что и основной адаптер
     const recent = await getRecentDirectionStats(strat, direction);
@@ -656,6 +657,62 @@ function pfToTargetWeight(pf: number): number {
       newWeight = Math.min(1.5, newWeight * 1.1);
     }
 
+    let quarantineSinceUpdate: string | null | undefined; // undefined = don't touch column
+
+    // ── ТЗ: выход из direction карантина — Механизм 1: принудительный пересмотр раз в 7 дней ──
+    if (quarantine && !wasInQuarantine) {
+      // Только что вошли в карантин — зафиксировать момент входа
+      quarantineSinceUpdate = new Date().toISOString();
+    } else if (quarantine && wasInQuarantine) {
+      const quarantineSince = row["quarantine_since"] ? new Date(row["quarantine_since"] as string) : null;
+      const daysSinceQuarantine = quarantineSince
+        ? (Date.now() - quarantineSince.getTime()) / (1000 * 60 * 60 * 24)
+        : 0;
+
+      if (daysSinceQuarantine >= 7) {
+        const freshRecent = await getRecentDirectionStats(strat, direction);
+        if (freshRecent.pf >= 0.6 && freshRecent.trades >= 5) {
+          quarantine = false;
+          newWeight = 0.3; // Начать с минимального веса, не с нуля
+          quarantineSinceUpdate = null;
+          changes.push(`🔄 ${strat} ${direction}: карантин снят (7 дней, PF ${freshRecent.pf.toFixed(2)}) → вес 30%`);
+        } else {
+          quarantineSinceUpdate = new Date().toISOString();
+          changes.push(`🔒 ${strat} ${direction}: карантин продлён (PF ${freshRecent.pf.toFixed(2)} < 0.6)`);
+        }
+      }
+    } else if (!quarantine && wasInQuarantine) {
+      // Естественный выход (свежие сделки подняли PF выше 0.5)
+      quarantineSinceUpdate = null;
+    }
+
+    // ── ТЗ: выход из direction карантина — Механизм 2: shadow trades для заблокированных направлений ──
+    if (quarantine) {
+      const { rows: shadowRows } = await pool.query(
+        `SELECT pnl_percent, is_win FROM shadow_closed_trades
+         WHERE strategy=$1 AND direction=$2
+           AND is_direction_shadow = true
+           AND closed_at::timestamptz > NOW() - INTERVAL '30 days'
+         ORDER BY closed_at DESC LIMIT 50`,
+        [strat, direction]
+      );
+
+      if (shadowRows.length >= 20) {
+        const sPnls = (shadowRows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
+        const sWinPnl = sPnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+        const sLossPnl = Math.abs(sPnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+        const sPF = sLossPnl > 0 ? sWinPnl / sLossPnl : sWinPnl > 0 ? 2.0 : 0;
+
+        if (sPF >= 0.8) {
+          // Shadow PF восстановился — снять карантин с минимальным весом
+          quarantine = false;
+          newWeight = 0.3;
+          quarantineSinceUpdate = null;
+          changes.push(`🔄 ${strat} ${direction}: карантин снят по shadow (PF ${sPF.toFixed(2)}, n=${shadowRows.length}) → вес 30%`);
+        }
+      }
+    }
+
     if (quarantine || Math.abs(newWeight - Number(row["weight"])) > 0.005) {
       changes.push(
         `${quarantine?"⚠️":newWeight>Number(row["weight"])?"📈":"📉"} ${strat} ${direction}: ` +
@@ -664,12 +721,21 @@ function pfToTargetWeight(pf: number): number {
       );
     }
 
-    await pool.query(
-      `UPDATE strategy_direction_stats
-       SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6
-       WHERE strategy=$1 AND direction=$2`,
-      [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString()]
-    );
+    if (quarantineSinceUpdate === undefined) {
+      await pool.query(
+        `UPDATE strategy_direction_stats
+         SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6
+         WHERE strategy=$1 AND direction=$2`,
+        [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString()]
+      );
+    } else {
+      await pool.query(
+        `UPDATE strategy_direction_stats
+         SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6, quarantine_since=$7
+         WHERE strategy=$1 AND direction=$2`,
+        [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString(), quarantineSinceUpdate]
+      );
+    }
   }
 
   return changes.length > 0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";

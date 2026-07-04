@@ -386,6 +386,15 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       const dirQuarantine = dirRow ? Boolean(dirRow["quarantine"]) : false;
       if (!gate.rejected && dirQuarantine) {
         gate.fail("Direction Guard", `${strat} ${sig.score.direction} в карантине по направлению`, `PF < 0.5 на ${dirRow?.["trades"]} сделках`);
+
+        // ── ТЗ: выход из direction карантина — записать shadow trade для мониторинга ──
+        loadWeights().then(w =>
+          openShadowPosition(
+            sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG" | "SHORT",
+            sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+            strat, w, regime, true
+          ).catch(() => {})
+        ).catch(() => {});
       } else if (!gate.rejected) {
         gate.pass("Direction Guard", dirRow ? `${strat} ${sig.score.direction} вес ${(dirWeight * 100).toFixed(0)}%` : "bootstrap");
       }

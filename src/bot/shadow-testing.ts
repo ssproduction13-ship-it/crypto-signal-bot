@@ -15,15 +15,16 @@ import { pool } from "../lib/db.js";
   export async function openShadowPosition(
     symbol: string, direction: "LONG"|"SHORT",
     entryPrice: number, stopLoss: number, tp1: number, tp2: number,
-    strategy: StrategyName, challengerWeights: FactorWeights, marketRegime: string
+    strategy: StrategyName, challengerWeights: FactorWeights, marketRegime: string,
+    isDirectionShadow: boolean = false
   ): Promise<void> {
     const stopDist = Math.abs(entryPrice - stopLoss);
     if (stopDist <= 0) return;
     const size = 100 / stopDist;
     await pool.query(
-      `INSERT INTO shadow_positions(id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,challenger_weights,market_regime,opened_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`,
-      [genId(),symbol,direction,entryPrice,size,stopLoss,tp1,tp2,strategy,JSON.stringify(challengerWeights),marketRegime,new Date().toISOString()]
+      `INSERT INTO shadow_positions(id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,challenger_weights,market_regime,opened_at,is_direction_shadow)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING`,
+      [genId(),symbol,direction,entryPrice,size,stopLoss,tp1,tp2,strategy,JSON.stringify(challengerWeights),marketRegime,new Date().toISOString(),isDirectionShadow]
     );
   }
 
@@ -53,9 +54,9 @@ import { pool } from "../lib/db.js";
           const pnl = dir==="LONG" ? (closePrice-entry)*size : (entry-closePrice)*size;
           const pnlPct = dir==="LONG" ? ((closePrice-entry)/entry)*100 : ((entry-closePrice)/entry)*100;
           await pool.query(
-            `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,outcome,strategy,opened_at,closed_at,is_win)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-            [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0]
+            `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+            [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"])]
           );
           await pool.query("DELETE FROM shadow_positions WHERE id=$1",[pos["id"]]);
         }
