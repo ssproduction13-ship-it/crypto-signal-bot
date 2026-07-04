@@ -29,6 +29,8 @@ interface StrategyDetail {
   last30: number; totalPnl: number;
   weight: number; quarantine: boolean; trustScore: number;
   disabledUntil: string | null;
+  longTrades: number; longWR: number; longPF: number;
+  shortTrades: number; shortWR: number; shortPF: number;
 }
 
 interface CoinDetail {
@@ -159,6 +161,20 @@ function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[]
     const wRow = weights.find(w => w["strategy"] === strat);
     const ss = stats.find(s => s.strategy === strat);
 
+
+    // LONG/SHORT breakdown from paper trades
+    const longT  = st.filter(t => t.direction === "LONG");
+    const shortT = st.filter(t => t.direction === "SHORT");
+    const calcDir = (ts: typeof st) => {
+      const dWins = ts.filter(t => t.pnl > 0);
+      const dLoss = ts.filter(t => t.pnl <= 0);
+      const dGW = dWins.reduce((a, t) => a + t.pnl, 0);
+      const dGL = Math.abs(dLoss.reduce((a, t) => a + t.pnl, 0));
+      return { trades: ts.length, wr: ts.length ? dWins.length / ts.length * 100 : 0, pf: dGL > 0 ? dGW / dGL : dGW > 0 ? 999 : 0 };
+    };
+    const longSt  = calcDir(longT);
+    const shortSt = calcDir(shortT);
+
     return {
       strategy: strat, trades: st.length, wins: wins.length, losses: losses.length,
       winRate: wr, profitFactor: pf, expectancy: exp, avgWin: aw, avgLoss: al,
@@ -171,6 +187,8 @@ function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[]
       quarantine: wRow ? Boolean(wRow["quarantine"]) : false,
       trustScore: wRow ? Number(wRow["trust_score"]) : 50,
       disabledUntil: wRow ? (wRow["disabled_until"] as string | null) : null,
+      longTrades: longSt.trades, longWR: longSt.wr, longPF: longSt.pf,
+      shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
     };
   });
 }
@@ -770,7 +788,23 @@ tr:hover td{background:#263348}
         <td>${(s.weight * 100).toFixed(0)}%</td>
         <td>${s.trustScore.toFixed(0)}</td>
         <td>${s.quarantine ? "🔴 Карантин" : s.disabledUntil ? "⛔ Откл." : "✅"}</td>
-      </tr>`).join("")}
+      </tr>
+      ${s.longTrades >= 3 || s.shortTrades >= 3 ? `
+      <tr style="background:#0f172a;font-size:11px;color:#94a3b8">
+        <td style="padding-left:20px;color:#64748b">⬆️ Лонг</td>
+        <td>${s.longTrades}</td><td>—</td>
+        <td class="${wrClass(s.longWR)}">${fmt(s.longWR)}%</td>
+        <td class="${pfClass(s.longPF)}">${s.longPF >= 999 ? "∞" : fmt(s.longPF)}</td>
+        <td colspan="10" style="color:#64748b">—</td>
+      </tr>
+      <tr style="background:#0f172a;font-size:11px;color:#94a3b8">
+        <td style="padding-left:20px;color:#64748b">⬇️ Шорт</td>
+        <td>${s.shortTrades}</td><td>—</td>
+        <td class="${wrClass(s.shortWR)}">${fmt(s.shortWR)}%</td>
+        <td class="${pfClass(s.shortPF)}">${s.shortPF >= 999 ? "∞" : fmt(s.shortPF)}</td>
+        <td colspan="10" style="color:#64748b">—</td>
+      </tr>` : ""}
+`).join("")}
     </table>
     </div>
   </div>
