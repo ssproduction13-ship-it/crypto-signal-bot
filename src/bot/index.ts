@@ -16,6 +16,7 @@ import { Telegraf, Markup } from "telegraf";
   import { calcMarketRating, formatMarketRating } from "./market-rating.js";
   import { formatPrice } from "./risk.js";
   import { logger } from "../lib/logger.js";
+import { pool } from "../lib/db.js";
   import type { Interval } from "./binance.js";
   import {
     getAllStrategyStatuses, getLearningHistory, generateLearningReport,
@@ -830,34 +831,49 @@ import { runDataCleanup } from "./data-cleanup.js";
         const rating = calcMarketRating(ind, market, candles);
         const regime = detectMarketRegime(market, rating);
 
-        const statuses = await getAllStrategyStatuses(regime);
-        const regimeLabels: Record<string,string> = {
-          trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
-          sideways:"↔️ Боковик",high_vol:"⚡ Волат.",low_vol:"😴 Затишье",
-        };
-        const statusIcon: Record<string,string> = {active:"✅",quarantine:"⚠️",disabled:"🚫"};
-        const statusLabel: Record<string,string> = {active:"Активна",quarantine:"Карантин",disabled:"Shadow"};
+        const [statuses, {rows: dirStatRows}] = await Promise.all([
+            getAllStrategyStatuses(regime),
+            pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl
+              FROM strategy_direction_stats WHERE trades >= 10`),
+          ]);
+          const regimeLabels: Record<string,string> = {
+            trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
+            sideways:"↔️ Боковик",high_vol:"⚡ Волат.",low_vol:"😴 Затишье",
+          };
+          const statusIcon: Record<string,string> = {active:"✅",quarantine:"⚠️",disabled:"🚫"};
+          const statusLabel: Record<string,string> = {active:"Активна",quarantine:"Карантин",disabled:"Shadow"};
 
-        const lines = [
-          `🏆 *Стратегии* | Режим: ${regimeLabels[regime] ?? regime}`,
-          "",
-        ];
-        for (const s of statuses) {
-          const icon = statusIcon[s.status] ?? "✅";
-          const sl   = statusLabel[s.status] ?? s.status;
-          const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
-          const wr   = (s.winRate * 100).toFixed(1);
-          const ADAPT_THRESHOLD = 30;
-          const adaptLine = s.trades >= ADAPT_THRESHOLD
-            ? `Адаптация активна | Вес: ${(s.weight*100).toFixed(0)}%`
-            : `До адаптации: ${ADAPT_THRESHOLD - s.trades} сделок`;
-          lines.push(
-            `${icon} *${s.strategy}* — ${sl}\n` +
-            `  Сделок: ${s.trades} | ${adaptLine}\n` +
-            `  Trust: ${s.trustScore}/100 | WR: ${wr}% | PF: ${pf}`
-          );
-        }
-        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          const lines = [
+            `🏆 *Стратегии* | Режим: ${regimeLabels[regime] ?? regime}`,
+            "",
+          ];
+          for (const s of statuses) {
+            const icon = statusIcon[s.status] ?? "✅";
+            const sl   = statusLabel[s.status] ?? s.status;
+            const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
+            const wr   = (s.winRate * 100).toFixed(1);
+            const ADAPT_THRESHOLD = 30;
+            const adaptLine = s.trades >= ADAPT_THRESHOLD
+              ? `Адаптация активна | Вес: ${(s.weight*100).toFixed(0)}%`
+              : `До адаптации: ${ADAPT_THRESHOLD - s.trades} сделок`;
+            lines.push(
+              `${icon} *${s.strategy}* — ${sl}\n` +
+              `  Сделок: ${s.trades} | ${adaptLine}\n` +
+              `  Trust: ${s.trustScore}/100 | WR: ${wr}% | PF: ${pf}`
+            );
+            // ↳ TREND_LONG / TREND_SHORT direction breakdown
+            for (const dir of ["LONG","SHORT"]) {
+              const dr = (dirStatRows as Record<string,unknown>[]).find(
+                r => r["strategy"]===s.strategy && r["direction"]===dir
+              );
+              if (!dr) continue;
+              const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
+              const dwr=(dw/dt*100).toFixed(0);
+              const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
+              lines.push(`  ↳ ${s.strategy}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt}`);
+            }
+          }
+            await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply(lines.join("\n"), {
           parse_mode:"Markdown",
           ...Markup.inlineKeyboard([
