@@ -87,10 +87,9 @@ import { runDataCleanup } from "./data-cleanup.js";
   // ── Menus ─────────────────────────────────────────────────────────────────
   function mainMenu() {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("💰 Заработок",  "menu_earnings"),
-       Markup.button.callback("🧠 Обучение",   "menu_learning")],
-      [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
-      [Markup.button.callback("⚙️ Настройки",  "menu_settings")],
+      [Markup.button.callback("📊 Обзор",        "menu_dashboard"),
+       Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+      [Markup.button.callback("⚙️ Настройки",    "menu_settings")],
     ]);
   }
   function backMenu() {
@@ -231,153 +230,180 @@ import { runDataCleanup } from "./data-cleanup.js";
     });
 
     // ── Заработок ──────────────────────────────────────────────────────────
-    bot.action("menu_earnings", async (ctx) => {
-      await ctx.answerCbQuery();
-      const chatId  = ctx.chat!.id;
-      const account = await loadPaperAccount(chatId);
-      const trades  = account.closedTrades;
-      const wins    = trades.filter(t => t.pnl > 0);
-      const ret     = ((account.balance - account.initialBalance) / account.initialBalance) * 100;
-      const dd      = (account.peakBalance ?? account.balance) > 0
-        ? (((account.peakBalance ?? account.balance) - account.balance) / (account.peakBalance ?? account.balance)) * 100
-        : 0;
-      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-      const weekStart  = new Date(todayStart);
-      weekStart.setDate(todayStart.getDate() - ((todayStart.getDay() + 6) % 7));
-      const pnlD = trades.filter(t => new Date(t.closedAt) >= todayStart).reduce((a, t) => a + t.pnl, 0);
-      const pnlW = trades.filter(t => new Date(t.closedAt) >= weekStart).reduce((a, t) => a + t.pnl, 0);
-      const gW   = wins.reduce((a, t) => a + t.pnl, 0);
-      const gL   = Math.abs(trades.filter(t => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
-      const pf   = gL > 0 ? gW / gL : gW > 0 ? 999 : 0;
-
-      const posLines = account.positions.length === 0
-        ? ["_нет открытых позиций_"]
-        : await Promise.all(account.positions.map(async p => {
-            const dir = p.direction === "LONG" ? "⬆️" : "⬇️";
-            try {
-              const { getPrice } = await import("./binance.js");
-              const price = await getPrice(p.symbol);
-              const pnlVal = p.direction === "LONG"
-                ? (price - p.entryPrice) * p.size
-                : (p.entryPrice - price) * p.size;
-              const sign = pnlVal >= 0 ? "+" : "";
-              return `${dir} *${p.symbol}* ${sign}$${pnlVal.toFixed(2)}`;
-            } catch {
-              return `${dir} *${p.symbol}* @ ${formatPrice(p.entryPrice)}`;
-            }
-          }));
-
-      const lines = [
-        `💰 *Заработок*`, ``,
-        `Баланс: *$${account.balance.toFixed(2)}*  (${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%)`,
-        `📉 Просадка: ${dd.toFixed(2)}%`,
-        ``,
-        `📅 Сегодня: *${pnlD >= 0 ? "+" : ""}$${pnlD.toFixed(2)}*`,
-        `📆 Неделя: *${pnlW >= 0 ? "+" : ""}$${pnlW.toFixed(2)}*`,
-        ``,
-        `📊 Сделок: ${trades.length} | WR: ${trades.length ? (wins.length / trades.length * 100).toFixed(1) : 0}% | PF: ${pf >= 999 ? "∞" : pf.toFixed(2)}`,
-        ``,
-        `📂 Открыто (${account.positions.length}):`,
-        ...posLines,
-      ];
-
-      await ctx.reply(lines.join("\n"), {
-        parse_mode: "Markdown",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("🔄 Обновить", "menu_earnings")],
-          [Markup.button.callback("🗑 Сбросить счёт", "paperreset_confirm"), Markup.button.callback("◀️ Меню", "menu_main")],
-        ]),
-      });
-    });
-
-    // ── Обучение ───────────────────────────────────────────────────────────
-    bot.action("menu_learning", async (ctx) => {
-      await ctx.answerCbQuery();
-      const loading = await ctx.reply("⏳ Загружаю...");
-      try {
-        const chatId = ctx.chat!.id;
-
-        // Gather learning data in parallel
-        const [statuses, health, readiness] = await Promise.all([
-          getAllStrategyStatuses().catch(() => []),
+    // ── Обзор (Dashboard) ────────────────────────────────────────────────────
+      async function buildDashboardMessage(chatId: number): Promise<string> {
+        const [account, statuses, health, readiness] = await Promise.all([
+          loadPaperAccount(chatId),
+          getAllStrategyStatuses().catch(() => [] as any[]),
           checkLearningHealth(chatId).catch(() => null),
           calcReadinessIndex(chatId).catch(() => null),
         ]);
 
-        const totalTrades = statuses.reduce((a: number, s: any) => a + (s.trades ?? 0), 0);
-        const best = statuses.sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0))[0];
+        const trades = account.closedTrades;
+        const wins   = trades.filter((t: any) => t.pnl > 0);
+        const ret    = ((account.balance - account.initialBalance) / account.initialBalance) * 100;
+        const dd     = account.peakBalance > 0
+          ? ((account.peakBalance - account.balance) / account.peakBalance) * 100 : 0;
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        const weekStart  = new Date(todayStart);
+        weekStart.setDate(todayStart.getDate() - ((todayStart.getDay() + 6) % 7));
+        const pnlD = trades
+          .filter((t: any) => new Date(t.closedAt) >= todayStart)
+          .reduce((a: number, t: any) => a + t.pnl, 0);
+        const pnlW = trades
+          .filter((t: any) => new Date(t.closedAt) >= weekStart)
+          .reduce((a: number, t: any) => a + t.pnl, 0);
+        const wr   = trades.length ? (wins.length / trades.length) * 100 : 0;
+        const gW   = wins.reduce((a: number, t: any) => a + t.pnl, 0);
+        const gL   = Math.abs(trades.filter((t: any) => t.pnl <= 0).reduce((a: number, t: any) => a + t.pnl, 0));
+        const pf   = gL > 0 ? gW / gL : gW > 0 ? 999 : 0;
 
-        const statusIcons: Record<string, string> = { active: "✅", quarantine: "⚠️", disabled: "🔴" };
-        const levelIcons: Record<string, string> = { excellent:"🟢", good:"🟢", watch:"🟡", warning:"🟠", critical:"🔴" };
-        const levelLabels: Record<string, string> = { excellent:"Отлично", good:"Хорошо", watch:"Наблюдение", warning:"Внимание", critical:"Критично" };
-        const healthIcon = health ? (levelIcons[health.overall] ?? "⚪") : "⚪";
-        const healthText = health ? (levelLabels[health.overall] ?? health.overall) : "Нет данных";
-        const trendIcon  = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "→";
+        // Live PnL for open positions
+        const posLines: string[] = account.positions.length === 0
+          ? ["_нет открытых позиций_"]
+          : await Promise.all(account.positions.map(async (p: any) => {
+              const dir = p.direction === "LONG" ? "⬆️" : "⬇️";
+              try {
+                const { getPrice } = await import("./binance.js");
+                const price = await getPrice(p.symbol);
+                const pnlVal = p.direction === "LONG"
+                  ? (price - p.entryPrice) * p.size
+                  : (p.entryPrice - price) * p.size;
+                const pnlPct = (pnlVal / (p.entryPrice * p.size)) * 100;
+                const ps = pnlVal >= 0 ? "+" : "";
+                const pp = pnlPct >= 0 ? "+" : "";
+                return `${dir} *${p.symbol}*  ${ps}$${pnlVal.toFixed(2)} (${pp}${pnlPct.toFixed(1)}%)`;
+              } catch {
+                return `${dir} *${p.symbol}* @ ${formatPrice(p.entryPrice)}`;
+              }
+            }));
 
-        const lines = [
-          `🧠 *Обучение AI*`, ``,
-          `📊 Сделок накоплено: *${totalTrades}*`,
-          `${trendIcon} Тренд: *${health?.trend === "improving" ? "Улучшается" : health?.trend === "degrading" ? "Ухудшается" : "Стабильно"}*`,
-          `${healthIcon} Состояние: *${healthText}*`,
-          ``,
-        ];
+        // Strategy row
+        const stratEmoji: Record<string, string> = {
+          TREND: "📈", BREAKOUT: "🚀", VOLUME_IMPULSE: "⚡", MEAN_REVERSION: "↩️",
+        };
+        const stratShort: Record<string, string> = {
+          TREND: "Тренд", BREAKOUT: "Пробой", VOLUME_IMPULSE: "Импульс", MEAN_REVERSION: "Возврат",
+        };
+        const sortedStrats = (statuses as any[])
+          .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
+        const best = sortedStrats[0];
+        const stratRow = sortedStrats.length > 0
+          ? sortedStrats.map((s: any) =>
+              `${s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴"}` +
+              `${stratEmoji[s.strategy] ?? ""} ${stratShort[s.strategy] ?? s.strategy}`
+            ).join("  ")
+          : "_нет данных_";
 
-        if (best && best.trades > 0) {
-          const wr = (best.winRate * 100).toFixed(1);
-          const pf = best.profitFactor >= 99 ? "∞" : best.profitFactor.toFixed(2);
-          lines.push(
-            `🏆 Лучшая стратегия: *${best.strategy}*`,
-            `   WR ${wr}% | PF ${pf} | Trust ${best.trustScore}/100`,
-            ``,
-          );
-        } else {
-          lines.push(`🏆 Лучшая стратегия: _накапливаю данные..._`, ``);
+        // Health & readiness
+        const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
+        const trendText = health?.trend === "improving" ? "Улучшается"
+          : health?.trend === "degrading" ? "Ухудшается" : "Стабильно";
+        const ri = readiness?.percent ?? 0;
+        const riBar = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
+
+        // Brief auto-analysis (no Gemini call — fast)
+        const parts: string[] = [];
+        if (best && best.trades >= 5) {
+          const bWr = (best.winRate * 100).toFixed(0);
+          parts.push(`Лидер — ${stratShort[best.strategy] ?? best.strategy} (Trust ${best.trustScore}/100, WR ${bWr}%).`);
         }
+        if (wr >= 60)           parts.push(`WR ${wr.toFixed(0)}% — выше нормы.`);
+        else if (wr > 0 && wr < 45) parts.push(`WR ${wr.toFixed(0)}% — ниже нормы, следи за качеством.`);
+        if (dd > 10)            parts.push(`⚠️ Просадка ${dd.toFixed(1)}% — повышенная, снизь риск.`);
+        else if (dd < 5)        parts.push(`Просадка ${dd.toFixed(1)}% — в норме.`);
+        if (health?.trend === "degrading")  parts.push("Тренд ухудшается — режим наблюдения.");
+        else if (health?.trend === "improving") parts.push("Система в рабочей форме.");
+        if (ri < 40 && ri > 0) parts.push("Готовность низкая — возможны ложные сигналы.");
+        const analysisText = parts.length > 0 ? parts.join(" ") : "Накапливаю данные для анализа.";
 
-        
-          // Per-strategy breakdown
-          const stratLines: string[] = [``, `📋 *Стратегии — состояние:*`];
-          const stratEmoji: Record<string, string> = {
-            TREND: "📈", BREAKOUT: "🚀", VOLUME_IMPULSE: "⚡", MEAN_REVERSION: "↩️"
-          };
-          const stratLabel: Record<string, string> = {
-            TREND: "Тренд", BREAKOUT: "Пробой", VOLUME_IMPULSE: "Импульс", MEAN_REVERSION: "Возврат"
-          };
-          for (const s of (statuses as any[])) {
-            const icon = stratEmoji[s.strategy] ?? "▪️";
-            const name = stratLabel[s.strategy] ?? s.strategy;
-            const statusMark = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
-            const wr   = s.trades > 0 ? (s.winRate * 100).toFixed(0) + "%" : "—";
-            const pf   = s.trades > 0 ? (s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2)) : "—";
-            const wPct = Math.round((s.weight ?? 1) * 100);
-            const trust = s.trades >= 5 ? `${s.trustScore}/100` : `boot(${s.trades})`;
-            stratLines.push(`${statusMark}${icon} *${name}*  вес ${wPct}% | Trust ${trust}`);
-            stratLines.push(`   WR ${wr} | PF ${pf} | сделок ${s.trades}`);
-          }
-          lines.push(...stratLines);
+        const now = new Date();
+        const dateStr = now.toLocaleString("ru-RU", {
+          day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+          timeZone: "Asia/Yekaterinburg",
+        });
 
-  if (readiness) {
-          const ri = readiness.percent;
-          const riIcon = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
-          lines.push(`${riIcon} Готовность: *${ri}/100*`);
+        return [
+          `📊 *Обзор* · ${dateStr}`,
+          "",
+          "*Счёт*",
+          `$${account.balance.toFixed(2)}  ${ret >= 0 ? "📈" : "📉"} ${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%  ·  DD ${dd.toFixed(1)}%`,
+          `Сегодня: ${pnlD >= 0 ? "+" : ""}$${pnlD.toFixed(2)}  ·  Неделя: ${pnlW >= 0 ? "+" : ""}$${pnlW.toFixed(2)}`,
+          "",
+          `*Позиции (${account.positions.length})*`,
+          ...posLines,
+          "",
+          `*Статистика*  ${trades.length} сделок`,
+          `WR ${wr.toFixed(1)}%  ·  PF ${pf >= 999 ? "∞" : pf.toFixed(2)}`,
+          "",
+          `*AI + Стратегии*  ${trendIcon} ${trendText}`,
+          stratRow,
+          `${riBar} Готовность: ${ri}/100`,
+          "",
+          `💬 _${analysisText}_`,
+        ].join("\n");
+      }
+
+      bot.action("menu_dashboard", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳");
+        try {
+          const text = await buildDashboardMessage(ctx.chat!.id);
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(text, {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+               Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+              [Markup.button.callback("◀️ Меню",         "menu_main")],
+            ]),
+          });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("⚠️ Ошибка загрузки обзора.", backMenu());
         }
+      });
 
-        const needMore = totalTrades < 50;
-        if (needMore) {
-          lines.push(``, `_💡 Нужно ≥50 сделок для уверенных выводов — ${50 - totalTrades} осталось_`);
+      // legacy alias
+      bot.action("menu_earnings", async (ctx) => {
+        await ctx.answerCbQuery();
+        const loading = await ctx.reply("⏳");
+        try {
+          const text = await buildDashboardMessage(ctx.chat!.id);
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply(text, {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+               Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+              [Markup.button.callback("◀️ Меню",         "menu_main")],
+            ]),
+          });
+        } catch {
+          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+          await ctx.reply("⚠️ Ошибка.", backMenu());
         }
+      });
 
+    // ── Обучение ───────────────────────────────────────────────────────────
+    // ── Обучение (redirect → dashboard) ────────────────────────────────────
+    bot.action("menu_learning", async (ctx) => {
+      await ctx.answerCbQuery();
+      const loading = await ctx.reply("⏳");
+      try {
+        const text = await buildDashboardMessage(ctx.chat!.id);
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        await ctx.reply(lines.join("\n"), {
+        await ctx.reply(text, {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Обновить", "menu_learning")],
-            [Markup.button.callback("◀️ Меню", "menu_main")],
+            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]),
         });
       } catch {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        await ctx.reply("⏳ Данных ещё мало — бот только начал обучение.", backMenu());
+        await ctx.reply("⚠️ Ошибка.", backMenu());
       }
     });
 
@@ -465,27 +491,26 @@ import { runDataCleanup } from "./data-cleanup.js";
     });
 
     // ── Анализ (редирект на обучение) ──────────────────────────────────────
+    // ── AI Анализ (redirect → dashboard) ──────────────────────────────────
     bot.action("menu_analysis", async (ctx) => {
-        await ctx.answerCbQuery();
-        const loading = await ctx.reply("⏳ Генерирую AI анализ...");
-        try {
-          const chatId = ctx.chat!.id;
-          const chunks = await generateFullReport(chatId);
-          // Extract the chunk(s) containing the AI analysis block
-          const aiChunks = chunks.filter(ch =>
-            ch.includes("AI-АНАЛИЗ") ||
-            ch.includes("Три главных рекомендации")
-          );
-          const toSend = aiChunks.length > 0 ? aiChunks : [chunks[chunks.length - 1]];
-          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-          for (const chunk of toSend) {
-            await ctx.reply(chunk, { ...backMenu() });
-          }
-        } catch {
-          await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-          await ctx.reply("⚠️ Не удалось сформировать анализ.", backMenu());
-        }
-      });
+      await ctx.answerCbQuery();
+      const loading = await ctx.reply("⏳");
+      try {
+        const text = await buildDashboardMessage(ctx.chat!.id);
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply(text, {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",         "menu_main")],
+          ]),
+        });
+      } catch {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("⚠️ Ошибка.", backMenu());
+      }
+    });
 
     
       bot.action("menu_aireport", async (ctx) => {
@@ -1105,22 +1130,21 @@ import { runDataCleanup } from "./data-cleanup.js";
 
   // ── /summary ─────────────────────────────────────────────────────────────
     bot.command("summary", async (ctx) => {
-      const loading = await ctx.reply("⏳ Генерирую AI анализ...");
+      const loading = await ctx.reply("⏳");
       try {
-        const chatId = ctx.chat.id;
-        const chunks = await generateFullReport(chatId);
-        const aiChunks = chunks.filter(ch =>
-          ch.includes("AI-АНАЛИЗ") ||
-          ch.includes("Три главных рекомендации")
-        );
-        const toSend = aiChunks.length > 0 ? aiChunks : [chunks[chunks.length - 1]];
+        const text = await buildDashboardMessage(ctx.chat.id);
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
-        for (const chunk of toSend) {
-          await ctx.reply(chunk, { ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]) });
-        }
-      } catch (err) {
+        await ctx.reply(text, {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",         "menu_main")],
+          ]),
+        });
+      } catch {
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
-        await ctx.reply("⚠️ Не удалось сформировать анализ.");
+        await ctx.reply("⚠️ Ошибка загрузки обзора.");
       }
     });
       bot.action("menu_aireport", async (ctx) => {
@@ -1739,15 +1763,6 @@ import { runDataCleanup } from "./data-cleanup.js";
   });
 
   // ── /summary ─────────────────────────────────────────────────────────────
-    bot.command("summary", async (ctx) => {
-      const chatId = ctx.chat.id;
-      try {
-        const { summary } = await generateDailyReport(chatId);
-        await ctx.reply(summary, { parse_mode: "Markdown" });
-      } catch (err) {
-        await ctx.reply("🤖 Не удалось сформировать анализ.");
-      }
-    });
 
     // ── /learning ────────────────────────────────────────────────────────────
     bot.command("learning", async (ctx) => {
