@@ -1089,7 +1089,105 @@ import { runDataCleanup } from "./data-cleanup.js";
     try { await ctx.telegram.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
   });
 
-  bot.on("text", async (ctx) => {
+  // ── /summary ─────────────────────────────────────────────────────────────
+    bot.command("summary", async (ctx) => {
+      const chatId = ctx.chat.id;
+      try {
+        const { summary } = await generateDailyReport(chatId);
+        await ctx.reply(summary, { parse_mode: "Markdown" });
+      } catch (err) {
+        await ctx.reply("🤖 Не удалось сформировать анализ.");
+      }
+    });
+
+    // ── /learning ────────────────────────────────────────────────────────────
+    bot.command("learning", async (ctx) => {
+      const loading = await ctx.reply("⏳ Загружаю...");
+      try {
+        const chatId = ctx.chat.id;
+        const [statuses, health, readiness] = await Promise.all([
+          getAllStrategyStatuses().catch(() => []),
+          checkLearningHealth(chatId).catch(() => null),
+          calcReadinessIndex(chatId).catch(() => null),
+        ]);
+        const totalTrades = statuses.reduce((a: number, s: any) => a + (s.trades ?? 0), 0);
+        const best = statuses.sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0))[0];
+        const levelIcons: Record<string,string>  = { excellent:"🟢", good:"🟢", watch:"🟡", warning:"🟠", critical:"🔴" };
+        const levelLabels: Record<string,string> = { excellent:"Отлично", good:"Хорошо", watch:"Наблюдение", warning:"Внимание", critical:"Критично" };
+        const healthIcon = health ? (levelIcons[health.overall] ?? "⚪") : "⚪";
+        const healthText = health ? (levelLabels[health.overall] ?? health.overall) : "Нет данных";
+        const trendIcon  = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "→";
+        const trendText  = health?.trend === "improving" ? "Улучшается" : health?.trend === "degrading" ? "Ухудшается" : "Стабильно";
+        const lines = [
+          `🧠 *Обучение AI*`, ``,
+          `📊 Сделок накоплено: *${totalTrades}*`,
+          `${trendIcon} Тренд: *${trendText}*`,
+          `${healthIcon} Состояние: *${healthText}*`,
+          ``,
+        ];
+        if (best && best.trades > 0) {
+          const wr = (best.winRate * 100).toFixed(1);
+          const pf = best.profitFactor >= 99 ? "∞" : best.profitFactor.toFixed(2);
+          lines.push(`🏆 Лучшая стратегия: *${best.strategy}*`, `   WR ${wr}% | PF ${pf} | Trust ${best.trustScore}/100`, ``);
+        } else {
+          lines.push(`🏆 Лучшая стратегия: _накапливаю данные..._`, ``);
+        }
+        const stratLines: string[] = [``, `📋 *Стратегии — состояние:*`];
+        const stratEmoji: Record<string,string> = { TREND:"📈", BREAKOUT:"🚀", VOLUME_IMPULSE:"⚡", MEAN_REVERSION:"↩️" };
+        const stratLabel: Record<string,string> = { TREND:"Тренд", BREAKOUT:"Пробой", VOLUME_IMPULSE:"Импульс", MEAN_REVERSION:"Возврат" };
+        for (const s of (statuses as any[])) {
+          const icon = stratEmoji[s.strategy] ?? "▪️";
+          const name = stratLabel[s.strategy] ?? s.strategy;
+          const statusMark = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
+          const wr   = s.trades > 0 ? (s.winRate * 100).toFixed(0) + "%" : "—";
+          const pf   = s.trades > 0 ? (s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2)) : "—";
+          const wPct = Math.round((s.weight ?? 1) * 100);
+          const trust = s.trades >= 5 ? `${s.trustScore}/100` : `boot(${s.trades})`;
+          stratLines.push(`${statusMark}${icon} *${name}*  вес ${wPct}% | Trust ${trust}`);
+          stratLines.push(`   WR ${wr} | PF ${pf} | сделок ${s.trades}`);
+        }
+        lines.push(...stratLines);
+        if (readiness) {
+          const ri = readiness.percent;
+          const riIcon = ri >= 70 ? "🟢" : ri >= 40 ? "🟡" : "🔴";
+          lines.push(`${riIcon} Готовность: *${ri}/100*`);
+        }
+        if (totalTrades < 50) {
+          lines.push(``, `_💡 Нужно ≥50 сделок для уверенных выводов — ${50 - totalTrades} осталось_`);
+        }
+        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
+        await ctx.reply(lines.join("\n"), {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]),
+        });
+      } catch {
+        await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
+        await ctx.reply("⏳ Данных ещё мало — бот только начал обучение.",
+          Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]));
+      }
+    });
+
+    // ── /settings ───────────────────────────────────────────────────────────
+    bot.command("settings", async (ctx) => {
+      const chatId = ctx.chat.id;
+      const s    = await loadSettings(chatId);
+      const subs = listSubscriptions(chatId);
+      await ctx.reply(
+        `⚙️ *Настройки*
+
+` +
+        `🤖 Авто-сделки: *${s.autoPaperTrade ? "🤖 Авто-сделки ✅" : "🤖 авто-сделки ❌"}*\n` +
+        `⚖️ Риск/сделку: *${s.riskPercent}%*\n` +
+        `📡 Подписок: *${subs.length}*`,
+        { parse_mode: "Markdown", ...Markup.inlineKeyboard([
+          [Markup.button.callback(s.autoPaperTrade ? "🤖 Авто-сделки ✅" : "🤖 Авто-сделки ❌", "toggle_autopaper")],
+          [Markup.button.callback("📡 Подписки", "menu_subs"), Markup.button.callback("🗑 Отписаться от всех", "unsub_all")],
+          [Markup.button.callback("◀️ Меню", "menu_main")],
+        ]) }
+      );
+    });
+
+      bot.on("text", async (ctx) => {
       const text = ctx.message.text.trim();
       if (text.startsWith("/signal ")) {
         const parts = text.split(" ");
@@ -1108,15 +1206,11 @@ import { runDataCleanup } from "./data-cleanup.js";
     bot.launch().catch(err => logger.error({ err }, "Bot launch error"));
     // Register commands so Telegram shows the ☰ Menu button automatically
     bot.telegram.setMyCommands([
-      { command: "menu",        description: "📋 Главное меню" },
-      { command: "start",       description: "🚀 Запустить / перезапустить бота" },
-      { command: "status",      description: "📊 Статус бота и позиций" },
-      { command: "report",      description: "📄 Полный HTML-отчёт" },
-      { command: "scan",        description: "🔍 Ручное сканирование сигналов" },
-      { command: "listings",    description: "🆕 Новые листинги монет" },
-      { command: "whynotrade",  description: "❓ Почему нет сделок" },
-      { command: "adapt",       description: "🧠 Запустить цикл адаптации" },
-      { command: "cleandata",   description: "🗑 Очистка устаревших данных" },
+      { command: "report",     description: "📋 Полный отчёт" },
+      { command: "summary",    description: "🤖 AI анализ текущего положения" },
+      { command: "learning",   description: "🧠 Состояние стратегий" },
+      { command: "whynotrade", description: "🤔 Почему нет сделок" },
+      { command: "settings",   description: "⚙️ Настройки" },
     ]).catch(err => logger.warn({ err }, "setMyCommands failed"));
     logger.info("Telegram bot started");
   }
