@@ -232,12 +232,15 @@ import { runDataCleanup } from "./data-cleanup.js";
     // ── Заработок ──────────────────────────────────────────────────────────
     // ── Обзор (Dashboard) ────────────────────────────────────────────────────
       async function buildDashboardMessage(chatId: number): Promise<string> {
-        const [account, statuses, health, readiness] = await Promise.all([
+        const [account, statuses, health, readiness, dirStatResult] = await Promise.all([
           loadPaperAccount(chatId),
           getAllStrategyStatuses().catch(() => [] as any[]),
           checkLearningHealth(chatId).catch(() => null),
           calcReadinessIndex(chatId).catch(() => null),
+          pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl
+            FROM strategy_direction_stats WHERE trades >= 5`).catch(() => ({ rows: [] })),
         ]);
+        const dirStatRows = ((dirStatResult as any).rows ?? []) as Record<string,unknown>[];
 
         const trades = account.closedTrades;
         const wins   = trades.filter((t: any) => t.pnl > 0);
@@ -289,20 +292,29 @@ import { runDataCleanup } from "./data-cleanup.js";
           .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
         const best = sortedStrats[0];
         const stratLines: string[] = sortedStrats.length > 0
-          ? sortedStrats.map((s: any) => {
+          ? sortedStrats.flatMap((s: any) => {
               const icon   = stratEmoji[s.strategy] ?? "▪️";
               const name   = stratShort[s.strategy] ?? s.strategy;
               const status = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
-              if (s.trades < 3) return `${status}${icon} ${name} — _нет данных (${s.trades} сд.)_`;
+              if (s.trades < 3) return [`${status}${icon} ${name} — _нет данных (${s.trades} сд.)_`];
               const wr  = (s.winRate * 100).toFixed(0);
               const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
               const tr  = s.trustScore ?? 0;
-              return `${status}${icon} *${name}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`;
+              const sl: string[] = [`${status}${icon} *${name}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
+              if (s.strategy === "TREND") {
+                for (const dir of ["LONG", "SHORT"]) {
+                  const dr = dirStatRows.find(r => r["strategy"] === "TREND" && r["direction"] === dir);
+                  if (!dr) continue;
+                  const dt = Number(dr["trades"]), dw = Number(dr["wins"]);
+                  const dwp = Number(dr["win_pnl"]), dlp = Number(dr["loss_pnl"]);
+                  const dwr = dt > 0 ? (dw / dt * 100).toFixed(0) : "—";
+                  const dpf = dlp > 0 ? (dwp / dlp).toFixed(2) : dwp > 0 ? "∞" : "—";
+                  sl.push(`  ↳ ${dir === "LONG" ? "⬆️ Лонг" : "⬇️ Шорт"}  WR ${dwr}% · PF ${dpf} · n=${dt}`);
+                }
+              }
+              return sl;
             })
           : ["_нет данных о стратегиях_"];
-
-        // Health & readiness
-        const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
         const trendText = health?.trend === "improving" ? "Улучшается"
           : health?.trend === "degrading" ? "Ухудшается" : "Стабильно";
         const ri = readiness?.percent ?? 0;
@@ -1877,7 +1889,6 @@ import { runDataCleanup } from "./data-cleanup.js";
     bot.telegram.setMyCommands([
       { command: "report",     description: "📋 Полный отчёт" },
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
-      { command: "learning",   description: "🧠 Состояние стратегий" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },
     ]).catch(err => logger.warn({ err }, "setMyCommands failed"));
