@@ -458,6 +458,11 @@ const MIGRATIONS = [
     total_pnl  REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy, direction)
   )`,
+  // ── ТЗ: раздельные веса/trust/карантин по направлению (LONG/SHORT) ────────
+  `ALTER TABLE strategy_direction_stats
+    ADD COLUMN IF NOT EXISTS weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    ADD COLUMN IF NOT EXISTS quarantine BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS trust_score INTEGER NOT NULL DEFAULT 0`,
 ];
 
 
