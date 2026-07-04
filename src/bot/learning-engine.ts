@@ -600,6 +600,45 @@ function pfToTargetWeight(pf: number): number {
     );
   }
 
+  // ── ТЗ: адаптация весов/карантина по направлению (LONG/SHORT) ──────────
+  // Работает поверх strategy-level весов как дополнительный слой (не замена).
+  const {rows:dirAdaptRows} = await pool.query(
+    "SELECT strategy,direction,trades,wins,win_pnl,loss_pnl,weight FROM strategy_direction_stats WHERE trades >= 30"
+  );
+  for (const row of dirAdaptRows as Record<string,unknown>[]) {
+    const strat = row["strategy"] as string;
+    const direction = row["direction"] as string;
+    const dTrades = Number(row["trades"]);
+    const dWins = Number(row["wins"]);
+    const winPnl = Number(row["win_pnl"]);
+    const lossPnl = Number(row["loss_pnl"]);
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    const wr = dTrades > 0 ? dWins / dTrades : 0;
+
+    let newWeight = Number(row["weight"]);
+    let quarantine = false;
+
+    if (pf < 0.5 && dTrades >= 30) {
+      quarantine = true;
+      newWeight = Math.max(0.1, newWeight * 0.7);
+    } else if (pf < 0.8) {
+      newWeight = Math.max(0.2, newWeight * 0.9);
+    } else if (pf > 1.5) {
+      newWeight = Math.min(1.5, newWeight * 1.1);
+    }
+
+    if (quarantine || Math.abs(newWeight - Number(row["weight"])) > 0.005) {
+      changes.push(`${quarantine?"⚠️":newWeight>Number(row["weight"])?"📈":"📉"} ${strat} ${direction}: вес ${(Number(row["weight"])*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${dTrades})${quarantine?" — карантин по направлению":""}`);
+    }
+
+    await pool.query(
+      `UPDATE strategy_direction_stats
+       SET weight=$3, quarantine=$4, trust_score=$5
+       WHERE strategy=$1 AND direction=$2`,
+      [strat, direction, newWeight, quarantine, Math.round(wr * 100)]
+    );
+  }
+
   return changes.length > 0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";
 }
 
