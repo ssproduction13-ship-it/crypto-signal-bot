@@ -22,7 +22,20 @@ import { pool } from "../lib/db.js";
     } catch(err) { logger.debug({err},"recordTimeTrade failed"); }
   }
 
+  // Принудительная блокировка ночных часов 00:00-05:59 UTC.
+  // Найдено AI Deep Analysis: PF 0.19-0.70 в этом окне, убыточная серия 03-05 июля 2026
+  // спровоцировала карантин стратегий через rolling adaptation window. Держать до
+  // накопления новой статистики и явного решения снять ограничение.
+  const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3, 4, 5]);
+
   export async function isTimeRestricted(hour: number, dow: number): Promise<{restricted:boolean;reason:string;sizeMultiplier:number}> {
+    if (FORCED_BLOCKED_HOURS.has(hour)) {
+      return {
+        restricted: true,
+        reason: `Принудительная блокировка: ${String(hour).padStart(2,"0")}:00 UTC (ночной шок 03-05.07, PF 0.19-0.70)`,
+        sizeMultiplier: 0,
+      };
+    }
     const {rows} = await pool.query(
       "SELECT trades,wins,win_pnl,loss_pnl FROM time_analytics WHERE hour_of_day=$1 AND day_of_week=$2",
       [hour,dow]
