@@ -258,11 +258,11 @@ import { pool } from "../lib/db.js";
     await pool.query("DELETE FROM paper_positions WHERE chat_id=$1",[chatId]);
     for (const pos of a.positions) {
       await pool.query(
-        `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,risk_percent)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
         [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
          pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
-         pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null]
+         pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.riskPercent??null]
       );
     }
     for (const t of a.closedTrades) {
