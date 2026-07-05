@@ -436,7 +436,10 @@ function pfToTargetWeight(pf: number): number {
 // ── Sliding window PF for Adaptation Engine ────────────────────────────────
   // Replaces lifetime cumulative strategy_stats to avoid pollution from legacy
   // fallback "TREND" trades recorded before the C1 fix.
-  const ADAPTATION_WINDOW = 150;
+  // Temporarily reduced 150 → 75 (05.07.2026): 150-trade window still included
+  // the full 03-05.07 night-shock losing streak, distorting current PF read.
+  // Revisit once the shock period has rolled fully out of a 150-trade window.
+  const ADAPTATION_WINDOW = 75;
 
   async function getRecentStrategyStats(strategy: StrategyName): Promise<{
     trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
