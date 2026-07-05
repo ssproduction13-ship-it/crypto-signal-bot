@@ -551,7 +551,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
   }
 
   // ── Execute trade candidate: open position + notification ─────────────────────────
-  async function executeTradeCandidate(candidate: TradeCandidate): Promise<void> {
+  async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
     const res = await openPaperPosition(
@@ -631,7 +631,9 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         `TP1: \`${sig.risk.tp1.toPrecision(6)}\` | TP2: \`${sig.risk.tp2.toPrecision(6)}\`` +
         (rankLines ? `\n\n📊 *Рейтинг стратегий:*\n${rankLines}` : "")
       );
+      return true;
     }
+    return false;
   }
 
   // ── WebSocket wrapper: evaluate → concentration check → execute ─────────────────
@@ -691,12 +693,25 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
       { count: candidates.length, ranked: candidates.map(c => `${c.sub.symbol}:${c.stratFScore.toFixed(1)}`).join(", ") },
       "Batch scan: candidates sorted by FinalScore"
     );
+    // ── ТЗ: race condition fix — локальный in-memory счётчик позиций на время batch-цикла,
+    // чтобы не терять только что открытые позиции из-за задержки записи в БД ──────
+    const localPositionsByChat = new Map<number, import("./storage.js").PaperPosition[]>();
+    async function getLocalPositions(chatId: number): Promise<import("./storage.js").PaperPosition[]> {
+      let list = localPositionsByChat.get(chatId);
+      if (!list) {
+        const account = await loadPaperAccount(chatId);
+        list = [...account.positions];
+        localPositionsByChat.set(chatId, list);
+      }
+      return list;
+    }
+
     for (const candidate of candidates) {
-      const account = await loadPaperAccount(candidate.sub.chatId);
+      const localPositions = await getLocalPositions(candidate.sub.chatId);
       const concCheck = checkConcentrationLimits(
         candidate.sub.symbol, candidate.strat,
         candidate.sig.score.direction as "LONG"|"SHORT",
-        candidate.regime, candidate.effectiveRiskPct, account.positions
+        candidate.regime, candidate.effectiveRiskPct, localPositions
       );
       if (concCheck.blocked) {
         logger.debug({ symbol: candidate.sub.symbol, reason: concCheck.reason }, "Concentration Limit: REJECT (batch)");
@@ -718,9 +733,31 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
         verdict: "OPEN",
         score: candidate.sig.score.total, confidence: candidate.sig.confidence.score,
       }).catch(() => {});
-      await executeTradeCandidate(candidate).catch(err => {
+      const opened = await executeTradeCandidate(candidate).catch(err => {
         logger.error({ err, symbol: candidate.sub.symbol }, "executeTradeCandidate error in batch");
+        return false;
       });
+      // После успешного открытия — сразу отразить в локальном счётчике,
+      // чтобы следующие кандидаты в этом же цикле видели актуальный риск
+      if (opened) {
+        localPositions.push({
+          id: `local-${candidate.sub.symbol}-${Date.now()}`,
+          chatId: candidate.sub.chatId,
+          symbol: candidate.sub.symbol,
+          direction: candidate.sig.score.direction as "LONG"|"SHORT",
+          entryPrice: candidate.sig.risk.entryPrice,
+          size: 0,
+          stopLoss: candidate.sig.risk.stopLoss,
+          tp1: candidate.sig.risk.tp1,
+          tp2: candidate.sig.risk.tp2,
+          openedAt: new Date().toISOString(),
+          breakevenMoved: false,
+          trailAtr: null,
+          strategy: candidate.strat,
+          marketRegime: candidate.regime,
+          riskPercent: candidate.effectiveRiskPct,
+        });
+      }
     }
   }
 
