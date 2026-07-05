@@ -43,7 +43,7 @@ import { generateDailyReport } from "./report-generator.js";
 import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
 import { getListingsReport } from "./listing-watcher.js";
 import { runDataCleanup } from "./data-cleanup.js";
-import { generateDeepAnalysis } from "./deep-analysis.js";
+import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1104,10 +1104,12 @@ import { generateDeepAnalysis } from "./deep-analysis.js";
     bot.command("deepanalysis", async (ctx) => {
       const loading = await ctx.reply("🧠 Выполняю AI Deep Analysis (Root Cause, Feature Discovery, Filter Trust...)...");
       try {
-        const chunks = await generateDeepAnalysis();
+        const html = await generateDeepAnalysisHtml();
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        for (const chunk of chunks) await ctx.reply(chunk, { parse_mode: "Markdown" });
-        await ctx.reply("Готово ✅", mainMenu());
+        await ctx.replyWithDocument(
+          { source: Buffer.from(html, "utf-8"), filename: `deep-analysis-${new Date().toISOString().slice(0, 10)}.html` },
+          { caption: "🧠 AI Deep Analysis — открой файл в браузере", ...mainMenu() }
+        );
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("❌ Ошибка AI Deep Analysis: " + String(err));
@@ -1118,10 +1120,12 @@ import { generateDeepAnalysis } from "./deep-analysis.js";
       await ctx.answerCbQuery();
       const loading = await ctx.reply("🧠 Выполняю AI Deep Analysis...");
       try {
-        const chunks = await generateDeepAnalysis();
+        const html = await generateDeepAnalysisHtml();
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        for (const chunk of chunks) await ctx.reply(chunk, { parse_mode: "Markdown" });
-        await ctx.reply("Готово ✅", mainMenu());
+        await ctx.replyWithDocument(
+          { source: Buffer.from(html, "utf-8"), filename: `deep-analysis-${new Date().toISOString().slice(0, 10)}.html` },
+          { caption: "🧠 AI Deep Analysis — открой файл в браузере", ...mainMenu() }
+        );
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("❌ Ошибка AI Deep Analysis: " + String(err));

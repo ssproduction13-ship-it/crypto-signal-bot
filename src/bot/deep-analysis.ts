@@ -529,3 +529,79 @@ export async function maybeRunAutoDeepAnalysis(): Promise<string[] | null> {
   );
   return report;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HTML-отчёт — тот же набор блоков, собранный в единый HTML-документ
+// (удобнее читать целиком, чем постранично в Telegram). Ничего не меняет,
+// только форматирует уже посчитанные данные.
+// ═══════════════════════════════════════════════════════════════════════════
+function mdToHtml(md: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc(md)
+    .replace(/\*(.+?)\*/g, "<strong>$1</strong>")
+    .replace(/_(.+?)_/g, "<em>$1</em>")
+    .split("\n").join("<br>\n");
+}
+
+export async function generateDeepAnalysisHtml(): Promise<string> {
+  const blockDefs: Array<{ title: string; run: () => Promise<string> }> = [
+    { title: "Root Cause Analysis", run: blockRootCause },
+    { title: "Feature Discovery", run: blockFeatureDiscovery },
+    { title: "Filter Trust", run: blockFilterTrust },
+    { title: "Strategy Diagnostics", run: blockStrategyDiagnostics },
+    { title: "Coin Diagnostics", run: blockCoinDiagnostics },
+    { title: "Trade Management Analysis", run: blockTradeManagement },
+    { title: "Equity Analysis", run: blockEquityAnalysis },
+    { title: "Recommendations", run: blockRecommendations },
+  ];
+
+  const results = await Promise.all(blockDefs.map(b => b.run())).catch(err => {
+    logger.error({ err }, "generateDeepAnalysisHtml failed");
+    throw err;
+  });
+
+  const generatedAt = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+
+  const sections = blockDefs.map((b, i) => {
+    const body = mdToHtml(results[i]).replace(new RegExp(`^<strong>Блок \\d+ — ${b.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<\\/strong><br>\\s*<br>\\s*`), "");
+    return `
+      <section class="block">
+        <h2><span class="badge">${i + 1}</span> ${b.title}</h2>
+        <div class="content">${body}</div>
+      </section>`;
+  }).join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>AI Deep Analysis — ${generatedAt}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0f1117; color:#e6e8ee; margin:0; padding:0 0 60px; }
+  header { background:linear-gradient(135deg,#1a1d29,#0f1117); padding:32px 24px; border-bottom:1px solid #2a2e3d; }
+  header h1 { margin:0 0 6px; font-size:24px; }
+  header p { margin:0; color:#9aa0b4; font-size:13px; }
+  main { max-width:900px; margin:24px auto; padding:0 20px; }
+  .block { background:#171a24; border:1px solid #262a38; border-radius:12px; padding:20px 24px; margin-bottom:20px; }
+  .block h2 { margin:0 0 14px; font-size:17px; display:flex; align-items:center; gap:10px; }
+  .badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; background:#3a5cf0; color:#fff; font-size:13px; font-weight:600; }
+  .content { font-size:14px; line-height:1.65; color:#c9cddb; }
+  .content strong { color:#fff; }
+  .warn { color:#f0a83a; }
+  footer { text-align:center; color:#5c6178; font-size:12px; margin-top:30px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🧠 AI Deep Analysis</h1>
+    <p>Отдельный аналитический модуль — не влияет на торговлю, ничего не меняет автоматически. Сформирован: ${generatedAt}</p>
+  </header>
+  <main>
+    ${sections}
+  </main>
+  <footer>crypto-signal-bot · AI Deep Analysis · read-only отчёт</footer>
+</body>
+</html>`;
+}

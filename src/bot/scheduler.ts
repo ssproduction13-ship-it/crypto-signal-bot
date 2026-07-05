@@ -35,7 +35,7 @@ import { generateDailyReport } from "./report-generator.js";
   import { checkNewListings } from "./listing-watcher.js";
 import { checkMTFAlignment } from "./mtf-filter.js";
 import { checkCorrelationRisk } from "./correlation-risk.js";
-import { maybeRunAutoDeepAnalysis } from "./deep-analysis.js";
+import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 10;
@@ -104,6 +104,12 @@ import { maybeRunAutoDeepAnalysis } from "./deep-analysis.js";
   async function safeSend(chatId: number, text: string) {
     try { await _bot?.telegram.sendMessage(chatId, text, { parse_mode: "Markdown" }); }
     catch (err) { logger.error({ err, chatId }, "safeSend failed"); }
+  }
+
+  async function safeSendHtmlDocument(chatId: number, html: string, filename: string, caption: string) {
+    try {
+      await _bot?.telegram.sendDocument(chatId, { source: Buffer.from(html, "utf-8"), filename }, { caption });
+    } catch (err) { logger.error({ err, chatId }, "safeSendHtmlDocument failed"); }
   }
 
   // ── Subscriptions ─────────────────────────────────────────────────────────
@@ -969,8 +975,10 @@ import { maybeRunAutoDeepAnalysis } from "./deep-analysis.js";
       try {
         const chunks = await maybeRunAutoDeepAnalysis();
         if (!chunks) return;
+        const html = await generateDeepAnalysisHtml();
+        const filename = `deep-analysis-${new Date().toISOString().slice(0, 10)}.html`;
         for (const chatId of chatIds) {
-          for (const chunk of chunks) await safeSend(chatId, chunk);
+          await safeSendHtmlDocument(chatId, html, filename, "🧠 AI Deep Analysis (авто) — открой файл в браузере");
         }
       } catch (err) { logger.warn({ err }, "Auto deep analysis error"); }
     });
