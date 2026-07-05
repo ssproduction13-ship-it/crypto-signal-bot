@@ -198,7 +198,7 @@ async function blockFeatureDiscovery(): Promise<string> {
 async function blockFilterTrust(): Promise<string> {
   const { rows } = await pool.query(
     `SELECT steps FROM decision_log
-     WHERE verdict='REJECT' AND timestamp > NOW() - INTERVAL '30 days'`
+     WHERE verdict='REJECT' AND timestamp::timestamptz > NOW() - INTERVAL '30 days'`
   );
   const traces = rows as Row[];
   if (!traces.length) {
@@ -221,7 +221,7 @@ async function blockFilterTrust(): Promise<string> {
             SUM(CASE WHEN pnl_percent<0 THEN ABS(pnl_percent) ELSE 0 END) AS loss_pnl,
             COUNT(*) AS n
      FROM shadow_closed_trades
-     WHERE is_direction_shadow = true AND closed_at > NOW() - INTERVAL '30 days'
+     WHERE is_direction_shadow = true AND closed_at::timestamptz > NOW() - INTERVAL '30 days'
      GROUP BY strategy, direction`
   );
   const shadowMap = new Map<string, { pf: number; n: number }>();
@@ -340,7 +340,7 @@ async function blockCoinDiagnostics(): Promise<string> {
 async function blockTradeManagement(): Promise<string> {
   const { rows } = await pool.query(
     `SELECT strategy, outcome, pnl_percent FROM paper_closed_trades
-     WHERE closed_at > NOW() - INTERVAL '60 days'`
+     WHERE closed_at::timestamptz > NOW() - INTERVAL '60 days'`
   );
   const trades = rows as Row[];
   if (trades.length < 20) return "*Блок 6 — Trade Management Analysis*\n\n⚠️ Недостаточно данных.";
