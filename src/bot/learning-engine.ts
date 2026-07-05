@@ -617,6 +617,12 @@ function pfToTargetWeight(pf: number): number {
       }
     }
 
+    // ── Минимальный вес — стратегия не может быть фактически отключена
+    // даже в период деградации, чтобы не терять данные для обучения
+    const MIN_STRATEGY_WEIGHT = 0.35;
+    const MAX_STRATEGY_WEIGHT = 1.50;
+    newW = Math.max(MIN_STRATEGY_WEIGHT, Math.min(MAX_STRATEGY_WEIGHT, newW));
+
     await pool.query(
       `UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,quarantine=$5,
        cycles_below_threshold=$6,trust_score=$7,updated_at=$8 WHERE strategy=$1`,
@@ -697,21 +703,42 @@ function pfToTargetWeight(pf: number): number {
         [strat, direction]
       );
 
-      if (shadowRows.length >= 20) {
+      const SHADOW_MIN_TRADES = 50; // было 20 — 20 сделок недостаточно в аномальный период
+      const SHADOW_MIN_PF = 0.85;   // было 0.8 — чуть строже
+
+      if (shadowRows.length >= SHADOW_MIN_TRADES) {
         const sPnls = (shadowRows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
         const sWinPnl = sPnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
         const sLossPnl = Math.abs(sPnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
         const sPF = sLossPnl > 0 ? sWinPnl / sLossPnl : sWinPnl > 0 ? 2.0 : 0;
 
-        if (sPF >= 0.8) {
+        if (sPF >= SHADOW_MIN_PF) {
           // Shadow PF восстановился — снять карантин с минимальным весом
           quarantine = false;
           newWeight = 0.3;
           quarantineSinceUpdate = null;
           changes.push(`🔄 ${strat} ${direction}: карантин снят по shadow (PF ${sPF.toFixed(2)}, n=${shadowRows.length}) → вес 30%`);
+
+          // Доп. проверка — shadow PF не должен кардинально расходиться
+          // с историческим реальным PF направления (аномалия ночного рынка)
+          const realRecent = await getRecentDirectionStats(strat, direction);
+          if (realRecent.trades >= 10 && sPF > realRecent.pf * 3) {
+            quarantine = true;
+            newWeight = 0.1;
+            quarantineSinceUpdate = new Date().toISOString();
+            changes.push(`⚠️ ${strat} ${direction}: shadow PF ${sPF.toFixed(2)} аномально выше реального ${realRecent.pf.toFixed(2)} — карантин продлён`);
+          }
         }
       }
     }
+
+    // ── Минимальный вес по направлению — не давать направлению уйти в 0
+    // даже под карантином, чтобы сохранить данные для обучения
+    const MIN_DIRECTION_WEIGHT = 0.20; // для карантинных направлений
+    newWeight = Math.max(
+      quarantine ? 0.10 : MIN_DIRECTION_WEIGHT,
+      Math.min(1.5, newWeight)
+    );
 
     if (quarantine || Math.abs(newWeight - Number(row["weight"])) > 0.005) {
       changes.push(
