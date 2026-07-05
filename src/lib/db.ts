@@ -311,6 +311,13 @@ const MIGRATIONS = [
     message               TEXT NOT NULL DEFAULT '',
     detected_at           TEXT NOT NULL
   )`,
+  // ── AI Deep Analysis: отдельный аналитический модуль (не влияет на торговлю) ──
+  `CREATE TABLE IF NOT EXISTS deep_analysis_state (
+    id                  INTEGER PRIMARY KEY DEFAULT 1,
+    last_run_at         TIMESTAMPTZ,
+    trades_at_last_run  INTEGER NOT NULL DEFAULT 0
+  )`,
+  `INSERT INTO deep_analysis_state(id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
   `CREATE TABLE IF NOT EXISTS health_monitor_log (
     id             SERIAL PRIMARY KEY,
     overall_status TEXT NOT NULL DEFAULT 'healthy',

@@ -43,6 +43,7 @@ import { generateDailyReport } from "./report-generator.js";
 import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
 import { getListingsReport } from "./listing-watcher.js";
 import { runDataCleanup } from "./data-cleanup.js";
+import { generateDeepAnalysis } from "./deep-analysis.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -89,6 +90,7 @@ import { runDataCleanup } from "./data-cleanup.js";
     return Markup.inlineKeyboard([
       [Markup.button.callback("📊 Обзор",        "menu_dashboard"),
        Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+      [Markup.button.callback("🧠 AI Deep Analysis", "menu_deep_analysis")],
       [Markup.button.callback("⚙️ Настройки",    "menu_settings")],
     ]);
   }
@@ -1094,6 +1096,35 @@ import { runDataCleanup } from "./data-cleanup.js";
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("❌ Ошибка адаптации: " + String(err));
+      }
+    });
+
+    // /deepanalysis — ручной запуск AI Deep Analysis (отдельный аналитический модуль,
+    // не влияет на торговлю, ничего не меняет автоматически)
+    bot.command("deepanalysis", async (ctx) => {
+      const loading = await ctx.reply("🧠 Выполняю AI Deep Analysis (Root Cause, Feature Discovery, Filter Trust...)...");
+      try {
+        const chunks = await generateDeepAnalysis();
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        for (const chunk of chunks) await ctx.reply(chunk, { parse_mode: "Markdown" });
+        await ctx.reply("Готово ✅", mainMenu());
+      } catch (err) {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("❌ Ошибка AI Deep Analysis: " + String(err));
+      }
+    });
+
+    bot.action("menu_deep_analysis", async (ctx) => {
+      await ctx.answerCbQuery();
+      const loading = await ctx.reply("🧠 Выполняю AI Deep Analysis...");
+      try {
+        const chunks = await generateDeepAnalysis();
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        for (const chunk of chunks) await ctx.reply(chunk, { parse_mode: "Markdown" });
+        await ctx.reply("Готово ✅", mainMenu());
+      } catch (err) {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+        await ctx.reply("❌ Ошибка AI Deep Analysis: " + String(err));
       }
     });
 

@@ -35,6 +35,7 @@ import { generateDailyReport } from "./report-generator.js";
   import { checkNewListings } from "./listing-watcher.js";
 import { checkMTFAlignment } from "./mtf-filter.js";
 import { checkCorrelationRisk } from "./correlation-risk.js";
+import { maybeRunAutoDeepAnalysis } from "./deep-analysis.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 10;
@@ -959,6 +960,19 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
           await evaluateCooldown(chatId);
         }
       } catch (err) { logger.warn({ err }, "Health monitor silent collection error"); }
+    });
+
+    // AI Deep Analysis — read-only аналитический модуль, ничего не меняет автоматически.
+    // Проверяем раз в час, сам модуль решает нужно ли фактически запускать анализ
+    // (не чаще одного раза в сутки, см. deep_analysis_state в БД).
+    cron.schedule("0 * * * *", async () => {
+      try {
+        const chunks = await maybeRunAutoDeepAnalysis();
+        if (!chunks) return;
+        for (const chatId of chatIds) {
+          for (const chunk of chunks) await safeSend(chatId, chunk);
+        }
+      } catch (err) { logger.warn({ err }, "Auto deep analysis error"); }
     });
 
     cron.schedule("0 18 * * *", async () => {
