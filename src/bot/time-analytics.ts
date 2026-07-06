@@ -22,17 +22,18 @@ import { pool } from "../lib/db.js";
     } catch(err) { logger.debug({err},"recordTimeTrade failed"); }
   }
 
-  // Принудительная блокировка ночных часов 00:00-05:59 UTC.
-  // Найдено AI Deep Analysis: PF 0.19-0.70 в этом окне, убыточная серия 03-05 июля 2026
-  // спровоцировала карантин стратегий через rolling adaptation window. Держать до
-  // накопления новой статистики и явного решения снять ограничение.
-  const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3, 4, 5]);
+  // Принудительная блокировка убыточных ночных часов 00:00-03:59 UTC.
+  // Сужено с исходного 00-06 (05.07.2026) после разбора полной истории:
+  // 04:00 и 05:00 UTC исторически прибыльны (PF 1.61 и 1.44), убыточны именно
+  // 00-03 UTC (PF 0.42-0.83 до шока, ещё ниже во время шока 03-05.07). Держать
+  // до накопления новой статистики и явного решения снять ограничение.
+  const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3]);
 
   export async function isTimeRestricted(hour: number, dow: number): Promise<{restricted:boolean;reason:string;sizeMultiplier:number}> {
     if (FORCED_BLOCKED_HOURS.has(hour)) {
       return {
         restricted: true,
-        reason: `Принудительная блокировка: ${String(hour).padStart(2,"0")}:00 UTC (ночной шок 03-05.07, PF 0.19-0.70)`,
+        reason: `Принудительная блокировка: ${String(hour).padStart(2,"0")}:00 UTC (устойчиво убыточный час, PF < 0.85)`,
         sizeMultiplier: 0,
       };
     }
