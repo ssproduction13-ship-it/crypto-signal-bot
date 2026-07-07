@@ -698,7 +698,7 @@ function pfToTargetWeight(pf: number): number {
     // ── ТЗ: выход из direction карантина — Механизм 2: shadow trades для заблокированных направлений ──
     if (quarantine) {
       const { rows: shadowRows } = await pool.query(
-        `SELECT pnl_percent, is_win FROM shadow_closed_trades
+        `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl, is_win FROM shadow_closed_trades
          WHERE strategy=$1 AND direction=$2
            AND is_direction_shadow = true
            AND closed_at::timestamptz > NOW() - INTERVAL '30 days'
@@ -710,7 +710,7 @@ function pfToTargetWeight(pf: number): number {
       const SHADOW_MIN_PF = 0.85;   // было 0.8 — чуть строже
 
       if (shadowRows.length >= SHADOW_MIN_TRADES) {
-        const sPnls = (shadowRows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
+        const sPnls = (shadowRows as Record<string,unknown>[]).map(r => Number(r["pnl"]));
         const sWinPnl = sPnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
         const sLossPnl = Math.abs(sPnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
         const sPF = sLossPnl > 0 ? sWinPnl / sLossPnl : sWinPnl > 0 ? 2.0 : 0;
