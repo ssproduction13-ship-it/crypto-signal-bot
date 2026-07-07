@@ -585,7 +585,7 @@ function pfToTargetWeight(pf: number): number {
 
     // ── 3. Quarantine mode: PF<0.8 and negative return ──────────────────
     if (!newDisabled) {
-      if (trades >= 30 && pf < 0.8 && isNegativeReturn && !cur.quarantine) {
+      if (trades >= 30 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
         newQuarantine = true;
         newW = Math.max(0.3, cur.weight - 0.10);
         newCycles = cur.cycles + 1;
@@ -609,7 +609,7 @@ function pfToTargetWeight(pf: number): number {
         // immediately reaching max weight (1.50) before the strategy is proven.
         const warmupCap = trades < 30 ? 0.80 : 1.50;
         newW = Math.max(0.10, Math.min(warmupCap, blendedW));
-        newCycles = pf < 0.8 ? cur.cycles + 1 : Math.max(0, cur.cycles - 1);
+        newCycles = pf < 0.5 ? cur.cycles + 1 : Math.max(0, cur.cycles - 1);
         if (Math.abs(newW - cur.weight) > 0.005) {
           const dir = newW > cur.weight ? "📈" : "📉";
           const arrow = newW > cur.weight ? "+" : "";
