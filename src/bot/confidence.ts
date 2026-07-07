@@ -46,10 +46,10 @@ import { pool } from "../lib/db.js";
     let recentPerformance = 55;
     try {
       const { rows } = await pool.query(
-        "SELECT pnl_percent FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50"
+        "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50"
       );
       if (rows.length >= 5) {
-        const pnls = rows.map(r => Number((r as Record<string,unknown>)["pnl_percent"]));
+        const pnls = rows.map(r => Number((r as Record<string,unknown>)["pnl"]));
         const wins = pnls.filter(p => p > 0).length;
         recentPerformance = Math.round((wins / pnls.length) * 100);
       }
