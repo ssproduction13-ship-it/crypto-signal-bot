@@ -222,24 +222,24 @@ export async function loadStrategyStats(): Promise<StrategyStats[]> {
 
 export function formatStrategyStats(stats: StrategyStats[]): string {
   if (!stats.length) return "📊 Статистика стратегий пока недоступна.";
-  const all: StrategyStats[] = (["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"] as StrategyName[]).map(name => {
-    const found = stats.find(s => s.strategy === name);
-    return found ?? { strategy: name, trades: 0, wins: 0, losses: 0, winRate: 0, profitFactor: 0, avgWin: 0, avgLoss: 0, maxDrawdown: 0, totalPnl: 0 };
-  });
+  // Show all strategies from DB dynamically — not just hardcoded 4
+  const all = stats.filter(s => (s.strategy as string) !== "UNKNOWN");
 
-  const names: Record<StrategyName, string> = {
+  const names: Record<string, string> = {
     TREND: "📈 Тренд",
     BREAKOUT: "🚀 Пробой",
     VOLUME_IMPULSE: "⚡ Объёмный импульс",
     MEAN_REVERSION: "↩️ Возврат к среднему",
     UNKNOWN: "❓ Нет стратегии",
   };
+  const getLabel = (key: string) => names[key] ?? `📊 ${key.replace(/_/g, " ")}`;
 
   const lines = all.map(s => {
-    if (s.trades === 0) return `${names[s.strategy]}: нет сделок`;
+    const label = getLabel(s.strategy as string);
+    if (s.trades === 0) return `${label}: нет сделок`;
     const pf = s.profitFactor === 999 ? "∞" : s.profitFactor.toFixed(2);
     const icon = s.profitFactor >= 1.3 ? "✅" : s.profitFactor >= 1 ? "⚠️" : "❌";
-    return `${icon} ${names[s.strategy]}\n   ${s.trades} сд | WR ${s.winRate.toFixed(1)}% | PF ${pf} | P&L ${s.totalPnl >= 0 ? "+" : ""}${s.totalPnl.toFixed(2)}%`;
+    return `${icon} ${label}\n   ${s.trades} сд | WR ${s.winRate.toFixed(1)}% | PF ${pf} | P&L ${s.totalPnl >= 0 ? "+" : ""}${s.totalPnl.toFixed(2)}%`;
   });
 
   return [`🏆 *Конкуренция стратегий*`, "", ...lines].join("\n");
