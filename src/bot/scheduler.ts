@@ -233,7 +233,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
     const debounceKey = `${sub.chatId}:${sub.symbol}`;
     const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
-    if (Date.now() - lastRun < DEBOUNCE_MS) return;
+    if (Date.now() - lastRun < DEBOUNCE_MS) return null;
     recentlyProcessed.set(debounceKey, Date.now());
 
     try {
@@ -264,7 +264,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         : null;
       if (!selectionResult) {
         logger.warn({ symbol: sub.symbol, reason: 'NO_STRATEGY_SELECTED' }, 'Decision Engine: NO TRADE — no valid strategy selected');
-        return;
+        return null;
       }
       const bestSig = selectionResult.selected;
       const strat = bestSig.strategy;
