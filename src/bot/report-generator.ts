@@ -73,7 +73,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     getDecisionStats(),
   ]);
 
-  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes] = await Promise.all([
+  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes, sdsRes] = await Promise.all([
     pool.query("SELECT * FROM risk_state WHERE id=1"),
     pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200"),
     pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5").catch(() => ({ rows: [] })),
@@ -82,6 +82,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day").catch(() => ({ rows: [] })),
     pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC").catch(() => ({ rows: [] })),
     pool.query("SELECT entity, strategy, direction, weight, quarantine, trust_score FROM strategy_entity_weights ORDER BY strategy, direction").catch(() => ({ rows: [] })),
+    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats").catch(() => ({ rows: [] })),
   ]);
 
   const positionPrices: Record<string, number> = {};
@@ -92,7 +93,7 @@ async function collectData(chatId: number): Promise<ReportData> {
 
   const closedTrades = account.closedTrades;
   const strategyWeights = swRes.rows as Array<Record<string, unknown>>;
-  const strategyDetails = buildStrategyDetails(closedTrades, strategyStats, strategyWeights, ewRes.rows as Array<Record<string, unknown>>);
+  const strategyDetails = buildStrategyDetails(closedTrades, strategyStats, strategyWeights, ewRes.rows as Array<Record<string, unknown>>, sdsRes.rows as Array<Record<string, unknown>>);
   const instrumentRows = iaRes.rows as Array<Record<string, unknown>>;
   const coinDetails = buildCoinDetails(closedTrades, instrumentRows);
   const timeRows = taRes.rows as Array<Record<string, unknown>>;
@@ -141,11 +142,10 @@ function buildStrategyDetails(
   stats: StrategyStats[],
   weights: Array<Record<string, unknown>>,
   entityRows: Array<Record<string, unknown>> = [],
+  sdsRows: Array<Record<string, unknown>> = [],
 ): StrategyDetail[] {
   const now = Date.now();
 
-  // Build one entry per entity (e.g. TREND_LONG, TREND_SHORT, …) when entityRows is available;
-  // otherwise fall back to base-strategy grouping derived dynamically from trades/stats/weights.
   type EntrySpec = { name: string; baseStrategy: string; direction: string | null };
   let specs: EntrySpec[];
 
@@ -169,16 +169,47 @@ function buildStrategyDetails(
       ? trades.filter(t => t.strategy === spec.baseStrategy && t.direction === spec.direction)
       : trades.filter(t => t.strategy === spec.name);
 
-    const wins   = st.filter(t => t.pnl > 0);
-    const losses = st.filter(t => t.pnl <= 0);
-    const gw = wins.reduce((a, t) => a + t.pnl, 0);
-    const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-    const pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
-    const aw = wins.length   ? wins.reduce((a, t)   => a + t.pnlPercent, 0) / wins.length   : 0;
-    const al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
-    const wr  = st.length ? wins.length / st.length * 100 : 0;
-    const exp = st.length ? (wr / 100) * aw - ((100 - wr) / 100) * al : 0;
+    // Find accumulated stats from strategy_direction_stats
+    // Fall back to them when live paper_closed_trades has less history (post-reset state)
+    const sdsRow = spec.direction
+      ? sdsRows.find(r => r["strategy"] === spec.baseStrategy && r["direction"] === spec.direction)
+      : sdsRows.find(r => r["strategy"] === spec.name);
+    const sdsTrades = sdsRow ? Number(sdsRow["trades"]) : 0;
 
+    let tradeCount: number, winCount: number, lossCount: number;
+    let gw: number, gl: number, pf: number, aw: number, al: number, wr: number, exp: number, totalPnlVal: number;
+
+    if (sdsTrades > st.length) {
+      // Use accumulated analytics data for bulk stats
+      tradeCount = sdsTrades;
+      winCount   = sdsRow ? Number(sdsRow["wins"])      : 0;
+      lossCount  = tradeCount - winCount;
+      gw         = sdsRow ? Number(sdsRow["win_pnl"])   : 0;
+      gl         = sdsRow ? Number(sdsRow["loss_pnl"])  : 0;
+      pf         = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
+      aw         = winCount  > 0 ? gw / winCount  : 0;
+      al         = lossCount > 0 ? gl / lossCount : 0;
+      wr         = tradeCount > 0 ? winCount / tradeCount * 100 : 0;
+      exp        = tradeCount > 0 ? (wr / 100) * aw - ((100 - wr) / 100) * al : 0;
+      totalPnlVal = sdsRow ? Number(sdsRow["total_pnl"]) : 0;
+    } else {
+      const wins   = st.filter(t => t.pnl > 0);
+      const losses = st.filter(t => t.pnl <= 0);
+      gw = wins.reduce((a, t) => a + t.pnl, 0);
+      gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
+      pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
+      aw = wins.length   ? wins.reduce((a, t)   => a + t.pnlPercent, 0) / wins.length   : 0;
+      al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
+      tradeCount = st.length;
+      winCount   = wins.length;
+      lossCount  = losses.length;
+      wr         = st.length ? winCount / st.length * 100 : 0;
+      exp        = st.length ? (wr / 100) * aw - ((100 - wr) / 100) * al : 0;
+      const ss_  = stats.find(s => (s.strategy as string) === spec.baseStrategy);
+      totalPnlVal = ss_?.totalPnl ?? 0;
+    }
+
+    // Per-trade metrics — always from live closedTrades (best effort)
     const durs = st.filter(t => t.openedAt && t.closedAt)
       .map(t => (new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime()) / 60000);
     const avgDur = durs.length ? durs.reduce((a, b) => a + b, 0) / durs.length : 0;
@@ -193,13 +224,12 @@ function buildStrategyDetails(
     const last30 = st.filter(t => now - new Date(t.closedAt).getTime() < 30 * 86400000).length;
     const ss = stats.find(s => (s.strategy as string) === spec.baseStrategy);
 
-    // Weight / quarantine / trust: prefer entity row, fall back to strategy_weights row
     let weight = 1, quarantine = false, trustScore = 0, disabledUntil: string | null = null;
     if (entityRows.length > 0) {
       const eRow = entityRows.find(r => r["entity"] === spec.name);
-      weight      = eRow ? Number(eRow["weight"])      : 1;
-      quarantine  = eRow ? Boolean(eRow["quarantine"]) : false;
-      trustScore  = eRow ? Number(eRow["trust_score"]) : 0;
+      weight     = eRow ? Number(eRow["weight"])      : 1;
+      quarantine = eRow ? Boolean(eRow["quarantine"]) : false;
+      trustScore = eRow ? Number(eRow["trust_score"]) : 0;
     } else {
       const wRow = weights.find(w => w["strategy"] === spec.name);
       weight     = wRow ? Number(wRow["weight"])              : 1;
@@ -208,7 +238,6 @@ function buildStrategyDetails(
       disabledUntil = wRow ? (wRow["disabled_until"] as string | null) : null;
     }
 
-    // In entity mode each row already represents one direction — no sub-rows needed.
     const calcDir = (ts: ClosedPaperTrade[]) => {
       const dW = ts.filter(t => t.pnl > 0);
       const dL = ts.filter(t => t.pnl <= 0);
@@ -223,20 +252,19 @@ function buildStrategyDetails(
 
     return {
       strategy: spec.name,
-      trades: st.length, wins: wins.length, losses: losses.length,
+      trades: tradeCount, wins: winCount, losses: lossCount,
       winRate: wr, profitFactor: pf, expectancy: exp, avgWin: aw, avgLoss: al,
       tp1: st.filter(t => t.outcome === "TP1").length,
       tp2: st.filter(t => t.outcome === "TP2").length,
       sl:  st.filter(t => t.outcome === "SL").length,
       avgDuration: avgDur, maxDrawdown: maxDd, last30,
-      totalPnl: ss?.totalPnl ?? 0,
+      totalPnl: totalPnlVal,
       weight, quarantine, trustScore, disabledUntil,
       longTrades: longSt.trades, longWR: longSt.wr, longPF: longSt.pf,
       shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
     };
   });
 }
-
 function buildCoinDetails(trades: ClosedPaperTrade[], instrumentRows: Array<Record<string, unknown>> = []): CoinDetail[] {
   // Use instrument_analytics when it contains more history than live paper_closed_trades.
   // This handles DB resets where analytics tables were restored but paper_closed_trades is nearly empty.
