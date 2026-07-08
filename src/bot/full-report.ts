@@ -115,13 +115,14 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
                AND chat_id   = $1
+               AND closed_at >= $2
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`, [chatId]),
+           ORDER BY sew.strategy, sew.direction`, [chatId, account.resetAt || '1970-01-01']),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
