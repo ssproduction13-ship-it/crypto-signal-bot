@@ -73,7 +73,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     getDecisionStats(),
   ]);
 
-  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes] = await Promise.all([
+  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes] = await Promise.all([
     pool.query("SELECT * FROM risk_state WHERE id=1"),
     pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200"),
     pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5").catch(() => ({ rows: [] })),
@@ -81,6 +81,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     pool.query("SELECT * FROM strategy_weights").catch(() => ({ rows: [] })),
     pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day").catch(() => ({ rows: [] })),
     pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC").catch(() => ({ rows: [] })),
+    pool.query("SELECT entity, strategy, direction, weight, quarantine, trust_score FROM strategy_entity_weights ORDER BY strategy, direction").catch(() => ({ rows: [] })),
   ]);
 
   const positionPrices: Record<string, number> = {};
@@ -91,7 +92,7 @@ async function collectData(chatId: number): Promise<ReportData> {
 
   const closedTrades = account.closedTrades;
   const strategyWeights = swRes.rows as Array<Record<string, unknown>>;
-  const strategyDetails = buildStrategyDetails(closedTrades, strategyStats, strategyWeights);
+  const strategyDetails = buildStrategyDetails(closedTrades, strategyStats, strategyWeights, ewRes.rows as Array<Record<string, unknown>>);
   const instrumentRows = iaRes.rows as Array<Record<string, unknown>>;
   const coinDetails = buildCoinDetails(closedTrades, instrumentRows);
   const timeRows = taRes.rows as Array<Record<string, unknown>>;
@@ -130,39 +131,54 @@ function calcWindow(trades: ClosedPaperTrade[], label: string): WindowStats | nu
   let maxWin = 0, maxLoss = 0, curWin = 0, curLoss = 0;
   for (const t of trades) {
     if (t.pnl > 0) { curWin++; curLoss = 0; maxWin = Math.max(maxWin, curWin); }
-    else { curLoss++; curWin = 0; maxLoss = Math.max(maxLoss, curLoss); }
-  }
-  return { label, trades: trades.length, wr, pf, expectancy: exp, rr, avgWin: aw, avgLoss: al, maxLossStreak: maxLoss, maxWinStreak: maxWin, grossWin: gw, grossLoss: gl };
-}
-
-function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[], weights: Array<Record<string, unknown>>): StrategyDetail[] {
-  // Derive strategy list dynamically from all available data sources
-  const stratSet = new Set<string>();
-  for (const s of stats) if ((s.strategy as string) !== "UNKNOWN") stratSet.add(s.strategy as string);
-  for (const w of weights) if (w["strategy"] && w["strategy"] !== "UNKNOWN") stratSet.add(w["strategy"] as string);
-  for (const t of trades) if (t.strategy && (t.strategy as string) !== "UNKNOWN") stratSet.add(t.strategy as string);
-  // Always include base strategies even if no data yet
-  for (const base of ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"]) stratSet.add(base);
-  const strats = [...stratSet].sort();
+    else { curLoss++; curW
+function buildStrategyDetails(
+  trades: ClosedPaperTrade[],
+  stats: StrategyStats[],
+  weights: Array<Record<string, unknown>>,
+  entityRows: Array<Record<string, unknown>> = [],
+): StrategyDetail[] {
   const now = Date.now();
-  return strats.map(strat => {
-    const st = trades.filter(t => t.strategy === strat);
-    const wins = st.filter(t => t.pnl > 0);
+
+  // Build one entry per entity (e.g. TREND_LONG, TREND_SHORT, …) when entityRows is available;
+  // otherwise fall back to base-strategy grouping derived dynamically from trades/stats/weights.
+  type EntrySpec = { name: string; baseStrategy: string; direction: string | null };
+  let specs: EntrySpec[];
+
+  if (entityRows.length > 0) {
+    specs = entityRows.map(r => ({
+      name:         r["entity"]    as string,
+      baseStrategy: r["strategy"]  as string,
+      direction:    r["direction"] as string,
+    }));
+  } else {
+    const stratSet = new Set<string>();
+    for (const s of stats)   if ((s.strategy as string) !== "UNKNOWN") stratSet.add(s.strategy as string);
+    for (const w of weights) if (w["strategy"] && w["strategy"] !== "UNKNOWN") stratSet.add(w["strategy"] as string);
+    for (const t of trades)  if (t.strategy && (t.strategy as string) !== "UNKNOWN") stratSet.add(t.strategy as string);
+    for (const base of ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"]) stratSet.add(base);
+    specs = [...stratSet].sort().map(s => ({ name: s, baseStrategy: s, direction: null }));
+  }
+
+  return specs.map(spec => {
+    const st = spec.direction
+      ? trades.filter(t => t.strategy === spec.baseStrategy && t.direction === spec.direction)
+      : trades.filter(t => t.strategy === spec.name);
+
+    const wins   = st.filter(t => t.pnl > 0);
     const losses = st.filter(t => t.pnl <= 0);
     const gw = wins.reduce((a, t) => a + t.pnl, 0);
     const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
     const pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
-    const aw = wins.length ? wins.reduce((a, t) => a + t.pnlPercent, 0) / wins.length : 0;
+    const aw = wins.length   ? wins.reduce((a, t)   => a + t.pnlPercent, 0) / wins.length   : 0;
     const al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
-    const wr = st.length ? wins.length / st.length * 100 : 0;
+    const wr  = st.length ? wins.length / st.length * 100 : 0;
     const exp = st.length ? (wr / 100) * aw - ((100 - wr) / 100) * al : 0;
 
-    // duration
     const durs = st.filter(t => t.openedAt && t.closedAt)
       .map(t => (new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime()) / 60000);
     const avgDur = durs.length ? durs.reduce((a, b) => a + b, 0) / durs.length : 0;
 
-    // max drawdown per strategy (sequential equity)
     let peak = 0, maxDd = 0, bal = 0;
     for (const t of [...st].reverse()) {
       bal += t.pnl; if (bal > peak) peak = bal;
@@ -171,35 +187,51 @@ function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[]
     }
 
     const last30 = st.filter(t => now - new Date(t.closedAt).getTime() < 30 * 86400000).length;
-    const wRow = weights.find(w => w["strategy"] === strat);
-    const ss = stats.find(s => s.strategy === strat);
+    const ss = stats.find(s => (s.strategy as string) === spec.baseStrategy);
 
+    // Weight / quarantine / trust: prefer entity row, fall back to strategy_weights row
+    let weight = 1, quarantine = false, trustScore = 0, disabledUntil: string | null = null;
+    if (entityRows.length > 0) {
+      const eRow = entityRows.find(r => r["entity"] === spec.name);
+      weight      = eRow ? Number(eRow["weight"])      : 1;
+      quarantine  = eRow ? Boolean(eRow["quarantine"]) : false;
+      trustScore  = eRow ? Number(eRow["trust_score"]) : 0;
+    } else {
+      const wRow = weights.find(w => w["strategy"] === spec.name);
+      weight     = wRow ? Number(wRow["weight"])              : 1;
+      quarantine = wRow ? Boolean(wRow["quarantine"])         : false;
+      trustScore = wRow ? Number(wRow["trust_score"])         : 0;
+      disabledUntil = wRow ? (wRow["disabled_until"] as string | null) : null;
+    }
 
-    // LONG/SHORT breakdown from paper trades
-    const longT  = st.filter(t => t.direction === "LONG");
-    const shortT = st.filter(t => t.direction === "SHORT");
-    const calcDir = (ts: typeof st) => {
-      const dWins = ts.filter(t => t.pnl > 0);
-      const dLoss = ts.filter(t => t.pnl <= 0);
-      const dGW = dWins.reduce((a, t) => a + t.pnl, 0);
-      const dGL = Math.abs(dLoss.reduce((a, t) => a + t.pnl, 0));
-      return { trades: ts.length, wr: ts.length ? dWins.length / ts.length * 100 : 0, pf: dGL > 0 ? dGW / dGL : dGW > 0 ? 999 : 0 };
+    // In entity mode each row already represents one direction — no sub-rows needed.
+    const calcDir = (ts: ClosedPaperTrade[]) => {
+      const dW = ts.filter(t => t.pnl > 0);
+      const dL = ts.filter(t => t.pnl <= 0);
+      const gW = dW.reduce((a, t) => a + t.pnl, 0);
+      const gL = Math.abs(dL.reduce((a, t) => a + t.pnl, 0));
+      return { trades: ts.length, wr: ts.length ? dW.length / ts.length * 100 : 0, pf: gL > 0 ? gW / gL : gW > 0 ? 999 : 0 };
     };
+    const longT  = spec.direction ? [] : st.filter(t => t.direction === "LONG");
+    const shortT = spec.direction ? [] : st.filter(t => t.direction === "SHORT");
     const longSt  = calcDir(longT);
     const shortSt = calcDir(shortT);
 
     return {
-      strategy: strat, trades: st.length, wins: wins.length, losses: losses.length,
+      strategy: spec.name,
+      trades: st.length, wins: wins.length, losses: losses.length,
       winRate: wr, profitFactor: pf, expectancy: exp, avgWin: aw, avgLoss: al,
       tp1: st.filter(t => t.outcome === "TP1").length,
       tp2: st.filter(t => t.outcome === "TP2").length,
-      sl: st.filter(t => t.outcome === "SL").length,
+      sl:  st.filter(t => t.outcome === "SL").length,
       avgDuration: avgDur, maxDrawdown: maxDd, last30,
       totalPnl: ss?.totalPnl ?? 0,
-      weight: wRow ? Number(wRow["weight"]) : 1,
-      quarantine: wRow ? Boolean(wRow["quarantine"]) : false,
-      trustScore: wRow ? Number(wRow["trust_score"]) : 50,
-      disabledUntil: wRow ? (wRow["disabled_until"] as string | null) : null,
+      weight, quarantine, trustScore, disabledUntil,
+      longTrades: longSt.trades, longWR: longSt.wr, longPF: longSt.pf,
+      shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
+    };
+  });
+}Until: wRow ? (wRow["disabled_until"] as string | null) : null,
       longTrades: longSt.trades, longWR: longSt.wr, longPF: longSt.pf,
       shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
     };
