@@ -893,8 +893,10 @@ export async function generateWeeklyRanking(): Promise<string> {
   const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats ORDER BY strategy");
   const {rows:wRows}    = await pool.query("SELECT strategy,weight,trust_score,quarantine FROM strategy_weights");
 
-  const MEDALS = ["🥇","🥈","🥉","4️⃣"];
-  const stratRows = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
+  const MEDALS = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+  // Derive strategy list dynamically from DB — handles any number of strategies
+  const stratRows = [...new Set((statRows as Record<string,unknown>[]).map(r => r["strategy"] as string))]
+    .filter(Boolean).sort() as StrategyName[];
 
   const entries: Array<{strat:StrategyName;pf:number;wr:number;trades:number;weight:number;trust:number}> = [];
 
@@ -919,6 +921,7 @@ export async function generateWeeklyRanking(): Promise<string> {
     TREND:"Trend", BREAKOUT:"Breakout",
     VOLUME_IMPULSE:"Volume Impulse", MEAN_REVERSION:"Mean Reversion",
   };
+  const getStratName = (s: string) => STRAT_NAMES[s] ?? s.replace(/_/g, " ");
 
   const now = new Date();
   const weekStr = `${now.getDate().toString().padStart(2,"0")}.${(now.getMonth()+1).toString().padStart(2,"0")}.${now.getFullYear()}`;
@@ -935,7 +938,7 @@ export async function generateWeeklyRanking(): Promise<string> {
     const pfStr = e.pf >= 99 ? "∞" : e.pf === 0 ? "—" : e.pf.toFixed(2);
     const wrStr = e.trades > 0 ? `${(e.wr*100).toFixed(0)}%` : "—";
     const sampleTag = e.trades < 20 ? ` ⚠️ мало данных (${e.trades} сд)` : `n=${e.trades}`;
-    lines.push(`${medal} *${STRAT_NAMES[e.strat] ?? e.strat}*`);
+    lines.push(`${medal} *${getStratName(e.strat)}*`);
     lines.push(`PF ${pfStr} | WR ${wrStr} | Trust ${e.trust}/100 | ${sampleTag}`);
     lines.push(`Вес: ${(e.weight*100).toFixed(0)}% — ${pfToTargetWeight(e.pf) === e.weight ? "точно по таблице" : e.weight >= 1.0 ? "приоритет" : e.weight <= 0.2 ? "исследование" : "адаптация"}`);
     lines.push(``);
