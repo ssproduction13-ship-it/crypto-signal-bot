@@ -104,7 +104,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                        SUM(CASE WHEN changed_at::timestamptz > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
                 FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
-    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl FROM strategy_direction_stats WHERE trades >= 5"),
+    pool.query("SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights WHERE trades >= 5"),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
@@ -270,7 +270,10 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
       const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
       const dwr=(dw/dt*100).toFixed(0);
       const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
-      parts.push(`  ↳ ${strat}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt}`);
+      const dw_pct=(Number(dr["weight"])*100).toFixed(0);
+      const dq=Boolean(dr["quarantine"]);
+      const dIcon=dq?"⚠️":"✅";
+      parts.push(`  ↳ ${strat}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt} | Вес ${dw_pct}% ${dIcon}`);
     }
     parts.push(``);
   }
