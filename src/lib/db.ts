@@ -480,6 +480,33 @@ const MIGRATIONS = [
   `ALTER TABLE shadow_closed_trades
     ADD COLUMN IF NOT EXISTS is_direction_shadow BOOLEAN NOT NULL DEFAULT false`,
   "CREATE INDEX IF NOT EXISTS idx_sct_dir_shadow ON shadow_closed_trades(strategy, direction, is_direction_shadow, closed_at)",
+  // ── 8-Entity Architecture: strategy × direction independent weights ─────────
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
+  `CREATE TABLE IF NOT EXISTS strategy_entity_weights (
+    entity        TEXT PRIMARY KEY,
+    strategy      TEXT NOT NULL,
+    direction     TEXT NOT NULL,
+    weight        DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    quarantine    BOOLEAN NOT NULL DEFAULT false,
+    trust_score   INTEGER NOT NULL DEFAULT 0,
+    trades        INTEGER NOT NULL DEFAULT 0,
+    wins          INTEGER NOT NULL DEFAULT 0,
+    win_pnl       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    loss_pnl      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cycles_below_threshold INTEGER NOT NULL DEFAULT 0,
+    quarantine_since TIMESTAMPTZ DEFAULT NULL,
+    updated_at    TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  `INSERT INTO strategy_entity_weights (entity, strategy, direction) VALUES
+    ('TREND_LONG',          'TREND',          'LONG'),
+    ('TREND_SHORT',         'TREND',          'SHORT'),
+    ('VOLUME_IMPULSE_LONG', 'VOLUME_IMPULSE', 'LONG'),
+    ('VOLUME_IMPULSE_SHORT','VOLUME_IMPULSE', 'SHORT'),
+    ('MEAN_REVERSION_LONG', 'MEAN_REVERSION', 'LONG'),
+    ('MEAN_REVERSION_SHORT','MEAN_REVERSION', 'SHORT'),
+    ('BREAKOUT_LONG',       'BREAKOUT',       'LONG'),
+    ('BREAKOUT_SHORT',      'BREAKOUT',       'SHORT')
+  ON CONFLICT DO NOTHING`,
 ];
 
 
