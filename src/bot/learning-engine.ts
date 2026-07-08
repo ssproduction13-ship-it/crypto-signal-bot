@@ -623,7 +623,7 @@ function pfToTargetWeight(pf: number): number {
     const { trades, wins, winPnl, lossPnl, totalPnl, pf } = recent;
     const isNegativeReturn = totalPnl < 0;
 
-    if (trades < 20) continue;
+    if (trades < 10) continue;
 
     const entityParts = entity.split("_");
     const entityDir = entityParts.pop() as string;
@@ -635,7 +635,7 @@ function pfToTargetWeight(pf: number): number {
     let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
 
-    if (trades >= 20 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
+    if (trades >= 10 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
       newQuarantine = true;
       newWeight = 0.10;
       changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
