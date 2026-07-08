@@ -186,8 +186,12 @@ export async function testStrategyChange(
   const baselineWR = calcWR(baseline);
   const newWR = calcWR(current);
 
+  // FIX Critical#6: WR test needs binary 0/1 arrays; raw PnL arrays test average return, not win rate
+  const baselineBinary = baseline.map(v => v > 0 ? 1 : 0);
+  const currentBinary  = current.map(v => v > 0 ? 1 : 0);
+
   const pfTest = buildTest(baseline, current, "Profit Factor", baselinePF, newPF);
-  const wrTest = buildTest(baseline, current, "Win Rate", baselineWR, newWR);
+  const wrTest = buildTest(baselineBinary, currentBinary, "Win Rate", baselineWR, newWR);
 
   const shouldApply = pfTest.isSignificant || wrTest.isSignificant;
   const reason = shouldApply

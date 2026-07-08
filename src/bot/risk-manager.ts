@@ -34,8 +34,8 @@ import { pool } from "../lib/db.js";
         weeklyPnlPct:      Number(r["weekly_pnl_percent"]),
         consecutiveLosses: Number(r["consecutive_losses"]),
         openPositions:     Number(r["open_positions_count"]),
-        tradingEnabled:    true,  // learning mode: always enabled
-        stopReason:        null,
+        tradingEnabled:    Boolean(r["trading_enabled"]),  // FIX High: read actual DB value, not hardcoded true
+        stopReason:        r["stop_reason"] as string | null,
         lastResetDate:     r["last_reset_date"] as string,
         lastWeekKey:       r["last_week_reset_date"] as string,
       };

@@ -50,7 +50,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
 
   let tradeScore = 0;
   let tradeNote = "";
-  if (totalTrades >= 500) { tradeScore = 15; tradeNote = `${totalTrades} сделок — отлично`; }
+  // FIX High: full score at 1000 trades (was 500 — too easy, not statistically sufficient)
+  if (totalTrades >= 1000) { tradeScore = 15; tradeNote = `${totalTrades} сделок — отлично`; }
   else if (totalTrades >= 200) { tradeScore = 11; tradeNote = `${totalTrades} сделок — хорошо`; }
   else if (totalTrades >= 100) { tradeScore = 7; tradeNote = `${totalTrades}/100 нужно`; recommendations.push("Накопить 200+ сделок"); }
   else { tradeScore = Math.floor(totalTrades / 100 * 7); tradeNote = `${totalTrades} из нужных 100+`; recommendations.push(`Нужно ещё ${100 - totalTrades} сделок минимум`); }

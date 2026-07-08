@@ -286,7 +286,8 @@ function buildCoinDetails(trades: ClosedPaperTrade[], instrumentRows: Array<Reco
     const wins = st.filter(t => t.pnl > 0);
     const losses = st.filter(t => t.pnl <= 0);
     const gw = wins.reduce((a, t) => a + t.pnl, 0);
-    const gl = Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0));
+    // FIX High: use t.pnl (dollars) for both gw and gl — pnlPercent is %, not $ (mixed units break PF)
+    const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
     const pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
     const aw = wins.length ? wins.reduce((a, t) => a + t.pnlPercent, 0) / wins.length : 0;
     const al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;

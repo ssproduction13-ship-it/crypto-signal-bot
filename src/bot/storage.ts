@@ -419,9 +419,9 @@ import { pool } from "../lib/db.js";
   }
   export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7 WHERE chat_id=$8 AND id=$9`,
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8 WHERE chat_id=$9 AND id=$10`,
       [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, pos.size,
-       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', chatId, pos.id]
+       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.entryPrice, chatId, pos.id]
     );
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
@@ -462,6 +462,46 @@ import { pool } from "../lib/db.js";
       [chatId, posId]
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+
+  /**
+   * FIX Critical#5: Atomically delete position + insert closed trade in ONE transaction.
+   * Prevents race where position is deleted but closed trade is not recorded on crash/error.
+   * Returns true if position was claimed and trade inserted; false if already closed by another cycle.
+   */
+  export async function closePositionAndInsertTrade(
+    chatId: number,
+    posId: string,
+    trade: ClosedPaperTrade,
+  ): Promise<boolean> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const del = await client.query(
+        'DELETE FROM paper_positions WHERE chat_id=$1 AND id=$2',
+        [chatId, posId]
+      );
+      if ((del.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        return false; // Another cycle already claimed this position
+      }
+      await client.query(
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO NOTHING`,
+        [trade.id,chatId,trade.symbol,trade.direction,trade.entryPrice,trade.closePrice,
+         trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
+         trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
+         trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null]
+      );
+      await client.query('COMMIT');
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   logger.info("PostgreSQL storage initialized");

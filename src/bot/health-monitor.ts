@@ -43,7 +43,8 @@ function sharpe(returns: number[]): number {
 
 function maxDD(pnls: number[]): number {
   let peak = 0, equity = 0, dd = 0;
-  for (const r of pnls) {
+  // FIX High: reverse for chronological order — DB returns newest-first, drawdown needs oldest-first
+  for (const r of [...pnls].reverse()) {
     equity += r;
     if (equity > peak) peak = equity;
     const cur = peak > 0 ? (peak - equity) / peak * 100 : 0;

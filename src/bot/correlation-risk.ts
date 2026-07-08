@@ -63,15 +63,17 @@ export async function checkCorrelationRisk(
   riskPercent: number,
   maxPortfolioRisk = 8.0,  // v2: raised from 5% → 8% (10 позиций × 1% × avgCorr 0.8)
 ): Promise<CorrelationRiskResult> {
+  // FIX Critical#8: query each position's actual risk_percent from DB
+  // Using the new trade's riskPercent for all existing positions was wrong — each has its own risk
   const { rows } = await pool.query(
-    `SELECT symbol, direction FROM paper_positions WHERE chat_id = $1`,
-    [chatId]
+    `SELECT symbol, direction, COALESCE(risk_percent, $2) AS risk_percent FROM paper_positions WHERE chat_id = $1`,
+    [chatId, riskPercent]
   );
 
   const openPositions: PositionRiskInfo[] = (rows as Record<string, unknown>[]).map(r => ({
     symbol: r["symbol"] as string,
     direction: r["direction"] as "LONG" | "SHORT",
-    riskPercent,
+    riskPercent: r["risk_percent"] != null ? Number(r["risk_percent"]) : riskPercent,
   }));
 
   if (!openPositions.length) {

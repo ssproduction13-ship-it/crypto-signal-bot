@@ -76,11 +76,13 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
     }
   }
 
-  if (levels.nearestResistance && price > levels.nearestResistance * 0.999) {
+  // FIX High: require confirmed breakout ABOVE resistance (was 0.999 = allowed price below)
+  if (levels.nearestResistance && price > levels.nearestResistance * 1.001) {
     score += 20; direction = "LONG";
     reasons.push(`Пробой сопротивления ${levels.nearestResistance.toFixed(4)}`);
   }
-  if (levels.nearestSupport && price < levels.nearestSupport * 1.001) {
+  // FIX High: require confirmed breakdown BELOW support (was 1.001 = allowed price above)
+  if (levels.nearestSupport && price < levels.nearestSupport * 0.999) {
     score += 20; direction = "SHORT";
     reasons.push(`Пробой поддержки ${levels.nearestSupport.toFixed(4)}`);
   }

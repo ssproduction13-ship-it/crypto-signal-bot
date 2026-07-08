@@ -1,7 +1,7 @@
 import { getPrice } from "./binance.js";
 import {
   loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
-  tryClaimPosition, tryMarkTP1, updateJournalClose,
+  tryClaimPosition, tryMarkTP1, updateJournalClose, closePositionAndInsertTrade,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
@@ -9,6 +9,8 @@ import { formatPrice } from "./risk.js";
 import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
+import { pool } from "../lib/db.js";
+import { getActiveVariantId, recordABTrade } from "./ab-testing.js";
 import { recordRegimeTrade, recordDirectionTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
 import { recordTimeTrade } from "./time-analytics.js";
 import { recordInstrumentTrade } from "./instrument-analytics.js";
@@ -151,6 +153,8 @@ export async function checkPaperPositions(
   const account  = await loadPaperAccount(chatId);
   const msgs: string[] = [];
   const remaining: PaperPosition[] = [];
+  // FIX Critical#7: fetch active A/B variant once per checkPaperPositions cycle
+  const abVariantId = await getActiveVariantId().catch(() => 1);
 
   const stratNames: Record<string, string> = {
     TREND:"Тренд", BREAKOUT:"Пробой",
@@ -170,15 +174,18 @@ export async function checkPaperPositions(
           const iv = pos.interval ?? "1h";
           const maxHours = iv === "15m" ? 48 : iv === "4h" ? 120 : 72;
           if (hoursOpen > maxHours) {
-            const claimed = await tryClaimPosition(chatId, pos.id);
+            const { trade: _toTrade, pnl: _toPnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+              buildCloseRecord(pos, price, pos.size, "TIMEOUT", equityAtOpen);
+            // FIX Critical#5: atomic delete+insert in one transaction
+            const claimed = await closePositionAndInsertTrade(chatId, pos.id, _toTrade);
             if (claimed) {
-              const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
-                buildCloseRecord(pos, price, pos.size, "TIMEOUT", equityAtOpen);
+              const trade = _toTrade; const pnl = _toPnl;
               account.balance += pnl;
               account.closedTrades.unshift(trade);
-              await insertClosedTrade(chatId, trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+              // FIX Critical#7: record in active A/B variant
+              recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
               const regime = pos.marketRegime ?? "sideways";
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
@@ -210,15 +217,18 @@ export async function checkPaperPositions(
           const staleThreshold15m = hoursOpenStale > 12 && ivStale === "15m";
 
           if (isStale && (staleThreshold1h || staleThreshold15m)) {
-            const claimed = await tryClaimPosition(chatId, pos.id);
+            const { trade: _stTrade, pnl: _stPnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+              buildCloseRecord(pos, price, pos.size, "TIMEOUT_STALE", equityAtOpen);
+            // FIX Critical#5: atomic delete+insert in one transaction
+            const claimed = await closePositionAndInsertTrade(chatId, pos.id, _stTrade);
             if (claimed) {
-              const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
-                buildCloseRecord(pos, price, pos.size, "TIMEOUT_STALE", equityAtOpen);
+              const trade = _stTrade; const pnl = _stPnl;
               account.balance += pnl;
               account.closedTrades.unshift(trade);
-              await insertClosedTrade(chatId, trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+              // FIX Critical#7: record in active A/B variant
+              recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
               const regimeStale = pos.marketRegime ?? "sideways";
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
@@ -379,25 +389,24 @@ export async function checkPaperPositions(
       }
 
       if (closeReason) {
-        // Atomically claim the position — DELETE it from DB before computing P&L.
-        // If another concurrent cycle already deleted it, rowCount=0 → skip to prevent double-close.
-        const claimed = await tryClaimPosition(chatId, pos.id);
+        const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
+          buildCloseRecord(pos, closePrice, pos.size, closeReason, equityAtOpen);
+        // FIX Critical#5: atomic delete+insert prevents orphaned closes (position deleted but no trade recorded)
+        const claimed = await closePositionAndInsertTrade(chatId, pos.id, trade);
         if (!claimed) {
           logger.debug({ posId: pos.id, symbol: pos.symbol }, "Position already claimed by concurrent close cycle — skipping");
           // Position is gone from DB — don't add to remaining
           continue;
         }
 
-        const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
-          buildCloseRecord(pos, closePrice, pos.size, closeReason, equityAtOpen);
-
         account.balance += pnl;
         account.closedTrades.unshift(trade);
-        await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Combined PnL: TP1 portion (if any) + final close portion → 1 stat entry per signal
         // Each partial close is its own stat entry — consistent with paper_closed_trades
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+        // FIX Critical#7: record this final close in the active A/B variant (was defined but never called)
+        recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
         const regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
         recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});

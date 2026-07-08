@@ -38,8 +38,9 @@ function calcMetrics(trades: number[], label: string): DriftMetrics {
   const wr = wins.length / trades.length;
   const avgPnl = trades.reduce((s, v) => s + v, 0) / trades.length;
 
+  // FIX High: reverse for chronological order — DB returns newest-first, drawdown needs oldest-first
   let peak = 0, equity = 0, maxDD = 0;
-  for (const r of trades) {
+  for (const r of [...trades].reverse()) {
     equity += r;
     if (equity > peak) peak = equity;
     const dd = peak > 0.01 ? Math.min(100, Math.max(0, (peak - equity) / peak * 100)) : 0;

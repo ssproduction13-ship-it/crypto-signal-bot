@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
 );
 CREATE TABLE IF NOT EXISTS subscriptions (
   chat_id BIGINT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL,
-  PRIMARY KEY (chat_id, symbol)
+  PRIMARY KEY (chat_id, symbol, interval)
 );
 CREATE TABLE IF NOT EXISTS risk_state (
   id INTEGER PRIMARY KEY DEFAULT 1,
@@ -195,6 +195,13 @@ CREATE TABLE IF NOT EXISTS notifications_log (
 `;
 
 const MIGRATIONS = [
+  // FIX Critical#2: subscriptions PK must include interval (allows multi-interval per symbol)
+  `DO $ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='subscriptions_pkey') THEN
+      ALTER TABLE subscriptions DROP CONSTRAINT subscriptions_pkey;
+    END IF;
+    ALTER TABLE subscriptions ADD PRIMARY KEY (chat_id, symbol, interval);
+  EXCEPTION WHEN others THEN NULL; END $`,
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS breakeven_moved BOOLEAN NOT NULL DEFAULT false",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trail_atr DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'TREND'",

@@ -100,7 +100,10 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   // execution takes >30s and two concurrent cycles double-close the same positions.
   let _checkPositionsRunning = false;
 
-  function key(chatId: number, symbol: string) { return `${chatId}:${symbol}`; }
+  // FIX Critical#2: key includes interval so multi-interval subscriptions co-exist in the Map
+  function key(chatId: number, symbol: string, interval?: string) {
+    return interval ? `${chatId}:${symbol}:${interval}` : `${chatId}:${symbol}`;
+  }
 
   async function safeSend(chatId: number, text: string) {
     try { await _bot?.telegram.sendMessage(chatId, text, { parse_mode: "Markdown" }); }
@@ -120,7 +123,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const chatId = Number(r["chat_id"]);
       const sym    = r["symbol"] as string;
       const intv   = r["interval"] as Interval;
-      subs.set(key(chatId, sym), { chatId, symbol: sym, interval: intv });
+            subs.set(key(chatId, sym, intv), { chatId, symbol: sym, interval: intv });
       chatIds.add(chatId);
       kuCoinWs.addSubscription(sym, intv);
     }
@@ -128,20 +131,30 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   }
 
   export function subscribe(chatId: number, symbol: string, interval: Interval = "1h"): void {
-    subs.set(key(chatId, symbol), { chatId, symbol, interval });
+    subs.set(key(chatId, symbol, interval), { chatId, symbol, interval });
     chatIds.add(chatId);
     kuCoinWs.addSubscription(symbol, interval);
     pool.query(
-      "INSERT INTO subscriptions(chat_id,symbol,interval) VALUES($1,$2,$3) ON CONFLICT(chat_id,symbol) DO UPDATE SET interval=EXCLUDED.interval",
+      // FIX Critical#2: use new 3-column PK; DO NOTHING keeps all intervals
+      "INSERT INTO subscriptions(chat_id,symbol,interval) VALUES($1,$2,$3) ON CONFLICT(chat_id,symbol,interval) DO NOTHING",
       [chatId, symbol, interval]
     ).catch((err: unknown) => logger.error({ err }, "subscribe DB error"));
   }
 
   export function unsubscribe(chatId: number, symbol: string): boolean {
-    const sub     = subs.get(key(chatId, symbol));
-    const removed = subs.delete(key(chatId, symbol));
-    if (sub && ![...subs.values()].some(s => s.symbol === symbol && s.interval === sub.interval))
-      kuCoinWs.removeSubscription(symbol, sub.interval);
+    // FIX Critical#2: remove ALL interval entries for this chatId:symbol from Map
+    let removed = false;
+    const intervalsToRemove: string[] = [];
+    for (const [k, s] of subs.entries()) {
+      if (s.chatId === chatId && s.symbol === symbol) {
+        subs.delete(k); removed = true;
+        intervalsToRemove.push(s.interval);
+      }
+    }
+    for (const iv of intervalsToRemove) {
+      if (![...subs.values()].some(s => s.symbol === symbol && s.interval === iv))
+        kuCoinWs.removeSubscription(symbol, iv);
+    }
     if (![...subs.values()].some(s => s.chatId === chatId)) chatIds.delete(chatId);
     pool.query("DELETE FROM subscriptions WHERE chat_id=$1 AND symbol=$2", [chatId, symbol])
       .catch((err: unknown) => logger.error({ err }, "unsubscribe DB error"));
@@ -515,6 +528,14 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         logger.debug({ symbol: sub.symbol, prob: cooldown.skipProbability, level: cooldown.level }, 'Auto-cooldown: trade skipped');
         return null;
       }
+      // FIX Critical#9: apply minConfidenceBoost as a hard confidence gate (was stored but never enforced)
+      if (cooldown.minConfidenceBoost > 0) {
+        const minConfRequired = 8 + cooldown.minConfidenceBoost;
+        if (sig.confidence.score < minConfRequired) {
+          logger.debug({ symbol: sub.symbol, conf: sig.confidence.score, required: minConfRequired, level: cooldown.level }, 'Auto-cooldown: confidence gate — trade skipped');
+          return null;
+        }
+      }
       // M2: guard against NaN/zero effectiveRiskPct (riskPercent null/0 in DB → silent 0-size position)
       const baseRisk = (settings.riskPercent > 0 && isFinite(settings.riskPercent)) ? settings.riskPercent : 2;
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
@@ -775,8 +796,9 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     try {
       for (const chatId of chatIds) {
         const sendFn = (msg: string) => safeSend(chatId, msg);
-        const msgs = await checkPaperPositions(chatId, sendFn).catch(() => []);
-        for (const m of msgs) await safeSend(chatId, m);
+        // FIX High: msgs are already sent via sendFn inside checkPaperPositions.
+        // Iterating the returned array and calling safeSend again causes duplicate notifications.
+        await checkPaperPositions(chatId, sendFn).catch(() => {});
       }
 
       // Self Learning: every 100 trades → adapt weights, snapshot version, send report
@@ -1128,6 +1150,13 @@ cron.schedule("0 9 * * 1", async () => {
         const msg = report.fullText.slice(0, 4000);
         for (const chatId of chatIds) await safeSend(chatId, msg);
       } catch (err) { logger.warn({ err }, "Weekly research error"); }
+    });
+
+    // FIX High: schedule checkNewListings — was imported but never called in a cron
+    cron.schedule("0 * * * *", async () => {
+      try {
+        await checkNewListings(async (id, msg) => { await safeSend(id, msg); });
+      } catch (err) { logger.warn({ err }, "Listings check error"); }
     });
 
     logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");

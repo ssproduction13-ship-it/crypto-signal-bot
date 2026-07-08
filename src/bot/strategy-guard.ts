@@ -3,13 +3,19 @@ import { pool } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
 
   async function currentMetrics(): Promise<{wr:number;pf:number;n:number}> {
-    const all = await loadJournal();
-    const entries = all.filter(e=>e.closedAt).slice(-50);
+    // FIX Critical#10: use paper_closed_trades (terminal outcomes only — exclude TP1)
+    // Journal entries get closed at TP1, so loadJournal() returns partial results
+    const { rows } = await pool.query(
+      `SELECT pnl_percent FROM paper_closed_trades
+       WHERE outcome IS NOT NULL AND outcome != 'TP1'
+       ORDER BY closed_at DESC LIMIT 50`
+    );
+    const entries = (rows as Record<string,unknown>[]).map(r => Number(r["pnl_percent"]));
     if (entries.length<5) return {wr:0,pf:0,n:entries.length};
-    const wins   = entries.filter(e=>(e.pnlPercent??0)>0);
-    const losses = entries.filter(e=>(e.pnlPercent??0)<=0);
-    const gW = wins.reduce((a,e)=>a+(e.pnlPercent??0),0);
-    const gL = Math.abs(losses.reduce((a,e)=>a+(e.pnlPercent??0),0));
+    const wins   = entries.filter(v=>v>0);
+    const losses = entries.filter(v=>v<=0);
+    const gW = wins.reduce((a,v)=>a+v,0);
+    const gL = Math.abs(losses.reduce((a,v)=>a+v,0));
     return {wr:(wins.length/entries.length*100),pf:gL>0?gW/gL:0,n:entries.length};
   }
 
