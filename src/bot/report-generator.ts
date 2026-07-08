@@ -200,8 +200,10 @@ function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[]
 }
 
 function buildCoinDetails(trades: ClosedPaperTrade[], instrumentRows: Array<Record<string, unknown>> = []): CoinDetail[] {
-  // If no live trades, fall back to instrument_analytics table (restored historical data)
-  if (trades.length === 0 && instrumentRows.length > 0) {
+  // Use instrument_analytics when it contains more history than live paper_closed_trades.
+  // This handles DB resets where analytics tables were restored but paper_closed_trades is nearly empty.
+  const analyticsTotal = instrumentRows.reduce((s, r) => s + Number(r["trades"]), 0);
+  if (instrumentRows.length > 0 && analyticsTotal > trades.length) {
     return instrumentRows.map(r => {
       const t = Number(r["trades"]), w = Number(r["wins"]);
       const wr = t > 0 ? w / t * 100 : 0;
@@ -944,9 +946,11 @@ tr:hover td{background:#263348}
   <summary>⏰ Статистика по времени</summary>
   <div class="section-body">
     ${ (() => {
-      // Prefer live trades; fall back to restored time_analytics table
+      // Use time_analytics when it contains more history than live paper_closed_trades.
+      const timeAnalyticsTotal = d.timeRows.reduce((s, r) => s + Number(r["trades"]), 0);
+      const useTimeAnalytics = d.timeRows.length > 0 && timeAnalyticsTotal > d.closedTrades.length;
       let byH: Record<string,{w:number;t:number}> = {};
-      if (d.closedTrades.length > 0) {
+      if (!useTimeAnalytics && d.closedTrades.length > 0) {
         for (const t of d.closedTrades) {
           const h = String(new Date(t.closedAt).getUTCHours());
           if (!byH[h]) byH[h] = {w:0,t:0};
