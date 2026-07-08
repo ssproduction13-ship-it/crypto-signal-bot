@@ -48,6 +48,8 @@ import { pool } from "../lib/db.js";
     positions: PaperPosition[]; closedTrades: ClosedPaperTrade[];
     totalCommission: number;
     totalSlippage: number;
+    /** ISO timestamp of last paper reset — LATERAL display queries filter closed_at >= resetAt */
+    resetAt?: string;
   }
   export interface FactorWeights {
     trend: number; volume: number; momentum: number; levels: number; pattern: number;
@@ -246,14 +248,19 @@ import { pool } from "../lib/db.js";
       totalSlippage:    acc?Number(acc["total_slippage"]??0):0,
       positions:   p.rows.map(r=>toPos(r as Record<string,unknown>)),
       closedTrades:t.rows.map(r=>toTrade(r as Record<string,unknown>)),
+      resetAt: acc ? String(acc["reset_at"] ?? '') : '',
     };
   }
   export async function savePaperAccount(chatId: number, a: PaperAccount): Promise<void> {
     const peak = Math.max(a.balance, a.peakBalance ?? a.balance);
     await pool.query(
-      `INSERT INTO paper_accounts(chat_id,balance,initial_balance,peak_balance) VALUES($1,$2,$3,$4)
-       ON CONFLICT(chat_id) DO UPDATE SET balance=EXCLUDED.balance, peak_balance=EXCLUDED.peak_balance`,
-      [chatId,a.balance,a.initialBalance,peak]
+      `INSERT INTO paper_accounts(chat_id,balance,initial_balance,peak_balance,reset_at)
+       VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         balance=EXCLUDED.balance,
+         peak_balance=EXCLUDED.peak_balance,
+         reset_at=COALESCE(EXCLUDED.reset_at, paper_accounts.reset_at)`,
+      [chatId,a.balance,a.initialBalance,peak,a.resetAt||null]
     );
     await pool.query("DELETE FROM paper_positions WHERE chat_id=$1",[chatId]);
     for (const pos of a.positions) {
