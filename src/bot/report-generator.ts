@@ -131,7 +131,11 @@ function calcWindow(trades: ClosedPaperTrade[], label: string): WindowStats | nu
   let maxWin = 0, maxLoss = 0, curWin = 0, curLoss = 0;
   for (const t of trades) {
     if (t.pnl > 0) { curWin++; curLoss = 0; maxWin = Math.max(maxWin, curWin); }
-    else { curLoss++; curW
+    else { curLoss++; curWin = 0; maxLoss = Math.max(maxLoss, curLoss); }
+  }
+  return { label, trades: trades.length, wr, pf, expectancy: exp, rr, avgWin: aw, avgLoss: al, maxLossStreak: maxLoss, maxWinStreak: maxWin, grossWin: gw, grossLoss: gl };
+}
+
 function buildStrategyDetails(
   trades: ClosedPaperTrade[],
   stats: StrategyStats[],
