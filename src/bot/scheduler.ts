@@ -383,27 +383,19 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
         gate.pass("Режим рынка", `${regime} → ${strat} OK`);
       }
 
-      // ── ТЗ: Direction Guard — раздельный карантин/вес по LONG/SHORT ────────
-      const { rows: dirWeightRows } = await pool.query(
-        "SELECT weight,quarantine,trades FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2",
-        [strat, sig.score.direction]
+      // ── Entity Guard — независимый карантин/вес по strategy+direction ────────
+      const entityKey = `${strat}_${sig.score.direction}`;
+      const { rows: entityWeightRows } = await pool.query(
+        "SELECT weight, quarantine FROM strategy_entity_weights WHERE entity=$1",
+        [entityKey]
       ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
-      const dirRow = dirWeightRows[0] as Record<string, unknown> | undefined;
-      const dirWeight = dirRow ? Number(dirRow["weight"]) : 1.0;
-      const dirQuarantine = dirRow ? Boolean(dirRow["quarantine"]) : false;
-      if (!gate.rejected && dirQuarantine) {
-        gate.fail("Direction Guard", `${strat} ${sig.score.direction} в карантине по направлению`, `PF < 0.5 на ${dirRow?.["trades"]} сделках`);
-
-        // ── ТЗ: выход из direction карантина — записать shadow trade для мониторинга ──
-        loadWeights().then(w =>
-          openShadowPosition(
-            sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG" | "SHORT",
-            sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-            strat, w, regime, true
-          ).catch(() => {})
-        ).catch(() => {});
+      const entityRow = entityWeightRows[0] as Record<string, unknown> | undefined;
+      const entityWeight = entityRow ? Number(entityRow["weight"]) : 1.0;
+      const entityQuarantine = entityRow ? Boolean(entityRow["quarantine"]) : false;
+      if (!gate.rejected && entityQuarantine) {
+        gate.fail("Entity Guard", `${entityKey} в карантине`, `вес ${(entityWeight * 100).toFixed(0)}%`, "");
       } else if (!gate.rejected) {
-        gate.pass("Direction Guard", dirRow ? `${strat} ${sig.score.direction} вес ${(dirWeight * 100).toFixed(0)}%` : "bootstrap");
+        gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");
       }
 
       if (!gate.rejected && stratWeight === 0) {
@@ -527,7 +519,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * dirWeight;
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return null;
