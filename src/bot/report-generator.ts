@@ -136,7 +136,14 @@ function calcWindow(trades: ClosedPaperTrade[], label: string): WindowStats | nu
 }
 
 function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[], weights: Array<Record<string, unknown>>): StrategyDetail[] {
-  const strats = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
+  // Derive strategy list dynamically from all available data sources
+  const stratSet = new Set<string>();
+  for (const s of stats) if ((s.strategy as string) !== "UNKNOWN") stratSet.add(s.strategy as string);
+  for (const w of weights) if (w["strategy"] && w["strategy"] !== "UNKNOWN") stratSet.add(w["strategy"] as string);
+  for (const t of trades) if (t.strategy && (t.strategy as string) !== "UNKNOWN") stratSet.add(t.strategy as string);
+  // Always include base strategies even if no data yet
+  for (const base of ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"]) stratSet.add(base);
+  const strats = [...stratSet].sort();
   const now = Date.now();
   return strats.map(strat => {
     const st = trades.filter(t => t.strategy === strat);
