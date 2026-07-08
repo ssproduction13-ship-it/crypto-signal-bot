@@ -717,9 +717,9 @@ export async function snapshotStrategyVersion(changes:string): Promise<void> {
   const {rows:wRows} = await pool.query("SELECT * FROM factor_weights WHERE id=1");
   const weights=wRows.length ? wRows[0] as Record<string,unknown> : {};
   const {rows:statsRows} = await pool.query(
-    "SELECT pnl_percent FROM paper_closed_trades WHERE pnl_percent IS NOT NULL ORDER BY closed_at DESC LIMIT 100"
+    "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 100"
   );
-  const pnls=statsRows.map(r=>Number((r as Record<string,unknown>)["pnl_percent"]));
+  const pnls=statsRows.map(r=>Number((r as Record<string,unknown>)["pnl"]));
   const wins=pnls.filter(p=>p>0);
   const losses=pnls.filter(p=>p<=0);
   const wr=pnls.length?wins.length/pnls.length*100:0;
@@ -736,11 +736,16 @@ export async function snapshotStrategyVersion(changes:string): Promise<void> {
   const rf=dd>0?((eq-100)/dd):0;
   const label=await getVersionCounter();
 
+  const {rows:entitySnap} = await pool.query(
+    "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
+  );
+  const notesPayload = JSON.stringify({ reason: changes, entityWeights: entitySnap });
+
   await pool.query("UPDATE strategy_versions SET is_best=false WHERE is_best=true");
   await pool.query(
     `INSERT INTO strategy_versions(created_at,weights,win_rate,profit_factor,trade_count,is_best,version_label,total_return,max_drawdown,sharpe_ratio,recovery_factor,notes)
      VALUES($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11)`,
-    [new Date().toISOString(),JSON.stringify(weights),wr,pf,pnls.length,label,eq-100,dd,sharpe,rf,changes]
+    [new Date().toISOString(),JSON.stringify(weights),wr,pf,pnls.length,label,eq-100,dd,sharpe,rf,notesPayload]
   );
   const {rows:all} = await pool.query("SELECT id FROM strategy_versions ORDER BY created_at DESC OFFSET 10");
   for (const r of all as Record<string,unknown>[])
@@ -760,11 +765,29 @@ export async function checkAndRollback(): Promise<string|null> {
   if (prevPF>0.5 && curPF<prevPF*0.8) {
     const bestWeights=(prev["weights"] as Record<string,unknown>);
     await pool.query(
-      "UPDATE factor_weights SET trend=$1,volume=$2,momentum=$3,levels=$4,pattern=$5 WHERE id=1",
-      [bestWeights["trend"],bestWeights["volume"],bestWeights["momentum"],bestWeights["levels"],bestWeights["pattern"]]
-    );
-    logger.warn({curPF,prevPF},"Strategy rolled back to previous version");
-    return `🔄 *Откат стратегии*\nТекущий PF ${curPF.toFixed(2)} хуже предыдущего ${prevPF.toFixed(2)} на >20%.\nВосстановлена версия ${cur["version_label"]??prev["version_label"]}.`;
+        "UPDATE factor_weights SET trend=$1,volume=$2,momentum=$3,levels=$4,pattern=$5 WHERE id=1",
+        [bestWeights["trend"],bestWeights["volume"],bestWeights["momentum"],bestWeights["levels"],bestWeights["pattern"]]
+      );
+
+      let entityRestoreNote = "";
+      try {
+        const prevNotes = JSON.parse((prev["notes"] as string) ?? "{}") as { entityWeights?: Array<Record<string, unknown>> };
+        const prevEntityWeights = prevNotes.entityWeights;
+        if (prevEntityWeights && prevEntityWeights.length > 0) {
+          for (const ew of prevEntityWeights) {
+            await pool.query(
+              "UPDATE strategy_entity_weights SET weight=$2, quarantine=$3 WHERE entity=$1",
+              [ew["entity"], ew["weight"], ew["quarantine"]]
+            );
+          }
+          entityRestoreNote = `\nВосстановлены веса ${prevEntityWeights.length} сущностей.`;
+        }
+      } catch (err) {
+        logger.warn({ err }, "Failed to restore entity_weights from snapshot notes");
+      }
+
+      logger.warn({curPF,prevPF},"Strategy rolled back to previous version");
+    return `🔄 *Откат стратегии*\nТекущий PF ${curPF.toFixed(2)} хуже предыдущего ${prevPF.toFixed(2)} на >20%.\nВосстановлена версия ${cur["version_label"]??prev["version_label"]}.${entityRestoreNote}`;
   }
   return null;
 }
