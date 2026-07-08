@@ -490,9 +490,7 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
     bot.action("paperreset_do", async (ctx) => {
       await ctx.answerCbQuery();
       const { savePaperAccount } = await import("./storage.js");
-      await savePaperAccount(ctx.chat!.id, { balance:10000, initialBalance:10000, peakBalance:10000, positions:[], closedTrades:[] });
-      // Clear closed trades from DB so PF/WR reset to match the new learning period
-      await pool.query("DELETE FROM paper_closed_trades WHERE chat_id=$1", [ctx.chat!.id]);
+      await savePaperAccount(ctx.chat!.id, { balance:10000, initialBalance:10000, peakBalance:10000, positions:[], closedTrades:[], resetAt: new Date().toISOString() });
       await ctx.reply("✅ Счёт сброшен до $10,000", mainMenu());
     });
 
@@ -876,6 +874,9 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const rating = calcMarketRating(ind, market, candles);
         const regime = detectMarketRegime(market, rating);
 
+        const { loadPaperAccount: _lpa } = await import("./storage.js");
+        const _acct = await _lpa(ctx.chat!.id);
+        const _resetAt = _acct.resetAt || '1970-01-01';
         const {rows: entityRows} = await pool.query(
           `SELECT sew.entity, sew.strategy, sew.direction,
                   sew.weight, sew.quarantine, sew.trust_score,
@@ -890,13 +891,14 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
                AND chat_id   = $1
+               AND closed_at >= $2
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id]
+           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id, _resetAt]
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
@@ -1572,6 +1574,9 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const rating = calcMarketRating(ind, market, candles);
         const regime = detectMarketRegime(market, rating);
 
+        const { loadPaperAccount: _lpa } = await import("./storage.js");
+        const _acct = await _lpa(ctx.chat!.id);
+        const _resetAt = _acct.resetAt || '1970-01-01';
         const {rows: entityRows} = await pool.query(
           `SELECT sew.entity, sew.strategy, sew.direction,
                   sew.weight, sew.quarantine, sew.trust_score,
@@ -1586,13 +1591,14 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
                AND chat_id   = $1
+               AND closed_at >= $2
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id]
+           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id, _resetAt]
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
