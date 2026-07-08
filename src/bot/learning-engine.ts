@@ -507,6 +507,21 @@ function pfToTargetWeight(pf: number): number {
        LIMIT $2`,
       [strategy, ADAPTATION_WINDOW]
     );
+    // Fall back to strategy_stats when live trades table has less history
+    const { rows: ssRows } = await pool.query(
+      `SELECT trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_stats WHERE strategy=$1`,
+      [strategy as string]
+    ).catch(() => ({ rows: [] }));
+    const ss = (ssRows as Record<string, unknown>[])[0];
+    const ssTrades = ss ? Number(ss["trades"]) : 0;
+    if (ssTrades > rows.length) {
+      const wins     = ss ? Number(ss["wins"])      : 0;
+      const winPnl   = ss ? Number(ss["win_pnl"])   : 0;
+      const lossPnl  = ss ? Number(ss["loss_pnl"])  : 0;
+      const totalPnl = ss ? Number(ss["total_pnl"]) : 0;
+      const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+      return { trades: ssTrades, wins, winPnl, lossPnl, totalPnl, pf };
+    }
     const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
     const trades   = pnls.length;
     const wins     = pnls.filter(p => p > 0).length;
@@ -531,6 +546,21 @@ function pfToTargetWeight(pf: number): number {
        LIMIT $3`,
       [strategy, direction, ADAPTATION_WINDOW]
     );
+    // Fall back to strategy_direction_stats when live trades table has less history
+    const { rows: sdsRows } = await pool.query(
+      `SELECT trades, wins, win_pnl, loss_pnl
+       FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2`,
+      [strategy, direction]
+    ).catch(() => ({ rows: [] }));
+    const sds = (sdsRows as Record<string, unknown>[])[0];
+    const sdsTrades = sds ? Number(sds["trades"]) : 0;
+    if (sdsTrades > rows.length) {
+      const wins    = sds ? Number(sds["wins"])     : 0;
+      const winPnl  = sds ? Number(sds["win_pnl"])  : 0;
+      const lossPnl = sds ? Number(sds["loss_pnl"]) : 0;
+      const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+      return { trades: sdsTrades, wins, winPnl, lossPnl, pf };
+    }
     const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
     const trades  = pnls.length;
     const wins    = pnls.filter(p => p > 0).length;
@@ -556,6 +586,23 @@ function pfToTargetWeight(pf: number): number {
        LIMIT $3`,
       [strategy, direction, ADAPTATION_WINDOW]
     );
+    // Fall back to strategy_direction_stats when live trades table has less history
+    // (handles DB resets where paper_closed_trades was wiped but analytics tables are preserved)
+    const { rows: sdsRows } = await pool.query(
+      `SELECT trades, wins, win_pnl, loss_pnl, total_pnl
+       FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2`,
+      [strategy, direction]
+    ).catch(() => ({ rows: [] }));
+    const sds = (sdsRows as Record<string, unknown>[])[0];
+    const sdsTrades = sds ? Number(sds["trades"]) : 0;
+    if (sdsTrades > rows.length) {
+      const wins     = sds ? Number(sds["wins"])      : 0;
+      const winPnl   = sds ? Number(sds["win_pnl"])   : 0;
+      const lossPnl  = sds ? Number(sds["loss_pnl"])  : 0;
+      const totalPnl = sds ? Number(sds["total_pnl"]) : 0;
+      const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+      return { trades: sdsTrades, wins, winPnl, lossPnl, totalPnl, pf };
+    }
     const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
     const trades   = pnls.length;
     const wins     = pnls.filter(p => p > 0).length;
