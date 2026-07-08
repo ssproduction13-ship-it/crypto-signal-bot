@@ -19,7 +19,7 @@ import { Telegraf, Markup } from "telegraf";
 import { pool } from "../lib/db.js";
   import type { Interval } from "./binance.js";
   import {
-    getAllStrategyStatuses, getLearningHistory, generateLearningReport,
+    getAllStrategyStatuses, getAllEntityStatuses, getLearningHistory, generateLearningReport,
     getStrategyEvolutionHistory, detectMarketRegime,
     runAdaptationCycle, snapshotStrategyVersion,
   } from "./learning-engine.js";
@@ -234,15 +234,12 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
     // ── Заработок ──────────────────────────────────────────────────────────
     // ── Обзор (Dashboard) ────────────────────────────────────────────────────
       async function buildDashboardMessage(chatId: number): Promise<string> {
-        const [account, statuses, health, readiness, dirStatResult] = await Promise.all([
+        const [account, entityStatuses, health, readiness] = await Promise.all([
           loadPaperAccount(chatId),
-          getAllStrategyStatuses().catch(() => [] as any[]),
+          getAllEntityStatuses().catch(() => []),
           checkLearningHealth(chatId).catch(() => null),
           calcReadinessIndex(chatId).catch(() => null),
-          pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl
-            FROM strategy_direction_stats WHERE trades >= 5`).catch(() => ({ rows: [] })),
         ]);
-        const dirStatRows = ((dirStatResult as any).rows ?? []) as Record<string,unknown>[];
 
         const trades = account.closedTrades;
         const wins   = trades.filter((t: any) => t.pnl > 0);
@@ -283,36 +280,25 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
               }
             }));
 
-        // Strategy row
-        const stratEmoji: Record<string, string> = {
-          TREND: "📈", BREAKOUT: "🚀", VOLUME_IMPULSE: "⚡", MEAN_REVERSION: "↩️",
+        // Strategy row (8 entities)
+        const entityIcons: Record<string, string> = {
+          "TREND_LONG": "📈", "TREND_SHORT": "📉",
+          "VOLUME_IMPULSE_LONG": "⚡↑", "VOLUME_IMPULSE_SHORT": "⚡↓",
+          "MEAN_REVERSION_LONG": "↩️↑", "MEAN_REVERSION_SHORT": "↩️↓",
+          "BREAKOUT_LONG": "🚀↑", "BREAKOUT_SHORT": "🚀↓",
         };
-        const stratShort: Record<string, string> = {
-          TREND: "Тренд", BREAKOUT: "Пробой", VOLUME_IMPULSE: "Импульс", MEAN_REVERSION: "Возврат",
-        };
-        const sortedStrats = (statuses as any[])
+        const sortedStrats = (entityStatuses as any[])
           .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
         const best = sortedStrats[0];
         const stratLines: string[] = sortedStrats.length > 0
           ? sortedStrats.flatMap((s: any) => {
-              const icon   = stratEmoji[s.strategy] ?? "▪️";
-              const name   = stratShort[s.strategy] ?? s.strategy;
+              const icon   = entityIcons[s.entity] ?? "▪️";
               const status = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
-              if (s.trades < 3) return [`${status}${icon} ${name} — _нет данных (${s.trades} сд.)_`];
+              if (s.trades < 3) return [`${status}${icon} ${s.entity} — _нет данных (${s.trades} сд.)_`];
               const wr  = (s.winRate * 100).toFixed(0);
               const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
               const tr  = s.trustScore ?? 0;
-              const sl: string[] = [`${status}${icon} *${name}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
-              for (const dir of ["LONG", "SHORT"]) {
-                const dr = dirStatRows.find(r => r["strategy"] === s.strategy && r["direction"] === dir);
-                if (!dr) continue;
-                const dt = Number(dr["trades"]), dw = Number(dr["wins"]);
-                const dwp = Number(dr["win_pnl"]), dlp = Number(dr["loss_pnl"]);
-                const dwr = dt > 0 ? (dw / dt * 100).toFixed(0) : "—";
-                const dpf = dlp > 0 ? (dwp / dlp).toFixed(2) : dwp > 0 ? "∞" : "—";
-                sl.push(`  ↳ ${dir === "LONG" ? "⬆️ Лонг" : "⬇️ Шорт"}  WR ${dwr}% · PF ${dpf} · n=${dt}`);
-              }
-              return sl;
+              return [`${status}${icon} *${s.entity}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
             })
           : ["_нет данных о стратегиях_"];
         const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
@@ -325,7 +311,7 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const parts: string[] = [];
         if (best && best.trades >= 5) {
           const bWr = (best.winRate * 100).toFixed(0);
-          parts.push(`Лидер — ${stratShort[best.strategy] ?? best.strategy} (Trust ${best.trustScore}/100, WR ${bWr}%).`);
+          parts.push(`Лидер — ${best.entity} (Trust ${best.trustScore}/100, WR ${bWr}%).`);
         }
         if (wr >= 60)           parts.push(`WR ${wr.toFixed(0)}% — выше нормы.`);
         else if (wr > 0 && wr < 45) parts.push(`WR ${wr.toFixed(0)}% — ниже нормы, следи за качеством.`);
@@ -888,47 +874,53 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const rating = calcMarketRating(ind, market, candles);
         const regime = detectMarketRegime(market, rating);
 
-        const [statuses, {rows: dirStatRows}] = await Promise.all([
-            getAllStrategyStatuses(regime),
-            pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl
-              FROM strategy_direction_stats WHERE trades >= 10`),
-          ]);
+        const {rows: entityRows} = await pool.query(
+          `SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
+                  weight, quarantine, trust_score
+           FROM strategy_entity_weights
+           ORDER BY strategy, direction`
+        );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
             sideways:"↔️ Боковик",high_vol:"⚡ Волат.",low_vol:"😴 Затишье",
           };
-          const statusIcon: Record<string,string> = {active:"✅",quarantine:"⚠️",disabled:"🚫"};
-          const statusLabel: Record<string,string> = {active:"Активна",quarantine:"Карантин",disabled:"Shadow"};
 
           const lines = [
             `🏆 *Стратегии* | Режим: ${regimeLabels[regime] ?? regime}`,
             "",
           ];
-          for (const s of statuses) {
-            const icon = statusIcon[s.status] ?? "✅";
-            const sl   = statusLabel[s.status] ?? s.status;
-            const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
-            const wr   = (s.winRate * 100).toFixed(1);
-            const ADAPT_THRESHOLD = 30;
-            const adaptLine = s.trades >= ADAPT_THRESHOLD
-              ? `Адаптация активна | Вес: ${(s.weight*100).toFixed(0)}%`
-              : `До адаптации: ${ADAPT_THRESHOLD - s.trades} сделок`;
+
+          const entityIcons: Record<string, string> = {
+            "TREND_LONG": "📈", "TREND_SHORT": "📉",
+            "VOLUME_IMPULSE_LONG": "⚡↑", "VOLUME_IMPULSE_SHORT": "⚡↓",
+            "MEAN_REVERSION_LONG": "↩️↑", "MEAN_REVERSION_SHORT": "↩️↓",
+            "BREAKOUT_LONG": "🚀↑", "BREAKOUT_SHORT": "🚀↓",
+          };
+
+          for (const r of entityRows as Record<string, unknown>[]) {
+            const entity    = r["entity"] as string;
+            const trades    = Number(r["trades"]);
+            const wins      = Number(r["wins"]);
+            const winPnl    = Number(r["win_pnl"]);
+            const lossPnl   = Number(r["loss_pnl"]);
+            const weight    = Number(r["weight"]);
+            const quarantine = Boolean(r["quarantine"]);
+            const trust     = Number(r["trust_score"]);
+
+            const wr  = trades > 0 ? (wins / trades * 100).toFixed(1) : "—";
+            const pf  = lossPnl > 0 ? (winPnl / lossPnl).toFixed(2) : winPnl > 0 ? "∞" : "—";
+            const wPct = (weight * 100).toFixed(0);
+            const icon = quarantine ? "⚠️" : weight >= 0.8 ? "✅" : "📉";
+            const emojiEntity = entityIcons[entity] ?? "•";
+            const adaptLine = trades >= 10
+              ? `Вес: ${wPct}% | Trust: ${trust}/100`
+              : `Сделок: ${trades} (нужно 10 для адаптации)`;
+
             lines.push(
-              `${icon} *${s.strategy}* — ${sl}\n` +
-              `  Сделок: ${s.trades} | ${adaptLine}\n` +
-              `  Trust: ${s.trustScore}/100 | WR: ${wr}% | PF: ${pf}`
+              `${icon} ${emojiEntity} *${entity}*\n` +
+              `  WR: ${wr}% | PF: ${pf} | n=${trades}\n` +
+              `  ${adaptLine}${quarantine ? " | ⚠️ КАРАНТИН" : ""}`
             );
-            // ↳ TREND_LONG / TREND_SHORT direction breakdown
-            for (const dir of ["LONG","SHORT"]) {
-              const dr = (dirStatRows as Record<string,unknown>[]).find(
-                r => r["strategy"]===s.strategy && r["direction"]===dir
-              );
-              if (!dr) continue;
-              const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
-              const dwr=(dw/dt*100).toFixed(0);
-              const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
-              lines.push(`  ↳ ${s.strategy}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt}`);
-            }
           }
             await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply(lines.join("\n"), {
@@ -1555,47 +1547,53 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const rating = calcMarketRating(ind, market, candles);
         const regime = detectMarketRegime(market, rating);
 
-        const [statuses, {rows: dirStatRows}] = await Promise.all([
-            getAllStrategyStatuses(regime),
-            pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl
-              FROM strategy_direction_stats WHERE trades >= 10`),
-          ]);
+        const {rows: entityRows} = await pool.query(
+          `SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
+                  weight, quarantine, trust_score
+           FROM strategy_entity_weights
+           ORDER BY strategy, direction`
+        );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
             sideways:"↔️ Боковик",high_vol:"⚡ Волат.",low_vol:"😴 Затишье",
           };
-          const statusIcon: Record<string,string> = {active:"✅",quarantine:"⚠️",disabled:"🚫"};
-          const statusLabel: Record<string,string> = {active:"Активна",quarantine:"Карантин",disabled:"Shadow"};
 
           const lines = [
             `🏆 *Стратегии* | Режим: ${regimeLabels[regime] ?? regime}`,
             "",
           ];
-          for (const s of statuses) {
-            const icon = statusIcon[s.status] ?? "✅";
-            const sl   = statusLabel[s.status] ?? s.status;
-            const pf   = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
-            const wr   = (s.winRate * 100).toFixed(1);
-            const ADAPT_THRESHOLD = 30;
-            const adaptLine = s.trades >= ADAPT_THRESHOLD
-              ? `Адаптация активна | Вес: ${(s.weight*100).toFixed(0)}%`
-              : `До адаптации: ${ADAPT_THRESHOLD - s.trades} сделок`;
+
+          const entityIcons: Record<string, string> = {
+            "TREND_LONG": "📈", "TREND_SHORT": "📉",
+            "VOLUME_IMPULSE_LONG": "⚡↑", "VOLUME_IMPULSE_SHORT": "⚡↓",
+            "MEAN_REVERSION_LONG": "↩️↑", "MEAN_REVERSION_SHORT": "↩️↓",
+            "BREAKOUT_LONG": "🚀↑", "BREAKOUT_SHORT": "🚀↓",
+          };
+
+          for (const r of entityRows as Record<string, unknown>[]) {
+            const entity    = r["entity"] as string;
+            const trades    = Number(r["trades"]);
+            const wins      = Number(r["wins"]);
+            const winPnl    = Number(r["win_pnl"]);
+            const lossPnl   = Number(r["loss_pnl"]);
+            const weight    = Number(r["weight"]);
+            const quarantine = Boolean(r["quarantine"]);
+            const trust     = Number(r["trust_score"]);
+
+            const wr  = trades > 0 ? (wins / trades * 100).toFixed(1) : "—";
+            const pf  = lossPnl > 0 ? (winPnl / lossPnl).toFixed(2) : winPnl > 0 ? "∞" : "—";
+            const wPct = (weight * 100).toFixed(0);
+            const icon = quarantine ? "⚠️" : weight >= 0.8 ? "✅" : "📉";
+            const emojiEntity = entityIcons[entity] ?? "•";
+            const adaptLine = trades >= 10
+              ? `Вес: ${wPct}% | Trust: ${trust}/100`
+              : `Сделок: ${trades} (нужно 10 для адаптации)`;
+
             lines.push(
-              `${icon} *${s.strategy}* — ${sl}\n` +
-              `  Сделок: ${s.trades} | ${adaptLine}\n` +
-              `  Trust: ${s.trustScore}/100 | WR: ${wr}% | PF: ${pf}`
+              `${icon} ${emojiEntity} *${entity}*\n` +
+              `  WR: ${wr}% | PF: ${pf} | n=${trades}\n` +
+              `  ${adaptLine}${quarantine ? " | ⚠️ КАРАНТИН" : ""}`
             );
-            // ↳ TREND_LONG / TREND_SHORT direction breakdown
-            for (const dir of ["LONG","SHORT"]) {
-              const dr = (dirStatRows as Record<string,unknown>[]).find(
-                r => r["strategy"]===s.strategy && r["direction"]===dir
-              );
-              if (!dr) continue;
-              const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
-              const dwr=(dw/dt*100).toFixed(0);
-              const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
-              lines.push(`  ↳ ${s.strategy}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt}`);
-            }
           }
             await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply(lines.join("\n"), {
