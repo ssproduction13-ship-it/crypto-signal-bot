@@ -7,6 +7,26 @@ import type { MarketRating } from "./market-rating.js";
 export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol";
 export type StrategyStatus = "active"|"quarantine"|"disabled";
 
+export type StrategyEntity =
+  | "TREND_LONG" | "TREND_SHORT"
+  | "VOLUME_IMPULSE_LONG" | "VOLUME_IMPULSE_SHORT"
+  | "MEAN_REVERSION_LONG" | "MEAN_REVERSION_SHORT"
+  | "BREAKOUT_LONG" | "BREAKOUT_SHORT";
+
+export function getEntity(strategy: StrategyName, direction: "LONG"|"SHORT"): StrategyEntity {
+  return `${strategy}_${direction}` as StrategyEntity;
+}
+
+export interface EntityTrustResult {
+  entity: StrategyEntity;
+  trustScore: number;
+  status: StrategyStatus;
+  weight: number;
+  trades: number;
+  winRate: number;
+  profitFactor: number;
+}
+
 export interface StrategyTrustResult {
   strategy: StrategyName;
   trustScore: number;
@@ -268,21 +288,25 @@ export async function selectBestStrategy(
   if (!signals.length) return null;
 
   const {rows:wRows} = await pool.query(
-    "SELECT strategy,weight,disabled,disabled_until,quarantine,trust_score FROM strategy_weights"
+    "SELECT entity, weight, quarantine FROM strategy_entity_weights"
   );
 
   const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number;finalScore:number}> = [];
 
   for (const sig of signals) {
-    const wRow = (wRows as Record<string,unknown>[]).find(r => r["strategy"] === sig.strategy);
-    // Learning mode: never fully exclude a strategy — min weight 0.10 (TZ §2 exploration floor)
+    const entity = getEntity(sig.strategy, sig.direction as "LONG"|"SHORT");
+    const wRow = (wRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
+    // Learning mode: never fully exclude an entity — min weight 0.10 (TZ §2 exploration floor)
     const weight = Math.max(0.10, wRow ? Number(wRow["weight"]) : 1);
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
 
-    // Quarantine: only allow moderate-confidence signals (≥35%)
-    if (isQuarantine && sig.confidence < 35) continue;
+    // Entity quarantine: block signal entirely
+    if (isQuarantine) {
+      logger.debug({ entity }, "Entity in quarantine — skipping signal");
+      continue;
+    }
 
-    const recent = await getRecentStrategyStats(sig.strategy);
+    const recent = await getRecentEntityStats(entity);
     const trustScore = await calcTrustScore(sig.strategy, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
 
     // Regime-specific PF
@@ -374,6 +398,37 @@ export async function getAllStrategyStatuses(
     const wr = recent.trades > 0 ? recent.wins / recent.trades : 0;
     const status: StrategyStatus = isActuallyDisabled ? "disabled" : isQuarantine ? "quarantine" : "active";
     results.push({strategy:stratName, trustScore, status, weight, trades:recent.trades, winRate:wr, profitFactor:pf});
+  }
+  return results;
+}
+
+// ── Get all entity statuses (8-entity architecture) ──────────────────────────
+export async function getAllEntityStatuses(
+  regime: MarketRegime = "sideways"
+): Promise<EntityTrustResult[]> {
+  const ENTITIES: StrategyEntity[] = [
+    "TREND_LONG", "TREND_SHORT",
+    "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
+    "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
+    "BREAKOUT_LONG", "BREAKOUT_SHORT",
+  ];
+  const {rows:ewRows} = await pool.query(
+    "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
+  );
+  const results: EntityTrustResult[] = [];
+  for (const entity of ENTITIES) {
+    const recent = await getRecentEntityStats(entity);
+    const wRow = (ewRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
+    const weight = wRow ? Number(wRow["weight"]) : 1.0;
+    const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
+    const entityParts = entity.split("_");
+    const entityDir = entityParts.pop() as string;
+    const entityStrat = entityParts.join("_") as StrategyName;
+    const trustScore = await calcTrustScore(entityStrat, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
+    const wr = recent.trades > 0 ? recent.wins / recent.trades : 0;
+    const status: StrategyStatus = isQuarantine ? "quarantine" : "active";
+    results.push({ entity, trustScore, status, weight, trades: recent.trades, winRate: wr, profitFactor: recent.pf });
+    void entityDir;
   }
   return results;
 }
@@ -485,6 +540,32 @@ function pfToTargetWeight(pf: number): number {
     return { trades, wins, winPnl, lossPnl, pf };
   }
 
+  async function getRecentEntityStats(entity: StrategyEntity): Promise<{
+    trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
+  }> {
+    const parts = entity.split("_");
+    const direction = parts.pop() as string;
+    const strategy = parts.join("_");
+    const { rows } = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+       FROM paper_closed_trades
+       WHERE strategy=$1
+         AND direction=$2
+         AND outcome NOT IN ('TIMEOUT_STALE')
+       ORDER BY closed_at DESC
+       LIMIT $3`,
+      [strategy, direction, ADAPTATION_WINDOW]
+    );
+    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+    const trades   = pnls.length;
+    const wins     = pnls.filter(p => p > 0).length;
+    const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+    const totalPnl = pnls.reduce((a, b) => a + b, 0);
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    return { trades, wins, winPnl, lossPnl, totalPnl, pf };
+  }
+
   export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,quarantine,cycles_below_threshold FROM strategy_weights"
@@ -499,273 +580,105 @@ function pfToTargetWeight(pf: number): number {
     };
 
   const changes:string[]=[];
-  const STRATS = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
 
-  for (const strat of STRATS) {
-    // ── Sliding window PF: last ADAPTATION_WINDOW trades instead of lifetime cumulative ──
-      // Prevents pollution from legacy fallback-TREND records written before fix C1.
-      const recent = await getRecentStrategyStats(strat);
-      const trades   = recent.trades;
-      const wins     = recent.wins;
-      const winPnl   = recent.winPnl;
-      const lossPnl  = recent.lossPnl;
-      const totalPnl = recent.totalPnl;
-      const pf       = recent.pf;
-      const isNegativeReturn = totalPnl < 0;
+  // ── Entity adaptation: 8 independent strategy×direction units ────────────────
+  const {rows:ewRows} = await pool.query(
+    "SELECT entity, weight, quarantine, cycles_below_threshold FROM strategy_entity_weights"
+  );
+  const entityCurW: Record<string, {weight:number;cycles:number;quarantine:boolean}> = {};
+  for (const r of ewRows as Record<string,unknown>[])
+    entityCurW[r["entity"] as string] = {
+      weight: Number(r["weight"]),
+      cycles: Number(r["cycles_below_threshold"]),
+      quarantine: Boolean(r["quarantine"]),
+    };
 
-      // ── 1. Gradual learning: start adapting at 20 trades (TZ §3) ───────────
-      // Confidence scale: 20-49 trades=30%, 50-99=70%, 100+=100%
-      // trades = min(real count, ADAPTATION_WINDOW) — threshold behaviour unchanged
-      const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0;
-      if (confidenceScale === 0) {
-        logger.debug({strat,trades},"Adaptation skipped: insufficient sample (<20)");
-        continue;
-      }
+  const ENTITIES: StrategyEntity[] = [
+    "TREND_LONG", "TREND_SHORT",
+    "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
+    "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
+    "BREAKOUT_LONG", "BREAKOUT_SHORT",
+  ];
 
-    const cur = curW[strat] ?? {weight:1,cycles:0,disabled:false,quarantine:false};
-    const trustScore = await calcTrustScore(strat, trades, wins, winPnl, lossPnl, totalPnl, "sideways");
+  for (const entity of ENTITIES) {
+    const recent = await getRecentEntityStats(entity);
+    const { trades, wins, winPnl, lossPnl, totalPnl, pf } = recent;
+    const isNegativeReturn = totalPnl < 0;
 
-    let newW = cur.weight;
-    let newCycles = cur.cycles;
-    let newDisabled = cur.disabled;
+    if (trades < 10) continue;
+
+    const entityParts = entity.split("_");
+    const entityDir = entityParts.pop() as string;
+    const entityStrat = entityParts.join("_") as StrategyName;
+
+    const cur = entityCurW[entity] ?? { weight: 1.0, cycles: 0, quarantine: false };
+    const trustScore = await calcTrustScore(entityStrat, trades, wins, winPnl, lossPnl, totalPnl, "sideways");
+
+    let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
-    let disabledUntil: string|null = null;
-    let changeReason = "";
 
-    // ── 4. Learning mode: never fully disable — use exploration floor 0.10 (TZ §5) ──
-    // Strategies with 100+ trades and PF<0.7 get pinned to 0.10 weight (not disabled)
-    if (trades >= 100 && pf < 0.7 && isNegativeReturn && !cur.disabled) {
+    if (trades >= 10 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
       newQuarantine = true;
-      newW = 0.10; // exploration floor — always gets 10% of slots
-      changeReason = `Слабая стратегия (${trades} сд, PF ${pf.toFixed(2)}) → вес минимум 10% (режим обучения)`;
-      changes.push(`⚠️ ${strat}: вес → 10% (PF ${pf.toFixed(2)}, режим обучения — не отключаем)`);
-      await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-      await pool.query(
-        `UPDATE strategy_weights SET weight=$2,disabled=false,disabled_until=NULL,quarantine=true,
-         cycles_below_threshold=$3,trust_score=$4,updated_at=$5 WHERE strategy=$1`,
-        [strat, newW, cur.cycles + 1, trustScore, new Date().toISOString()]
-      );
-      continue;
-    }
-
-    // Re-enable: check shadow performance if disabled
-    if (cur.disabled) {
-      const {rows:shadowRows} = await pool.query(
-        `SELECT COUNT(*) as cnt,
-                SUM(CASE WHEN is_win THEN 1 ELSE 0 END) as wins,
-                SUM(CASE WHEN is_win THEN pnl_percent ELSE 0 END) as win_pnl,
-                SUM(CASE WHEN NOT is_win THEN ABS(pnl_percent) ELSE 0 END) as loss_pnl
-         FROM shadow_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 30`,
-        [strat]
-      );
-      if (shadowRows.length) {
-        const sr = shadowRows[0] as Record<string,unknown>;
-        const sCnt = Number(sr["cnt"]);
-        const sWinPnl = Number(sr["win_pnl"]);
-        const sLossPnl = Number(sr["loss_pnl"]);
-        const sPF = sCnt >= 10 && sLossPnl > 0 ? sWinPnl/sLossPnl : 0;
-        if (sPF >= 1.0 && sCnt >= 10) {
-          newDisabled = false;
-          newQuarantine = true; // Return via quarantine first
-          newW = Math.max(0.3, cur.weight * 0.5);
-          changeReason = `Восстановлена из Shadow (PF ${sPF.toFixed(2)}) → Карантин`;
-          changes.push(`🔄 ${strat}: возвращена из Shadow → *Карантин* (PF тени: ${sPF.toFixed(2)})`);
-          await recordStrategyHistory(strat, 0, newW, pf, sPF, trustScore, changeReason);
-        } else {
-          await pool.query(
-            "UPDATE strategy_weights SET trust_score=$2,updated_at=$3 WHERE strategy=$1",
-            [strat, trustScore, new Date().toISOString()]
-          );
-          continue;
-        }
-      } else {
-        continue;
+      newWeight = 0.10;
+      changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
+    } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
+      newQuarantine = false;
+      newWeight = Math.min(0.50, cur.weight + 0.10);
+      changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)})`);
+    } else {
+      const targetW = pfToTargetWeight(pf);
+      const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0.1;
+      const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * 0.15;
+      newWeight = Math.max(0.10, Math.min(1.50, blendedW));
+      if (Math.abs(newWeight - cur.weight) > 0.005) {
+        const dirIcon = newWeight > cur.weight ? "📈" : "📉";
+        changes.push(`${dirIcon} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades})`);
       }
     }
 
-    // ── 3. Quarantine mode: PF<0.8 and negative return ──────────────────
-    if (!newDisabled) {
-      if (trades >= 30 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
-        newQuarantine = true;
-        newW = Math.max(0.3, cur.weight - 0.10);
-        newCycles = cur.cycles + 1;
-        changeReason = `Карантин: PF ${pf.toFixed(2)}, убыточна`;
-        changes.push(`⚠️ ${strat}: → *Карантин* (PF ${pf.toFixed(2)}, только Confidence ≥60%)`);
-        await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-      } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
-        newQuarantine = false;
-        newW = Math.min(1.0, cur.weight + 0.05);
-        changeReason = `Выход из карантина: PF ${pf.toFixed(2)} → норма`;
-        changes.push(`✅ ${strat}: выходит из карантина (PF ${pf.toFixed(2)})`);
-        await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-      } else {
-        // ── 2. PF-table direct mapping with confidence scaling (TZ §1, §3) ──
-        // Target weight from PF table; blend toward it scaled by sample confidence
-        const targetW = pfToTargetWeight(pf);
-        const blendSpeed = 0.15; // max 15% of gap per cycle
-        const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
-        // H3 warm-up cap: limit weight growth to 0.80 until 30 trades are collected.
-        // Prevents a lucky bootstrap streak (PF=2.0 with 5 wins, 0 losses) from
-        // immediately reaching max weight (1.50) before the strategy is proven.
-        const warmupCap = trades < 30 ? 0.80 : 1.50;
-        newW = Math.max(0.10, Math.min(warmupCap, blendedW));
-        newCycles = pf < 0.5 ? cur.cycles + 1 : Math.max(0, cur.cycles - 1);
-        if (Math.abs(newW - cur.weight) > 0.005) {
-          const dir = newW > cur.weight ? "📈" : "📉";
-          const arrow = newW > cur.weight ? "+" : "";
-          changeReason = `PF ${pf.toFixed(2)} → цель ${(targetW*100).toFixed(0)}%, шаг ${arrow}${((newW-cur.weight)*100).toFixed(1)}% (conf ${(confidenceScale*100).toFixed(0)}%)`;
-          changes.push(`${dir} ${strat}: вес ${(cur.weight*100).toFixed(0)}%→${(newW*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades})`);
-          await recordStrategyHistory(strat, cur.weight, newW, pf, pf, trustScore, changeReason);
-        }
-      }
-    }
-
-    // ── Минимальный вес — стратегия не может быть фактически отключена
-    // даже в период деградации, чтобы не терять данные для обучения
-    const MIN_STRATEGY_WEIGHT = 0.35;
-    const MAX_STRATEGY_WEIGHT = 1.50;
-    newW = Math.max(MIN_STRATEGY_WEIGHT, Math.min(MAX_STRATEGY_WEIGHT, newW));
+    const MIN_ENTITY_WEIGHT = 0.10;
+    newWeight = Math.max(newWeight, newQuarantine ? MIN_ENTITY_WEIGHT : 0.20);
 
     await pool.query(
-      `UPDATE strategy_weights SET weight=$2,disabled=$3,disabled_until=$4,quarantine=$5,
-       cycles_below_threshold=$6,trust_score=$7,updated_at=$8 WHERE strategy=$1`,
-      [strat, newW, newDisabled, disabledUntil, newQuarantine, newCycles, trustScore, new Date().toISOString()]
+      `UPDATE strategy_entity_weights
+       SET weight=$2, quarantine=$3, trust_score=$4, updated_at=$5
+       WHERE entity=$1`,
+      [entity, newWeight, newQuarantine, trustScore, new Date().toISOString()]
     );
+    void entityDir; // used above for calcTrustScore
   }
 
-  // ── ТЗ: адаптация весов/карантина по направлению (LONG/SHORT) ──────────
-  // Работает поверх strategy-level весов как дополнительный слой (не замена).
-  // Получить список уникальных strategy+direction из таблицы весов
-  const {rows:dirWeightRows} = await pool.query(
-    "SELECT strategy, direction, weight, quarantine, quarantine_since FROM strategy_direction_stats"
-  );
-
-  for (const row of dirWeightRows as Record<string,unknown>[]) {
-    const strat     = row["strategy"] as string;
-    const direction = row["direction"] as string;
-    const wasInQuarantine = Boolean(row["quarantine"]);
-
-    // Использовать ту же метрику и то же окно что и основной адаптер
-    const recent = await getRecentDirectionStats(strat, direction);
-    const dTrades = recent.trades;
-    const pf      = recent.pf;
-    const wr      = dTrades > 0 ? recent.wins / dTrades : 0;
-
-    // Порог для карантина и адаптации — такой же как в основном адаптере
-    if (dTrades < 10) continue; // мало данных — не трогать
-
-    let newWeight = Number(row["weight"]);
-    let quarantine = false;
-
-    if (pf < 0.5 && dTrades >= 10) {
-      quarantine = true;
-      newWeight = Math.max(0.1, newWeight * 0.7);
-    } else if (pf < 0.8 && dTrades >= 5) {
-      newWeight = Math.max(0.2, newWeight * 0.9);
-    } else if (pf > 1.5) {
-      newWeight = Math.min(1.5, newWeight * 1.1);
-    }
-
-    let quarantineSinceUpdate: string | null | undefined; // undefined = don't touch column
-
-    // ── ТЗ: выход из direction карантина — Механизм 1: принудительный пересмотр раз в 7 дней ──
-    if (quarantine && !wasInQuarantine) {
-      // Только что вошли в карантин — зафиксировать момент входа
-      quarantineSinceUpdate = new Date().toISOString();
-    } else if (quarantine && wasInQuarantine) {
-      const quarantineSince = row["quarantine_since"] ? new Date(row["quarantine_since"] as string) : null;
-      const daysSinceQuarantine = quarantineSince
-        ? (Date.now() - quarantineSince.getTime()) / (1000 * 60 * 60 * 24)
-        : 0;
-
-      if (daysSinceQuarantine >= 7) {
-        const freshRecent = await getRecentDirectionStats(strat, direction);
-        if (freshRecent.pf >= 0.6 && freshRecent.trades >= 5) {
-          quarantine = false;
-          newWeight = 0.3; // Начать с минимального веса, не с нуля
-          quarantineSinceUpdate = null;
-          changes.push(`🔄 ${strat} ${direction}: карантин снят (7 дней, PF ${freshRecent.pf.toFixed(2)}) → вес 30%`);
-        } else {
-          quarantineSinceUpdate = new Date().toISOString();
-          changes.push(`🔒 ${strat} ${direction}: карантин продлён (PF ${freshRecent.pf.toFixed(2)} < 0.6)`);
-        }
-      }
-    } else if (!quarantine && wasInQuarantine) {
-      // Естественный выход (свежие сделки подняли PF выше 0.5)
-      quarantineSinceUpdate = null;
-    }
-
-    // ── ТЗ: выход из direction карантина — Механизм 2: shadow trades для заблокированных направлений ──
-    if (quarantine) {
-      const { rows: shadowRows } = await pool.query(
-        `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl, is_win FROM shadow_closed_trades
-         WHERE strategy=$1 AND direction=$2
-           AND is_direction_shadow = true
-           AND closed_at::timestamptz > NOW() - INTERVAL '30 days'
-         ORDER BY closed_at DESC LIMIT 50`,
-        [strat, direction]
-      );
-
-      const SHADOW_MIN_TRADES = 50; // было 20 — 20 сделок недостаточно в аномальный период
-      const SHADOW_MIN_PF = 0.85;   // было 0.8 — чуть строже
-
-      if (shadowRows.length >= SHADOW_MIN_TRADES) {
-        const sPnls = (shadowRows as Record<string,unknown>[]).map(r => Number(r["pnl"]));
-        const sWinPnl = sPnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
-        const sLossPnl = Math.abs(sPnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
-        const sPF = sLossPnl > 0 ? sWinPnl / sLossPnl : sWinPnl > 0 ? 2.0 : 0;
-
-        if (sPF >= SHADOW_MIN_PF) {
-          // Shadow PF восстановился — снять карантин с минимальным весом
-          quarantine = false;
-          newWeight = 0.3;
-          quarantineSinceUpdate = null;
-          changes.push(`🔄 ${strat} ${direction}: карантин снят по shadow (PF ${sPF.toFixed(2)}, n=${shadowRows.length}) → вес 30%`);
-
-          // Доп. проверка — shadow PF не должен кардинально расходиться
-          // с историческим реальным PF направления (аномалия ночного рынка)
-          const realRecent = await getRecentDirectionStats(strat, direction);
-          if (realRecent.trades >= 10 && sPF > realRecent.pf * 3) {
-            quarantine = true;
-            newWeight = 0.1;
-            quarantineSinceUpdate = new Date().toISOString();
-            changes.push(`⚠️ ${strat} ${direction}: shadow PF ${sPF.toFixed(2)} аномально выше реального ${realRecent.pf.toFixed(2)} — карантин продлён`);
-          }
-        }
-      }
-    }
-
-    // ── Минимальный вес по направлению — не давать направлению уйти в 0
-    // даже под карантином, чтобы сохранить данные для обучения
-    const MIN_DIRECTION_WEIGHT = 0.20; // для карантинных направлений
-    newWeight = Math.max(
-      quarantine ? 0.10 : MIN_DIRECTION_WEIGHT,
-      Math.min(1.5, newWeight)
+  // ── Keep strategy_weights in sync for backward compat (readiness-index, reports) ──
+  const STRATS = ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"] as StrategyName[];
+  for (const strat of STRATS) {
+    const recentS = await getRecentStrategyStats(strat);
+    const { trades: sT, wins: sW, winPnl: sWP, lossPnl: sLP, totalPnl: sTP, pf: sPF } = recentS;
+    if (sT < 20) continue;
+    const confidenceScale = sT >= 100 ? 1.0 : sT >= 50 ? 0.7 : sT >= 20 ? 0.3 : 0;
+    const {rows:swRow} = await pool.query(
+      "SELECT weight,quarantine,cycles_below_threshold FROM strategy_weights WHERE strategy=$1", [strat]
     );
-
-    if (quarantine || Math.abs(newWeight - Number(row["weight"])) > 0.005) {
-      changes.push(
-        `${quarantine?"⚠️":newWeight>Number(row["weight"])?"📈":"📉"} ${strat} ${direction}: ` +
-        `вес ${(Number(row["weight"])*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% ` +
-        `(PF ${pf.toFixed(2)}, n=${dTrades})${quarantine?" — карантин по направлению":""}`
-      );
-    }
-
-    if (quarantineSinceUpdate === undefined) {
-      await pool.query(
-        `UPDATE strategy_direction_stats
-         SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6
-         WHERE strategy=$1 AND direction=$2`,
-        [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString()]
-      );
+    const sw = swRow[0] as Record<string,unknown>|undefined;
+    const curW = sw ? Number(sw["weight"]) : 1.0;
+    const curQ = sw ? Boolean(sw["quarantine"]) : false;
+    const curC = sw ? Number(sw["cycles_below_threshold"]) : 0;
+    const trustScore = await calcTrustScore(strat, sT, sW, sWP, sLP, sTP, "sideways");
+    const isNeg = sTP < 0;
+    let newW = curW;
+    let newQ = curQ;
+    if (sT >= 20 && sPF < 0.5 && isNeg && !curQ) {
+      newQ = true; newW = Math.max(0.35, curW - 0.10);
+    } else if (curQ && sPF >= 1.0 && !isNeg) {
+      newQ = false; newW = Math.min(1.0, curW + 0.05);
     } else {
-      await pool.query(
-        `UPDATE strategy_direction_stats
-         SET weight=$3, quarantine=$4, trust_score=$5, updated_at=$6, quarantine_since=$7
-         WHERE strategy=$1 AND direction=$2`,
-        [strat, direction, newWeight, quarantine, Math.round(wr*100), new Date().toISOString(), quarantineSinceUpdate]
-      );
+      const targetW = pfToTargetWeight(sPF);
+      const blended = curW + (targetW - curW) * confidenceScale * 0.15;
+      newW = Math.max(0.35, Math.min(1.50, blended));
     }
+    await pool.query(
+      `UPDATE strategy_weights SET weight=$2,quarantine=$3,cycles_below_threshold=$4,trust_score=$5,updated_at=$6 WHERE strategy=$1`,
+      [strat, newW, newQ, sPF < 0.5 ? curC + 1 : Math.max(0, curC - 1), trustScore, new Date().toISOString()]
+    );
   }
 
   return changes.length > 0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";
@@ -873,30 +786,23 @@ export async function generateLearningReport(): Promise<string> {
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
   const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
 
-  const {rows:dirRows} = await pool.query(`
-    SELECT sds.strategy, sds.direction, sds.trades, sds.wins, sds.win_pnl, sds.loss_pnl,
-      COALESCE(sw.weight, 1) AS weight, COALESCE(sw.quarantine, false) AS quarantine
-    FROM strategy_direction_stats sds
-    LEFT JOIN strategy_weights sw ON sw.strategy = sds.strategy`);
-  type DirEntry = {trades:number;wins:number;winPnl:number;lossPnl:number};
-  const dirByStrat:Record<string,{dirs:Record<string,DirEntry>;weight:number;quarantine:boolean}>={};
-  for (const r of dirRows as Record<string,unknown>[]) {
-    const strat=r["strategy"] as string, dir=r["direction"] as string;
-    const trades=Number(r["trades"]);
-    if (trades<5) continue;
-    if (!dirByStrat[strat]) dirByStrat[strat]={dirs:{},weight:Number(r["weight"]),quarantine:Boolean(r["quarantine"])};
-    dirByStrat[strat]!.dirs[dir]={trades,wins:Number(r["wins"]),winPnl:Number(r["win_pnl"]),lossPnl:Number(r["loss_pnl"])};
-  }
+  const {rows:dirRows} = await pool.query(
+    "SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights WHERE trades >= 5"
+  );
   const dirLines:string[]=[];
-  for (const [strat,entry] of Object.entries(dirByStrat)) {
-    for (const d of ["LONG","SHORT"]) {
-      const s=entry.dirs[d]; if(!s) continue;
-      const wr=(s.wins/s.trades*100).toFixed(0);
-      const pf=s.lossPnl>0?(s.winPnl/s.lossPnl).toFixed(2):"∞";
-      const wPct=(entry.weight*100).toFixed(0);
-      const statusIcon=entry.quarantine?"⚠️":"✅";
-      dirLines.push(`${(strat+"_"+d).padEnd(22)}WR${wr}% PF${pf} | Вес ${wPct}% ${statusIcon}`);
-    }
+  for (const r of dirRows as Record<string,unknown>[]) {
+    const entity=r["entity"] as string;
+    const trades=Number(r["trades"]);
+    const wins=Number(r["wins"]);
+    const winPnl=Number(r["win_pnl"]);
+    const lossPnl=Number(r["loss_pnl"]);
+    const weight=Number(r["weight"]);
+    const quarantine=Boolean(r["quarantine"]);
+    const wr=(wins/trades*100).toFixed(0);
+    const pf=lossPnl>0?(winPnl/lossPnl).toFixed(2):"∞";
+    const wPct=(weight*100).toFixed(0);
+    const statusIcon=quarantine?"⚠️":"✅";
+    dirLines.push(`${entity.padEnd(24)}WR${wr}% PF${pf} | Вес ${wPct}% ${statusIcon}`);
   }
   const dirSection = dirLines.length ? ["","📊 *LONG vs SHORT:*",...dirLines].join("\n") : "";
   const fullSummary = dirSection ? summary + dirSection : summary;
