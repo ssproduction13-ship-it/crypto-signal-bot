@@ -102,10 +102,25 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                        SUM(CASE WHEN changed_at::timestamptz > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
                 FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
-    pool.query(`SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
-                        weight, quarantine, trust_score
-                FROM strategy_entity_weights
-                ORDER BY strategy, direction`),
+    pool.query(`SELECT sew.entity, sew.strategy, sew.direction,
+                  sew.weight, sew.quarantine, sew.trust_score,
+                  COUNT(pct.pnl)::int AS trades,
+                  SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END)::int AS wins,
+                  COALESCE(SUM(CASE WHEN pct.pnl > 0 THEN pct.pnl ELSE 0 END), 0) AS win_pnl,
+                  COALESCE(SUM(CASE WHEN pct.pnl <= 0 THEN ABS(pct.pnl) ELSE 0 END), 0) AS loss_pnl
+           FROM strategy_entity_weights sew
+           LEFT JOIN LATERAL (
+             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+             FROM paper_closed_trades
+             WHERE strategy  = sew.strategy
+               AND direction = sew.direction
+               AND outcome NOT IN ('TIMEOUT_STALE')
+             ORDER BY closed_at DESC
+             LIMIT 150
+           ) pct ON true
+           GROUP BY sew.entity, sew.strategy, sew.direction,
+                    sew.weight, sew.quarantine, sew.trust_score
+           ORDER BY sew.strategy, sew.direction`),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
