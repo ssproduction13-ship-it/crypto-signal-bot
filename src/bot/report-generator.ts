@@ -47,6 +47,8 @@ interface ReportData {
   strategyStats: StrategyStats[];
   strategyDetails: StrategyDetail[];
   coinDetails: CoinDetail[];
+  timeRows: Array<Record<string, unknown>>;
+  instrumentRows: Array<Record<string, unknown>>;
   weights: Record<string, number>;
   riskState: Record<string, unknown>;
   missedTrades: Array<Record<string, unknown>>;
@@ -71,12 +73,14 @@ async function collectData(chatId: number): Promise<ReportData> {
     getDecisionStats(),
   ]);
 
-  const [riskRes, missedRes, lrRes, shRes, swRes] = await Promise.all([
+  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes] = await Promise.all([
     pool.query("SELECT * FROM risk_state WHERE id=1"),
     pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200"),
     pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5").catch(() => ({ rows: [] })),
     pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30").catch(() => ({ rows: [] })),
     pool.query("SELECT * FROM strategy_weights").catch(() => ({ rows: [] })),
+    pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day").catch(() => ({ rows: [] })),
+    pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC").catch(() => ({ rows: [] })),
   ]);
 
   const positionPrices: Record<string, number> = {};
@@ -88,14 +92,16 @@ async function collectData(chatId: number): Promise<ReportData> {
   const closedTrades = account.closedTrades;
   const strategyWeights = swRes.rows as Array<Record<string, unknown>>;
   const strategyDetails = buildStrategyDetails(closedTrades, strategyStats, strategyWeights);
-  const coinDetails = buildCoinDetails(closedTrades);
+  const instrumentRows = iaRes.rows as Array<Record<string, unknown>>;
+  const coinDetails = buildCoinDetails(closedTrades, instrumentRows);
+  const timeRows = taRes.rows as Array<Record<string, unknown>>;
 
   return {
     date: new Date().toISOString(), chatId,
     balance: account.balance, initialBalance: account.initialBalance,
     peakBalance: account.peakBalance ?? account.balance,
     positions: account.positions, closedTrades, strategyStats,
-    strategyDetails, coinDetails, weights,
+    strategyDetails, coinDetails, timeRows, instrumentRows, weights,
     riskState: (riskRes.rows[0] ?? {}) as Record<string, unknown>,
     missedTrades: missedRes.rows as Array<Record<string, unknown>>,
     abVariants, positionPrices, decisionLog, decisionStats,
@@ -193,14 +199,26 @@ function buildStrategyDetails(trades: ClosedPaperTrade[], stats: StrategyStats[]
   });
 }
 
-function buildCoinDetails(trades: ClosedPaperTrade[]): CoinDetail[] {
+function buildCoinDetails(trades: ClosedPaperTrade[], instrumentRows: Array<Record<string, unknown>> = []): CoinDetail[] {
+  // If no live trades, fall back to instrument_analytics table (restored historical data)
+  if (trades.length === 0 && instrumentRows.length > 0) {
+    return instrumentRows.map(r => {
+      const t = Number(r["trades"]), w = Number(r["wins"]);
+      const wr = t > 0 ? w / t * 100 : 0;
+      const wp = Number(r["win_pnl"]), lp = Number(r["loss_pnl"]);
+      const pf = lp > 0 ? wp / lp : wp > 0 ? 999 : 0;
+      const tp = Number(r["total_pnl"]);
+      const exp = t > 0 ? tp / t : 0;
+      return { symbol: String(r["symbol"]), trades: t, wins: w, winRate: wr, profitFactor: pf, expectancy: exp, totalPnl: tp, avgDuration: 0 };
+    });
+  }
   const map: Record<string, ClosedPaperTrade[]> = {};
   for (const t of trades) { if (!map[t.symbol]) map[t.symbol] = []; map[t.symbol]!.push(t); }
   return Object.entries(map).map(([symbol, st]) => {
     const wins = st.filter(t => t.pnl > 0);
     const losses = st.filter(t => t.pnl <= 0);
     const gw = wins.reduce((a, t) => a + t.pnl, 0);
-    const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
+    const gl = Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0));
     const pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
     const aw = wins.length ? wins.reduce((a, t) => a + t.pnlPercent, 0) / wins.length : 0;
     const al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
@@ -926,11 +944,19 @@ tr:hover td{background:#263348}
   <summary>⏰ Статистика по времени</summary>
   <div class="section-body">
     ${ (() => {
-      const byH: Record<string,{w:number;t:number}> = {};
-      for (const t of d.closedTrades) {
-        const h = String(new Date(t.closedAt).getUTCHours());
-        if (!byH[h]) byH[h] = {w:0,t:0};
-        byH[h]!.t++; if (t.pnl>0) byH[h]!.w++;
+      // Prefer live trades; fall back to restored time_analytics table
+      let byH: Record<string,{w:number;t:number}> = {};
+      if (d.closedTrades.length > 0) {
+        for (const t of d.closedTrades) {
+          const h = String(new Date(t.closedAt).getUTCHours());
+          if (!byH[h]) byH[h] = {w:0,t:0};
+          byH[h]!.t++; if (t.pnl>0) byH[h]!.w++;
+        }
+      } else if (d.timeRows.length > 0) {
+        for (const r of d.timeRows) {
+          const h = String(Number(r["hour_of_day"]));
+          byH[h] = { t: Number(r["trades"]), w: Number(r["wins"]) };
+        }
       }
       const hrs = Object.keys(byH);
       if (!hrs.length) return '<div class="empty">Недостаточно данных</div>';
