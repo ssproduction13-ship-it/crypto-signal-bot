@@ -179,7 +179,7 @@ function buildStrategyDetails(
     let tradeCount: number, winCount: number, lossCount: number;
     let gw: number, gl: number, pf: number, aw: number, al: number, wr: number, exp: number, totalPnlVal: number;
 
-    if (sdsTrades > st.length) {
+    if (st.length < 30 && sdsTrades > 0) {
       // Use accumulated analytics data for bulk stats
       tradeCount = sdsTrades;
       winCount   = sdsRow ? Number(sdsRow["wins"])      : 0;
