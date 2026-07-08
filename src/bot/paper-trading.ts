@@ -333,8 +333,14 @@ export async function checkPaperPositions(
         // ── Pyramiding ────────────────────────────────────────────────────────
         const pyramidUnits      = pos.size * 0.5;
         const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
+        const entityForPyramid = `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`;
+        const { rows: pyramidEntityRows } = await pool.query(
+          "SELECT quarantine FROM strategy_entity_weights WHERE entity=$1",
+          [entityForPyramid]
+        ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        const pyramidAllowed = pyramidEntityRows.length === 0 || !Boolean((pyramidEntityRows[0] as Record<string,unknown>)["quarantine"]);
         let pyramidNote = "";
-        if (account.balance > pyramidCommission * 2) {
+        if (account.balance > pyramidCommission * 2 && pyramidAllowed) {
           account.balance = Math.max(0, account.balance - pyramidCommission); // L3
           // Update blended entry price to accurately reflect pyramid cost
           const blendedEntry = (pos.entryPrice * pos.size + realisticPrice * pyramidUnits) / (pos.size + pyramidUnits);
