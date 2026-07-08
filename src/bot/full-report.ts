@@ -86,10 +86,8 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     calcReadinessIndex(chatId).catch(() => null),
   ]);
 
-  const [stratStatRows, stratWRows, regRows, timeRows, coinRows, adaptRows, quarRows,
-         versionRows, histRows, firstRow, stratDirRows] = await Promise.all([
-    pool.query("SELECT * FROM strategy_stats"),
-    pool.query("SELECT strategy,weight,disabled,quarantine,trust_score FROM strategy_weights"),
+  const [regRows, timeRows, coinRows, adaptRows, quarRows,
+         versionRows, histRows, firstRow, entityWeightRows] = await Promise.all([
     pool.query(`SELECT regime, SUM(trades) t, SUM(wins) w, SUM(win_pnl) wp, SUM(loss_pnl) lp, SUM(total_pnl) tp
                 FROM strategy_regime_stats GROUP BY regime HAVING SUM(trades)>=3`),
     pool.query("SELECT hour_of_day, day_of_week, trades, wins, win_pnl, loss_pnl, total_pnl FROM time_analytics WHERE trades>=3"),
@@ -104,7 +102,10 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                        SUM(CASE WHEN changed_at::timestamptz > NOW()-INTERVAL '7 days' THEN new_weight-prev_weight ELSE 0 END) week_delta
                 FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
-    pool.query("SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights WHERE trades >= 5"),
+    pool.query(`SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
+                        weight, quarantine, trust_score
+                FROM strategy_entity_weights
+                ORDER BY strategy, direction`),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
@@ -217,65 +218,26 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   );
 
   // ─ SECTION 3: Стратегии ─
-  const ss  = stratStatRows.rows as Record<string,unknown>[];
-  const sw  = stratWRows.rows   as Record<string,unknown>[];
-  const sh  = histRows.rows     as Record<string,unknown>[];
-
   parts.push(`═══ 🏆 СТРАТЕГИИ ═══`);
-  for (const strat of STRATS) {
-    const s = ss.find(r => r["strategy"] === strat);
-    const w = sw.find(r => r["strategy"] === strat);
-    const h = sh.find(r => r["strategy"] === strat);
-    const t_n   = s ? Number(s["trades"])   : 0;
-    const w_n   = s ? Number(s["wins"])     : 0;
-    const winPnl= s ? Number(s["win_pnl"])  : 0;
-    const losPnl= s ? Number(s["loss_pnl"]) : 0;
-    const totPnl= s ? Number(s["total_pnl"]): 0;
-    const pf_s  = losPnl > 0 ? winPnl/losPnl : winPnl > 0 ? 999 : 0;
-    const wr_s  = t_n > 0 ? w_n/t_n : 0;
-    const avgP  = t_n > 0 ? totPnl/t_n : 0;
-    const l_n   = t_n - w_n;
-    const avgW  = w_n > 0 ? winPnl/w_n : 0;
-    const avgL  = l_n > 0 ? losPnl/l_n : 0;
-    const exp_s = wr_s * avgW - (1 - wr_s) * avgL;
-    const weight = w ? Number(w["weight"]) : 1;
-    const disab  = w ? Boolean(w["disabled"]) : false;
-    const quar   = w ? Boolean(w["quarantine"]) : false;
-    const trust  = w ? Number(w["trust_score"]) : 0;
-    const statusIcon = disab ? "🚫" : quar ? "⚠️" : "✅";
-    const statusStr  = disab ? "Disabled" : quar ? "Quarantine" : "Active";
-    const lastAdpt   = h ? (h["last_adapt"] as string|null) : null;
-    const lastAdptStr= lastAdpt ? new Date(lastAdpt).toISOString().slice(0,10) : "—";
-    const wkDelta    = h ? Number(h["week_delta"]) : 0;
-    const wkDeltaStr = wkDelta !== 0 ? `${wkDelta>=0?"+":""}${(wkDelta*100).toFixed(0)}%` : "0%";
-    const stratTrades= allTrades.filter(t => t.strategy === strat);
-    const confArr    = stratTrades.map(t => t.llmConfidence??0).filter(c => c > 0);
-    const confAvg    = confArr.length ? confArr.reduce((a,b)=>a+b,0)/confArr.length : 0;
-    const avgRR_s    = avgL > 0 ? avgW/avgL : 0;
+  for (const r of entityWeightRows.rows as Record<string,unknown>[]) {
+    const entity    = r["entity"] as string;
+    const trades    = Number(r["trades"]);
+    const wins      = Number(r["wins"]);
+    const winPnl    = Number(r["win_pnl"]);
+    const lossPnl   = Number(r["loss_pnl"]);
+    const weight    = Number(r["weight"]);
+    const quarantine = Boolean(r["quarantine"]);
+    const trust     = Number(r["trust_score"]);
+
+    const wr  = trades > 0 ? (wins / trades * 100).toFixed(1) : "—";
+    const pf  = lossPnl > 0 ? (winPnl / lossPnl).toFixed(2) : winPnl > 0 ? "∞" : "—";
+    const statusStr = quarantine ? "⚠️ Карантин" : weight >= 0.8 ? "✅ Активна" : "📉 Снижена";
 
     parts.push(
-      `── ${strat} ──`,
-      `${statusIcon} ${statusStr}  |  Trades: ${t_n}  |  Trust: ${trust}/100  |  Weight: ${(weight*100).toFixed(0)}%`,
-      `WR: ${(wr_s*100).toFixed(1)}%  |  PF: ${fmtPF(pf_s)}  |  Avg RR: ${avgRR_s.toFixed(2)}`,
-      `Gross+: $${winPnl.toFixed(2)}  |  Gross-: -$${losPnl.toFixed(2)}`,
-      `Avg PnL: ${fmtS(avgP)}  |  Expectancy: ${fmtS(exp_s)}`,
-      ...(confAvg > 0 ? [`Conf.Avg: ${confAvg.toFixed(0)}%`] : []),
-      `Last adapt: ${lastAdptStr}  |  Week Δ wt: ${wkDeltaStr}`,
+      `${statusStr}  |  ${entity}  |  Trust: ${trust}/100  |  Вес: ${(weight*100).toFixed(0)}%`,
+      `WR: ${wr}%  |  PF: ${pf}  |  Сделок: ${trades}`,
+      ``
     );
-    // Direction breakdown (↳ TREND_LONG / TREND_SHORT etc.)
-    const sdrAll = stratDirRows.rows as Record<string,unknown>[];
-    for (const dir of ["LONG","SHORT"]) {
-      const dr = sdrAll.find(r => r["strategy"]===strat && r["direction"]===dir);
-      if (!dr) continue;
-      const dt=Number(dr["trades"]),dw=Number(dr["wins"]),dwp=Number(dr["win_pnl"]),dlp=Number(dr["loss_pnl"]);
-      const dwr=(dw/dt*100).toFixed(0);
-      const dpf=dlp>0?(dwp/dlp).toFixed(2):dwp>0?"∞":"—";
-      const dw_pct=(Number(dr["weight"])*100).toFixed(0);
-      const dq=Boolean(dr["quarantine"]);
-      const dIcon=dq?"⚠️":"✅";
-      parts.push(`  ↳ ${strat}_${dir}: WR ${dwr}% | PF ${dpf} | n=${dt} | Вес ${dw_pct}% ${dIcon}`);
-    }
-    parts.push(``);
   }
 
   // ─ SECTION 4: Рынок ─
