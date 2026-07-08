@@ -192,7 +192,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
         const lossPnl = Number(row["loss_pnl"]);
         const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
         if (pf >= 1.0) {
-          return Math.min(65, Math.max(BASE_MIN, Number(row["bucket"])));
+          return Math.min(57, Math.max(BASE_MIN, Number(row["bucket"])));
         }
       }
       return BASE_MIN;
@@ -314,16 +314,16 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
       // ── Quarantine gate ───────────────────────────────────────────────────────────────────────
       // Стратегия в карантине допускается только при высоком качестве сигнала
       if (!gate.rejected && stratStatus?.status === "quarantine") {
-        const qScore = sig.score.total >= 75;
+        const qScore = sig.score.total >= 65;
         const qConf  = sig.confidence.score >= 40;
         const qFS    = stratFScore >= 20;
         if (!qScore || !qConf || !qFS) {
           const why = !qScore
-            ? `Score ${sig.score.total} < 75`
+            ? `Score ${sig.score.total} < 65`
             : !qConf
             ? `Conf ${sig.confidence.score}% < 40%`
             : `FinalScore ${stratFScore.toFixed(1)} < 20`;
-          gate.fail("Карантин", "Стратегия в карантине — недостаточное качество сигнала", why, "Score≥75 | Conf≥40% | FS≥20");
+          gate.fail("Карантин", "Стратегия в карантине — недостаточное качество сигнала", why, "Score≥65 | Conf≥40% | FS≥20");
         } else {
           gate.pass("Карантин", `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)} — допуск`);
         }
