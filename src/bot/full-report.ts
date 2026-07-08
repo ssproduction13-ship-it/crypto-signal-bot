@@ -511,17 +511,17 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   const ss = Object.values(ssMap);
 
   // ─ SECTION 16: AI-Анализ ─
-  const bestStrat = STRATS.map(s => {
-    const st=ss.find(r=>r["strategy"]===s);
-    const wp=st?Number(st["win_pnl"]):0, lp=st?Number(st["loss_pnl"]):0, t=st?Number(st["trades"]):0;
-    return { s, pf:lp?wp/lp:wp?999:0, t };
-  }).filter(x=>x.t>=10).sort((a,b)=>b.pf-a.pf)[0];
+  const bestStrat = ss.map(strat => ({
+    s: strat.strategy,
+    pf: strat.loss_pnl > 0 ? strat.win_pnl / strat.loss_pnl : strat.win_pnl > 0 ? 999 : 0,
+    t: strat.trades,
+  })).filter(x=>x.t>=10).sort((a,b)=>b.pf-a.pf)[0];
 
-  const worstStrat = STRATS.map(s => {
-    const st=ss.find(r=>r["strategy"]===s);
-    const wp=st?Number(st["win_pnl"]):0, lp=st?Number(st["loss_pnl"]):0, t=st?Number(st["trades"]):0;
-    return { s, pf:lp?wp/lp:wp?999:0, t };
-  }).filter(x=>x.t>=10).sort((a,b)=>a.pf-b.pf)[0];
+  const worstStrat = ss.map(strat => ({
+    s: strat.strategy,
+    pf: strat.loss_pnl > 0 ? strat.win_pnl / strat.loss_pnl : strat.win_pnl > 0 ? 999 : 0,
+    t: strat.trades,
+  })).filter(x=>x.t>=10).sort((a,b)=>a.pf-b.pf)[0];
 
   const bestRegime = regData.filter(x=>x.t>=5).sort((a,b)=>b.pf-a.pf)[0];
   const worstCoins = enough.filter(c=>c.pf<0.8).sort((a,b)=>a.pf-b.pf).slice(0,3);
