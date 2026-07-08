@@ -801,8 +801,8 @@ export async function generateLearningReport(): Promise<string> {
     const wr=(wins/trades*100).toFixed(0);
     const pf=lossPnl>0?(winPnl/lossPnl).toFixed(2):"∞";
     const wPct=(weight*100).toFixed(0);
-    const statusIcon=quarantine?"⚠️":"✅";
-    dirLines.push(`${entity.padEnd(24)}WR${wr}% PF${pf} | Вес ${wPct}% ${statusIcon}`);
+    const icon = quarantine ? "⚠️" : weight >= 0.8 ? "✅" : "📉";
+    dirLines.push(`${entity.padEnd(22)}WR${wr}% PF${pf} | Вес ${wPct}% ${icon}`);
   }
   const dirSection = dirLines.length ? ["","📊 *LONG vs SHORT:*",...dirLines].join("\n") : "";
   const fullSummary = dirSection ? summary + dirSection : summary;
