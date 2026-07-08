@@ -114,13 +114,14 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
              FROM paper_closed_trades
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
+               AND chat_id   = $1
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`),
+           ORDER BY sew.strategy, sew.direction`, [chatId]),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Base calculations ─────────────────────────────────────────────────────
@@ -495,6 +496,18 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     }
   }
   parts.push(``);
+
+  // Derive per-strategy aggregation for SECTION 16 (best/worst strategy analysis)
+  const ssMap: Record<string, {strategy:string;trades:number;wins:number;win_pnl:number;loss_pnl:number}> = {};
+  for (const r of entityWeightRows.rows as Record<string,unknown>[]) {
+    const strat = r["strategy"] as string;
+    if (!ssMap[strat]) ssMap[strat] = { strategy:strat, trades:0, wins:0, win_pnl:0, loss_pnl:0 };
+    ssMap[strat].trades   += Number(r["trades"]);
+    ssMap[strat].wins     += Number(r["wins"]);
+    ssMap[strat].win_pnl  += Number(r["win_pnl"]);
+    ssMap[strat].loss_pnl += Number(r["loss_pnl"]);
+  }
+  const ss = Object.values(ssMap);
 
   // ─ SECTION 16: AI-Анализ ─
   const bestStrat = STRATS.map(s => {
