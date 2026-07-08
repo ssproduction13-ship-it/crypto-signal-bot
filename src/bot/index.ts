@@ -1008,6 +1008,7 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         { parse_mode:"Markdown", ...Markup.inlineKeyboard([
           [Markup.button.callback(s.autoPaperTrade ? "🤖 Авто-сделки ✅" : "🤖 Авто-сделки ❌","toggle_autopaper")],
           [Markup.button.callback("📡 Подписки","menu_subs"), Markup.button.callback("🗑 Отписаться от всех","unsub_all")],
+          [Markup.button.callback("🔄 Сбросить счёт (paper reset)","paperreset_confirm")],
           [Markup.button.callback("◀️ Меню","menu_main")],
         ]) }
       );
@@ -1035,6 +1036,12 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
     bot.action("sub_add",   async (ctx) => { await ctx.answerCbQuery(); await ctx.reply("Выбери монету:", pairsMenu("subpair","menu_subs")); });
     bot.action("unsub_all", async (ctx) => { await ctx.answerCbQuery(); unsubscribeAll(ctx.chat!.id); await ctx.reply("✅ Все подписки удалены.", mainMenu()); });
     bot.action("risk_resume", async (ctx) => { await ctx.answerCbQuery(); await resumeTrading(); await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode:"Markdown", ...mainMenu() }); });
+
+    // ── /resetpaper ────────────────────────────────────────────────────────
+    bot.command("resetpaper", async (ctx) => {
+      await ctx.reply("⚠️ Сбросить счёт до $10,000?",
+        Markup.inlineKeyboard([[Markup.button.callback("✅ Да","paperreset_do"), Markup.button.callback("❌ Отмена","menu_main")]]));
+    });
 
     // ── /scan ──────────────────────────────────────────────────────────────
     bot.command("scan", async (ctx) => {
@@ -1697,6 +1704,7 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         { parse_mode:"Markdown", ...Markup.inlineKeyboard([
           [Markup.button.callback(s.autoPaperTrade ? "🤖 Авто-сделки ✅" : "🤖 Авто-сделки ❌","toggle_autopaper")],
           [Markup.button.callback("📡 Подписки","menu_subs"), Markup.button.callback("🗑 Отписаться от всех","unsub_all")],
+          [Markup.button.callback("🔄 Сбросить счёт (paper reset)","paperreset_confirm")],
           [Markup.button.callback("◀️ Меню","menu_main")],
         ]) }
       );
