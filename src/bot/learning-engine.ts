@@ -514,7 +514,7 @@ function pfToTargetWeight(pf: number): number {
     ).catch(() => ({ rows: [] }));
     const ss = (ssRows as Record<string, unknown>[])[0];
     const ssTrades = ss ? Number(ss["trades"]) : 0;
-    if (ssTrades > rows.length) {
+    if (rows.length < 30 && ssTrades > 0) {
       const wins     = ss ? Number(ss["wins"])      : 0;
       const winPnl   = ss ? Number(ss["win_pnl"])   : 0;
       const lossPnl  = ss ? Number(ss["loss_pnl"])  : 0;
@@ -554,7 +554,7 @@ function pfToTargetWeight(pf: number): number {
     ).catch(() => ({ rows: [] }));
     const sds = (sdsRows as Record<string, unknown>[])[0];
     const sdsTrades = sds ? Number(sds["trades"]) : 0;
-    if (sdsTrades > rows.length) {
+    if (rows.length < 30 && sdsTrades > 0) {
       const wins    = sds ? Number(sds["wins"])     : 0;
       const winPnl  = sds ? Number(sds["win_pnl"])  : 0;
       const lossPnl = sds ? Number(sds["loss_pnl"]) : 0;
@@ -595,7 +595,7 @@ function pfToTargetWeight(pf: number): number {
     ).catch(() => ({ rows: [] }));
     const sds = (sdsRows as Record<string, unknown>[])[0];
     const sdsTrades = sds ? Number(sds["trades"]) : 0;
-    if (sdsTrades > rows.length) {
+    if (rows.length < 30 && sdsTrades > 0) {
       const wins     = sds ? Number(sds["wins"])      : 0;
       const winPnl   = sds ? Number(sds["win_pnl"])   : 0;
       const lossPnl  = sds ? Number(sds["loss_pnl"])  : 0;
