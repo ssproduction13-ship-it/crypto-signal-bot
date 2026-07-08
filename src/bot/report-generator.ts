@@ -231,11 +231,6 @@ function buildStrategyDetails(
       shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
     };
   });
-}Until: wRow ? (wRow["disabled_until"] as string | null) : null,
-      longTrades: longSt.trades, longWR: longSt.wr, longPF: longSt.pf,
-      shortTrades: shortSt.trades, shortWR: shortSt.wr, shortPF: shortSt.pf,
-    };
-  });
 }
 
 function buildCoinDetails(trades: ClosedPaperTrade[], instrumentRows: Array<Record<string, unknown>> = []): CoinDetail[] {
