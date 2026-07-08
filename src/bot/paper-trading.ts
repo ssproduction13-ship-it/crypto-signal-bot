@@ -61,6 +61,7 @@ function buildCloseRecord(
     strategy: pos.strategy ?? "UNKNOWN",
     openedAt: pos.openedAt, closedAt: new Date().toISOString(),
     commission, slippage, pnlEquityPct,
+    entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`,
   };
   return { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage };
 }

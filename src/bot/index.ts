@@ -1267,7 +1267,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
       try {
         const chatId = ctx.chat.id;
         const [statuses, health, readiness] = await Promise.all([
-          getAllStrategyStatuses().catch(() => []),
+          getAllEntityStatuses().catch(() => []),
           checkLearningHealth(chatId).catch(() => null),
           calcReadinessIndex(chatId).catch(() => null),
         ]);
@@ -1289,22 +1289,24 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         if (best && best.trades > 0) {
           const wr = (best.winRate * 100).toFixed(1);
           const pf = best.profitFactor >= 99 ? "∞" : best.profitFactor.toFixed(2);
-          lines.push(`🏆 Лучшая стратегия: *${best.strategy}*`, `   WR ${wr}% | PF ${pf} | Trust ${best.trustScore}/100`, ``);
+          lines.push(`🏆 Лучшая сущность: *${best.entity}*`, `   WR ${wr}% | PF ${pf} | Trust ${best.trustScore}/100`, ``);
         } else {
-          lines.push(`🏆 Лучшая стратегия: _накапливаю данные..._`, ``);
+          lines.push(`🏆 Лучшая сущность: _накапливаю данные..._`, ``);
         }
-        const stratLines: string[] = [``, `📋 *Стратегии — состояние:*`];
+        const stratLines: string[] = [``, `📋 *Сущности (strategy×direction) — состояние:*`];
         const stratEmoji: Record<string,string> = { TREND:"📈", BREAKOUT:"🚀", VOLUME_IMPULSE:"⚡", MEAN_REVERSION:"↩️" };
-        const stratLabel: Record<string,string> = { TREND:"Тренд", BREAKOUT:"Пробой", VOLUME_IMPULSE:"Импульс", MEAN_REVERSION:"Возврат" };
         for (const s of (statuses as any[])) {
-          const icon = stratEmoji[s.strategy] ?? "▪️";
-          const name = stratLabel[s.strategy] ?? s.strategy;
+          const entityParts = String(s.entity).split("_");
+          const dir = entityParts.pop();
+          const strat = entityParts.join("_");
+          const icon = stratEmoji[strat] ?? "▪️";
+          const dirLabel = dir === "LONG" ? "LONG" : "SHORT";
           const statusMark = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
           const wr   = s.trades > 0 ? (s.winRate * 100).toFixed(0) + "%" : "—";
           const pf   = s.trades > 0 ? (s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2)) : "—";
           const wPct = Math.round((s.weight ?? 1) * 100);
           const trust = s.trades >= 5 ? `${s.trustScore}/100` : `boot(${s.trades})`;
-          stratLines.push(`${statusMark}${icon} *${name}*  вес ${wPct}% | Trust ${trust}`);
+          stratLines.push(`${statusMark}${icon} *${strat} ${dirLabel}*  вес ${wPct}% | Trust ${trust}`);
           stratLines.push(`   WR ${wr} | PF ${pf} | сделок ${s.trades}`);
         }
         lines.push(...stratLines);

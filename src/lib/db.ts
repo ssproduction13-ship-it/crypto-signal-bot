@@ -545,7 +545,11 @@ export async function resetAllData(): Promise<number[]> {
     "factor_weights", "paper_accounts", "risk_state", "cooldown_state",
     "time_analytics", "instrument_analytics", "walk_forward_results",
     "learning_reports", "shadow_closed_trades", "missed_trades",
-    "similar_trades", "ab_variants", "decision_traces", "decision_log", "strategy_direction_stats",
+    "similar_trades", "ab_variants", "decision_traces", "decision_log",
+    // strategy_direction_stats intentionally excluded (ТЗ Шаг 9.1): the entity
+    // adaptation cycle uses it as a cold-start fallback after a reset, so it
+    // must survive resetAllData(). It is no longer written by the adaptation
+    // cycle itself — only by recordDirectionTrade for that fallback.
   ];
   const client = await pool.connect();
   try {

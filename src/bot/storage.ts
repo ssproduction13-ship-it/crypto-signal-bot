@@ -42,6 +42,8 @@ import { pool } from "../lib/db.js";
     slippage?: number;
     /** PnL as % of account equity at trade open — the real account impact metric */
     pnlEquityPct?: number;
+    /** `${strategy}_${direction}` — the 8-entity key used by strategy_entity_weights */
+    entity?: string;
   }
   export interface PaperAccount {
     balance: number; initialBalance: number; peakBalance: number;
@@ -124,6 +126,7 @@ import { pool } from "../lib/db.js";
       commission:r["commission"]!=null?Number(r["commission"]):undefined,
       slippage:r["slippage"]!=null?Number(r["slippage"]):undefined,
       pnlEquityPct:r["pnl_equity_pct"]!=null?Number(r["pnl_equity_pct"]):undefined,
+      entity:(r["entity"] as string|null)??undefined,
     };
   }
 
@@ -274,11 +277,12 @@ import { pool } from "../lib/db.js";
     }
     for (const t of a.closedTrades) {
       await pool.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,pnl_equity_pct,entity)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(id) DO NOTHING`,
         [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
          t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
-         t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null]
+         t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
+         t.pnlEquityPct??null,t.entity??`${t.strategy??'TREND'}_${t.direction}`]
       );
     }
   }
@@ -426,12 +430,13 @@ import { pool } from "../lib/db.js";
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT(id) DO NOTHING`,
       [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
        t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
        t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
-       t.commission??0,t.slippage??0,t.pnlEquityPct??null]
+       t.commission??0,t.slippage??0,t.pnlEquityPct??null,
+       t.entity??`${t.strategy??'TREND'}_${t.direction}`]
     );
   }
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
@@ -487,12 +492,13 @@ import { pool } from "../lib/db.js";
         return false; // Another cycle already claimed this position
       }
       await client.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT(id) DO NOTHING`,
         [trade.id,chatId,trade.symbol,trade.direction,trade.entryPrice,trade.closePrice,
          trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
          trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
-         trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null]
+         trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null,
+         trade.entity??`${trade.strategy??'TREND'}_${trade.direction}`]
       );
       await client.query('COMMIT');
       return true;

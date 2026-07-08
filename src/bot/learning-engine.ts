@@ -532,43 +532,14 @@ function pfToTargetWeight(pf: number): number {
     return { trades, wins, winPnl, lossPnl, totalPnl, pf };
   }
 
-  async function getRecentDirectionStats(
-    strategy: string,
-    direction: string
-  ): Promise<{ trades: number; wins: number; winPnl: number; lossPnl: number; pf: number }> {
-    const { rows } = await pool.query(
-      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
-       FROM paper_closed_trades
-       WHERE strategy = $1
-         AND direction = $2
-         AND outcome NOT IN ('TIMEOUT_STALE')
-       ORDER BY closed_at DESC
-       LIMIT $3`,
-      [strategy, direction, ADAPTATION_WINDOW]
-    );
-    // Fall back to strategy_direction_stats when live trades table has less history
-    const { rows: sdsRows } = await pool.query(
-      `SELECT trades, wins, win_pnl, loss_pnl
-       FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2`,
-      [strategy, direction]
-    ).catch(() => ({ rows: [] }));
-    const sds = (sdsRows as Record<string, unknown>[])[0];
-    const sdsTrades = sds ? Number(sds["trades"]) : 0;
-    if (rows.length < 30 && sdsTrades > 0) {
-      const wins    = sds ? Number(sds["wins"])     : 0;
-      const winPnl  = sds ? Number(sds["win_pnl"])  : 0;
-      const lossPnl = sds ? Number(sds["loss_pnl"]) : 0;
-      const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
-      return { trades: sdsTrades, wins, winPnl, lossPnl, pf };
-    }
-    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
-    const trades  = pnls.length;
-    const wins    = pnls.filter(p => p > 0).length;
-    const winPnl  = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
-    const lossPnl = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
-    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
-    return { trades, wins, winPnl, lossPnl, pf };
-  }
+  // NOTE (ТЗ Шаг 9.3): getRecentDirectionStats was here as a leftover from the
+  // pre-entity direction-quarantine system. It was never called anywhere after
+  // the migration to per-entity (strategy×direction) adaptation, so it has
+  // been removed as dead code. getRecentStrategyStats above is intentionally
+  // KEPT (deviation from a literal reading of Шаг 9.3): it still backs
+  // getAllStrategyStatuses()/strategy_weights, which Шаг 9.4 explicitly says
+  // to keep populated for backward compatibility (scheduler.ts Trust Score /
+  // Strategy PF gates and other consumers read it).
 
   async function getRecentEntityStats(entity: StrategyEntity): Promise<{
     trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
@@ -800,27 +771,29 @@ export async function checkAndRollback(): Promise<string|null> {
 
 export async function generateLearningReport(): Promise<string> {
   const tradeCount=await getClosedTradeCount();
-  const {rows:statRows} = await pool.query("SELECT * FROM strategy_stats");
-  const {rows:wRows}    = await pool.query("SELECT strategy,weight,disabled,quarantine,trust_score FROM strategy_weights");
-  const {rows:vRows}    = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2");
+  const {rows:vRows} = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2");
 
-  const stratLines:string[]=[];
-  for (const r of statRows as Record<string,unknown>[]) {
-    const strat=r["strategy"] as StrategyName;
+  // ТЗ Шаг 8: единый список из 8 сущностей (strategy×direction) вместо
+  // отдельной секции "4 стратегии" + отдельной секции "LONG vs SHORT".
+  const {rows:entityRows} = await pool.query(
+    "SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights ORDER BY strategy, direction"
+  );
+  const entityLines:string[]=[];
+  for (const r of entityRows as Record<string,unknown>[]) {
+    const entity=r["entity"] as string;
     const trades=Number(r["trades"]);
-    if (trades<5) continue;
+    if (trades<5) { entityLines.push(`▪️ ${entity.padEnd(22)}bootstrap (${trades}/5 сделок)`); continue; }
     const wins=Number(r["wins"]);
-    const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-    const pf=lossPnl>0?winPnl/lossPnl:winPnl>0?99:0;
-    const wr=(wins/trades*100).toFixed(1);
-    const wRow=wRows.find(w=>(w as Record<string,unknown>)["strategy"]===strat) as Record<string,unknown>|undefined;
-    const weight=wRow?Number(wRow["weight"]):1;
-    const dis=wRow?Boolean(wRow["disabled"]):false;
-    const quar=wRow?Boolean(wRow["quarantine"]):false;
-    const trust=wRow?Number(wRow["trust_score"]):0;
+    const winPnl=Number(r["win_pnl"]);
+    const lossPnl=Number(r["loss_pnl"]);
+    const weight=Number(r["weight"]);
+    const quarantine=Boolean(r["quarantine"]);
+    const wr=(wins/trades*100).toFixed(0);
+    const pf=lossPnl>0?(winPnl/lossPnl).toFixed(2):"∞";
+    const wPct=(weight*100).toFixed(0);
     const sampleTag = trades < 30 ? " ⚠️<30сд" : "";
-    const icon=dis?"🚫":quar?"⚠️":weight>=1.3?"🔥":weight<=0.5?"📉":"✅";
-    stratLines.push(`${icon} ${strat}: WR ${wr}% | PF ${pf===99?"∞":pf.toFixed(2)} | Trust ${trust}/100 | Вес ${(weight*100).toFixed(0)}%${sampleTag}`);
+    const icon = quarantine ? "⚠️" : weight>=1.3 ? "🔥" : weight<=0.5 ? "📉" : "✅";
+    entityLines.push(`${icon} ${entity.padEnd(22)}WR ${wr}% | PF ${pf} | Вес ${wPct}%${sampleTag}`);
   }
 
   let vLine="";
@@ -831,34 +804,13 @@ export async function generateLearningReport(): Promise<string> {
   }
 
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
-  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Стратегии:*`,...stratLines,vLine].filter(Boolean).join("\n");
-
-  const {rows:dirRows} = await pool.query(
-    "SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights WHERE trades >= 5"
-  );
-  const dirLines:string[]=[];
-  for (const r of dirRows as Record<string,unknown>[]) {
-    const entity=r["entity"] as string;
-    const trades=Number(r["trades"]);
-    const wins=Number(r["wins"]);
-    const winPnl=Number(r["win_pnl"]);
-    const lossPnl=Number(r["loss_pnl"]);
-    const weight=Number(r["weight"]);
-    const quarantine=Boolean(r["quarantine"]);
-    const wr=(wins/trades*100).toFixed(0);
-    const pf=lossPnl>0?(winPnl/lossPnl).toFixed(2):"∞";
-    const wPct=(weight*100).toFixed(0);
-    const icon = quarantine ? "⚠️" : weight >= 0.8 ? "✅" : "📉";
-    dirLines.push(`${entity.padEnd(22)}WR${wr}% PF${pf} | Вес ${wPct}% ${icon}`);
-  }
-  const dirSection = dirLines.length ? ["","📊 *LONG vs SHORT:*",...dirLines].join("\n") : "";
-  const fullSummary = dirSection ? summary + dirSection : summary;
+  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Сущности (strategy×direction):*`,...entityLines,vLine].filter(Boolean).join("\n");
 
   await pool.query(
     "INSERT INTO learning_reports(version_label,created_at,trade_count_at_report,summary,report_json) VALUES($1,$2,$3,$4,$5)",
-    [reportLabel,new Date().toISOString(),tradeCount,summary,JSON.stringify({strategies:stratLines,tradeCount})]
+    [reportLabel,new Date().toISOString(),tradeCount,summary,JSON.stringify({entities:entityRows,tradeCount})]
   );
-  return fullSummary;
+  return summary;
 }
 
 export async function getLearningHistory(): Promise<string> {
