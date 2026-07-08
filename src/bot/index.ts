@@ -295,11 +295,14 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           ? sortedStrats.flatMap((s: any) => {
               const icon   = entityIcons[s.entity] ?? "▪️";
               const status = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
-              if (s.trades < 3) return [`${status}${icon} ${s.entity} — _нет данных (${s.trades} сд.)_`];
+              // Escape underscores: Telegram legacy Markdown treats _ as italic delimiter.
+              // Entity names like MEAN_REVERSION_LONG break the parser inside *bold* or _italic_.
+              const eName = (s.entity as string).replace(/_/g, "\\_");
+              if (s.trades < 3) return [`${status}${icon} ${eName} — _нет данных (${s.trades} сд.)_`];
               const wr  = (s.winRate * 100).toFixed(0);
               const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
               const tr  = s.trustScore ?? 0;
-              return [`${status}${icon} *${s.entity}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
+              return [`${status}${icon} *${eName}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
             })
           : ["_нет данных о стратегиях_"];
         const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
@@ -312,7 +315,9 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         const parts: string[] = [];
         if (best && best.trades >= 5) {
           const bWr = (best.winRate * 100).toFixed(0);
-          parts.push(`Лидер — ${best.entity} (Trust ${best.trustScore}/100, WR ${bWr}%).`);
+          // analysisText lands inside _..._  (italic) — underscores in entity name would break parser.
+          const bName = (best.entity as string).replace(/_/g, " ");
+          parts.push(`Лидер — ${bName} (Trust ${best.trustScore}/100, WR ${bWr}%).`);
         }
         if (wr >= 60)           parts.push(`WR ${wr.toFixed(0)}% — выше нормы.`);
         else if (wr > 0 && wr < 45) parts.push(`WR ${wr.toFixed(0)}% — ниже нормы, следи за качеством.`);
@@ -363,7 +368,8 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
               [Markup.button.callback("◀️ Меню",         "menu_main")],
             ]),
           });
-        } catch {
+        } catch (err) {
+          console.error("[menu_dashboard] buildDashboardMessage failed:", err);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("⚠️ Ошибка загрузки обзора.", backMenu());
         }
@@ -1255,7 +1261,8 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]),
         });
-      } catch {
+      } catch (err) {
+        console.error("[/summary] buildDashboardMessage failed:", err);
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
         await ctx.reply("⚠️ Ошибка загрузки обзора.");
       }
