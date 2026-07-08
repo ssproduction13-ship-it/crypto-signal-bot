@@ -508,6 +508,17 @@ const MIGRATIONS = [
     ('BREAKOUT_LONG',       'BREAKOUT',       'LONG'),
     ('BREAKOUT_SHORT',      'BREAKOUT',       'SHORT')
   ON CONFLICT DO NOTHING`,
+  // ── Historical analytics snapshots ─────────────────────────────────────────
+  `CREATE TABLE IF NOT EXISTS stats_snapshots (
+    id               SERIAL PRIMARY KEY,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    type             TEXT        NOT NULL DEFAULT 'manual',
+    instrument_count INTEGER     NOT NULL DEFAULT 0,
+    time_rows        INTEGER     NOT NULL DEFAULT 0,
+    strategy_rows    INTEGER     NOT NULL DEFAULT 0,
+    direction_rows   INTEGER     NOT NULL DEFAULT 0,
+    data             JSONB       NOT NULL DEFAULT '{}'
+  )`,
 ];
 
 

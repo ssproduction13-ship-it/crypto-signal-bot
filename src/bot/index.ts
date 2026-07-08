@@ -44,6 +44,7 @@ import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
 import { getListingsReport } from "./listing-watcher.js";
 import { runDataCleanup } from "./data-cleanup.js";
 import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
+import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-snapshot.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1183,6 +1184,48 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
       }
     });
 
+
+    // /snapshots — list, create, or restore analytics snapshots
+    bot.command("snapshots", async (ctx) => {
+      const arg = ctx.message?.text?.split(" ")[1]?.trim();
+      try {
+        if (!arg || arg === "list") {
+          const snaps = await listSnapshots(10);
+          if (!snaps.length) return ctx.reply("📭 Снапшотов пока нет. Первый появится сегодня в 03:00 UTC или после /cleandata.");
+          const lines = snaps.map(s =>
+            `#${s.id} <b>${new Date(s.created_at).toISOString().slice(0, 16).replace('T', ' ')}</b> [${s.type}] — 📊${s.instrument_count} монет, ⏰${s.time_rows} часов, 🎯${s.strategy_rows} стратегий`
+          );
+          return ctx.reply(
+            `<b>📦 Снапшоты аналитики (последние ${snaps.length})</b>\n\n${lines.join('\n')}\n\nВосстановить: <code>/snapshots restore [id]</code>\nВручную: <code>/snapshots save</code>`,
+            { parse_mode: "HTML" }
+          );
+        }
+        if (arg === "save") {
+          const id = await saveStatsSnapshot("manual");
+          return ctx.reply(`✅ Снапшот #${id} сохранён вручную.`);
+        }
+        if (arg === "restore") {
+          const meta = await restoreFromSnapshot();
+          return ctx.reply(
+            `✅ <b>Аналитика восстановлена из последнего снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
+            { parse_mode: "HTML" }
+          );
+        }
+        const id = parseInt(arg);
+        if (!isNaN(id)) {
+          const meta = await restoreFromSnapshot(id);
+          return ctx.reply(
+            `✅ <b>Аналитика восстановлена из снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
+            { parse_mode: "HTML" }
+          );
+        }
+        return ctx.reply("❓ Использование:\n/snapshots — список\n/snapshots save — сохранить\n/snapshots restore — из последнего\n/snapshots restore [id] — из конкретного");
+      } catch (err) {
+        logger.error({ err }, "/snapshots command failed");
+        return ctx.reply("❌ Ошибка: " + String(err));
+      }
+    });
+
     // /report — send HTML daily report on demand
   bot.command("report", async (ctx) => {
     const chatId = ctx.chat.id;
@@ -1841,6 +1884,48 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("❌ Ошибка при очистке: " + String(err));
+      }
+    });
+
+
+    // /snapshots — list, create, or restore analytics snapshots
+    bot.command("snapshots", async (ctx) => {
+      const arg = ctx.message?.text?.split(" ")[1]?.trim();
+      try {
+        if (!arg || arg === "list") {
+          const snaps = await listSnapshots(10);
+          if (!snaps.length) return ctx.reply("📭 Снапшотов пока нет. Первый появится сегодня в 03:00 UTC или после /cleandata.");
+          const lines = snaps.map(s =>
+            `#${s.id} <b>${new Date(s.created_at).toISOString().slice(0, 16).replace('T', ' ')}</b> [${s.type}] — 📊${s.instrument_count} монет, ⏰${s.time_rows} часов, 🎯${s.strategy_rows} стратегий`
+          );
+          return ctx.reply(
+            `<b>📦 Снапшоты аналитики (последние ${snaps.length})</b>\n\n${lines.join('\n')}\n\nВосстановить: <code>/snapshots restore [id]</code>\nВручную: <code>/snapshots save</code>`,
+            { parse_mode: "HTML" }
+          );
+        }
+        if (arg === "save") {
+          const id = await saveStatsSnapshot("manual");
+          return ctx.reply(`✅ Снапшот #${id} сохранён вручную.`);
+        }
+        if (arg === "restore") {
+          const meta = await restoreFromSnapshot();
+          return ctx.reply(
+            `✅ <b>Аналитика восстановлена из последнего снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
+            { parse_mode: "HTML" }
+          );
+        }
+        const id = parseInt(arg);
+        if (!isNaN(id)) {
+          const meta = await restoreFromSnapshot(id);
+          return ctx.reply(
+            `✅ <b>Аналитика восстановлена из снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
+            { parse_mode: "HTML" }
+          );
+        }
+        return ctx.reply("❓ Использование:\n/snapshots — список\n/snapshots save — сохранить\n/snapshots restore — из последнего\n/snapshots restore [id] — из конкретного");
+      } catch (err) {
+        logger.error({ err }, "/snapshots command failed");
+        return ctx.reply("❌ Ошибка: " + String(err));
       }
     });
 

@@ -36,6 +36,7 @@ import { generateDailyReport } from "./report-generator.js";
 import { checkMTFAlignment } from "./mtf-filter.js";
 import { checkCorrelationRisk } from "./correlation-risk.js";
 import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
+import { saveStatsSnapshot } from "./stats-snapshot.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 10;
@@ -1046,6 +1047,16 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
     });
 
     
+  // Daily analytics snapshot at 03:00 UTC (before cleanup window)
+  cron.schedule("0 3 * * *", async () => {
+    try {
+      const id = await saveStatsSnapshot("daily");
+      logger.info({ id }, "Daily stats snapshot saved");
+    } catch (err) {
+      logger.error({ err }, "Daily stats snapshot failed");
+    }
+  });
+
   // Daily HTML report at 08:00 UTC
   cron.schedule("0 8 * * *", async () => {
     if (!chatIds.size) return;

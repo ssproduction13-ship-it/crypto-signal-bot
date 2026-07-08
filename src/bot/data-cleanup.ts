@@ -1,5 +1,6 @@
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { saveStatsSnapshot } from "./stats-snapshot.js";
 
 const COMMISSION_RATE = 0.001;
 
@@ -105,6 +106,13 @@ export async function runDataCleanup(chatId: number): Promise<CleanupResult> {
        total_slippage   = $6`,
     [chatId, newBalanceRounded, initialBalance, peakBalance, totalCommRounded, totalSlippageRound]
   );
+
+  // Step 5.5 — Save pre-cleanup snapshot so analytics can always be restored
+  try {
+    await saveStatsSnapshot("pre-cleanup");
+  } catch (snapErr) {
+    logger.warn({ snapErr }, "Pre-cleanup snapshot failed — continuing without it");
+  }
 
   // Step 6 — Clear strategy performance tables (had phantom-inflated data)
   await pool.query("DELETE FROM strategy_stats         WHERE 1=1");
