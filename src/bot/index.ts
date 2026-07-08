@@ -491,6 +491,8 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
       await ctx.answerCbQuery();
       const { savePaperAccount } = await import("./storage.js");
       await savePaperAccount(ctx.chat!.id, { balance:10000, initialBalance:10000, peakBalance:10000, positions:[], closedTrades:[] });
+      // Clear closed trades from DB so PF/WR reset to match the new learning period
+      await pool.query("DELETE FROM paper_closed_trades WHERE chat_id=$1", [ctx.chat!.id]);
       await ctx.reply("✅ Счёт сброшен до $10,000", mainMenu());
     });
 
@@ -875,10 +877,25 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const regime = detectMarketRegime(market, rating);
 
         const {rows: entityRows} = await pool.query(
-          `SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
-                  weight, quarantine, trust_score
-           FROM strategy_entity_weights
-           ORDER BY strategy, direction`
+          `SELECT sew.entity, sew.strategy, sew.direction,
+                  sew.weight, sew.quarantine, sew.trust_score,
+                  COUNT(pct.pnl)::int AS trades,
+                  SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END)::int AS wins,
+                  COALESCE(SUM(CASE WHEN pct.pnl > 0 THEN pct.pnl ELSE 0 END), 0) AS win_pnl,
+                  COALESCE(SUM(CASE WHEN pct.pnl <= 0 THEN ABS(pct.pnl) ELSE 0 END), 0) AS loss_pnl
+           FROM strategy_entity_weights sew
+           LEFT JOIN LATERAL (
+             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+             FROM paper_closed_trades
+             WHERE strategy  = sew.strategy
+               AND direction = sew.direction
+               AND outcome NOT IN ('TIMEOUT_STALE')
+             ORDER BY closed_at DESC
+             LIMIT 150
+           ) pct ON true
+           GROUP BY sew.entity, sew.strategy, sew.direction,
+                    sew.weight, sew.quarantine, sew.trust_score
+           ORDER BY sew.strategy, sew.direction`
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
@@ -1548,10 +1565,25 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
         const regime = detectMarketRegime(market, rating);
 
         const {rows: entityRows} = await pool.query(
-          `SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl,
-                  weight, quarantine, trust_score
-           FROM strategy_entity_weights
-           ORDER BY strategy, direction`
+          `SELECT sew.entity, sew.strategy, sew.direction,
+                  sew.weight, sew.quarantine, sew.trust_score,
+                  COUNT(pct.pnl)::int AS trades,
+                  SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END)::int AS wins,
+                  COALESCE(SUM(CASE WHEN pct.pnl > 0 THEN pct.pnl ELSE 0 END), 0) AS win_pnl,
+                  COALESCE(SUM(CASE WHEN pct.pnl <= 0 THEN ABS(pct.pnl) ELSE 0 END), 0) AS loss_pnl
+           FROM strategy_entity_weights sew
+           LEFT JOIN LATERAL (
+             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+             FROM paper_closed_trades
+             WHERE strategy  = sew.strategy
+               AND direction = sew.direction
+               AND outcome NOT IN ('TIMEOUT_STALE')
+             ORDER BY closed_at DESC
+             LIMIT 150
+           ) pct ON true
+           GROUP BY sew.entity, sew.strategy, sew.direction,
+                    sew.weight, sew.quarantine, sew.trust_score
+           ORDER BY sew.strategy, sew.direction`
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
