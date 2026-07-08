@@ -22,15 +22,15 @@ import { pool } from "../lib/db.js";
   }
 
   /**
-   * Confidence Engine v3 — 8 factors:
-   * 1. recentPerformance   — last 20–50 trades win rate
-   * 2. marketQuality       — non-chaotic / trending
-   * 3. volatilityFit       — ATR in optimal range 0.5–3%
-   * 4. strategyEffectiveness — PF of chosen strategy
-   * 5. timeFactor          — historical win rate at this hour/day
-   * 6. instrumentFactor    — instrument priority weight
-   * 7. regimeFactor        — strategy PF in current market regime
-   * 8. similarTradesFactor — cosine-similarity k-NN from trade history
+   * Confidence Engine v4 — 7 active factors (volatilityFit удалён — антикоррелятор):
+   * 1. recentPerformance   — last 20–50 trades win rate (вес 0.26)
+   * 2. marketQuality       — non-chaotic / trending (вес 0.20)
+   * 3. volatilityFit       — DISABLED: importance −17 на 500 сделках; хранится для отображения
+   * 4. strategyEffectiveness — PF of chosen strategy (вес 0.22)
+   * 5. timeFactor          — historical win rate at this hour/day (вес 0.09)
+   * 6. instrumentFactor    — instrument priority weight (вес 0.09)
+   * 7. regimeFactor        — strategy PF in current market regime (вес 0.07)
+   * 8. similarTradesFactor — cosine-similarity k-NN from trade history (вес 0.07)
    */
   export async function calcConfidence(
     ind: IndicatorResult,
@@ -64,16 +64,11 @@ import { pool } from "../lib/db.js";
     else if (market.isHighVolatility) marketQuality = 45;
     else marketQuality = 65;
 
-    // 3. Volatility fit (0–100) — optimal ATR% is 0.5–3%
-    let volatilityFit = 50;
-    if (market.atrPercent != null) {
-      const a = market.atrPercent;
-      if (a >= 0.5 && a <= 2)      volatilityFit = 85;
-      else if (a >= 2 && a <= 3.5) volatilityFit = 65;
-      else if (a < 0.5)            volatilityFit = 30;
-      else if (a > 5)              volatilityFit = 15;
-      else                         volatilityFit = 40;
-    }
+    // 3. Volatility fit — ОТКЛЮЧЕНО (feature_importance на 500 сделках: ATR importance = −17, WR lift = −9.6%).
+    //    Фактор оказался антикоррелятором: чем выше ATR-скор, тем хуже реальный результат сигнала.
+    //    Был заморожен на нейтральном значении 50; его вес 0.13 перенесён в proven-факторы.
+    //    Значение сохраняется в factors для отображения, но на скор не влияет.
+    const volatilityFit = market.atrPercent != null ? Math.round(market.atrPercent * 10) : 50; // только для отображения
 
     // 4. Strategy effectiveness (0–100) based on PF
     let strategyEffectiveness = 50;
@@ -182,16 +177,19 @@ import { pool } from "../lib/db.js";
     }
 
     const signalBonus = signalScore ? Math.round((signalScore - 50) * 0.15) : 0;
-    // v3: reduce other weights slightly to accommodate 8th factor (sum = 1.0)
+    // v4: volatilityFit убран из формулы (был 0.13) — data-driven decision по feature_importance.
+    // Вес перераспределён в факторы с положительной корреляцией:
+    //   recentPerformance +0.06 (0.20→0.26), strategyEffectiveness +0.07 (0.15→0.22).
+    // Сумма весов = 0.26+0.20+0.22+0.09+0.09+0.07+0.07 = 1.00
     const raw =
-      recentPerformance     * 0.20 +
+      recentPerformance     * 0.26 +  // было 0.20
       marketQuality         * 0.20 +
-      volatilityFit         * 0.13 +
-      strategyEffectiveness * 0.15 +
+      // volatilityFit исключён из скора (importance −17, антикоррелятор)
+      strategyEffectiveness * 0.22 +  // было 0.15
       timeFactor            * 0.09 +
-      instrumentFactor      * 0.07 +
+      instrumentFactor      * 0.09 +  // было 0.07
       regimeFactor          * 0.07 +
-      similarTradesFactor   * 0.09 +
+      similarTradesFactor   * 0.07 +  // было 0.09
       signalBonus +
       similarTradesBoost;
 

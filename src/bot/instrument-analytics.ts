@@ -61,6 +61,7 @@ import { pool } from "../lib/db.js";
     const wr=wins/trades;
     let priority=1.0;
     if (pf>=1.5&&wr>=0.5) priority=1.3;
+    else if (wr<0.25) priority=0.0;         // banned: WR < 25%, полный запрет новых сделок
     else if (pf<0.7&&wr<0.35) priority=0.5;
     else if (pf<0.5&&wr<0.3) priority=0.2;
     await pool.query("UPDATE instrument_analytics SET priority_weight=$2 WHERE symbol=$1",[symbol,priority]);
@@ -111,22 +112,33 @@ import { pool } from "../lib/db.js";
       }
     }
 
-    // Worst
-    const worst=(rows as Record<string,unknown>[]).filter(r=>Number(r["priority_weight"])<=0.5);
+    // Banned / low-priority
+    const banned=(rows as Record<string,unknown>[]).filter(r=>Number(r["priority_weight"])===0);
+    const worst=(rows as Record<string,unknown>[]).filter(r=>Number(r["priority_weight"])>0&&Number(r["priority_weight"])<=0.5);
+    const bannedLines=banned.length ? ["","🚫 *Заблокированы (WR < 25%):*",...banned.map(r=>`  ${r["symbol"] as string} — WR ${(Number(r["wins"])/Number(r["trades"])*100).toFixed(0)}%`)] : [];
     const exclusions=worst.length ? ["","⛔ *Низкий приоритет:*",...worst.map(r=>`  ${r["symbol"] as string}`)] : [];
 
-    return ["📊 *Аналитика по инструментам*","","🏆 *Рейтинг:*",...lines,...exclusions].join("\n");
+    return ["📊 *Аналитика по инструментам*","","🏆 *Рейтинг:*",...lines,...bannedLines,...exclusions].join("\n");
   }
   
 // ── AI Watchlist (shadow-карантин на уровне инструмента) ─────────────────────
 
-export type InstrumentStatus = "normal" | "watchlist" | "deep_watchlist";
+export type InstrumentStatus = "normal" | "watchlist" | "deep_watchlist" | "banned";
 
 function classifyInstrument(stats: { trades: number; pf: number; wr: number }): InstrumentStatus {
   if (stats.trades < 10) return "normal";
+  // Полный бан: WR < 25% при 10+ сделках — статистически устойчивый аутсайдер.
+  // По данным instrument_analytics: AAVEUSDT 2/12 (17%), ARBUSDT 2/12 (17%), ONDOUSDT 2/11 (18%).
+  // Эти инструменты не получают новые позиции до восстановления WR ≥ 25%.
+  if (stats.wr < 0.25 && stats.trades >= 10) return "banned";
   if (stats.pf < 0.3 && stats.trades >= 15) return "deep_watchlist";
   if (stats.pf < 0.6) return "watchlist";
   return "normal";
+}
+
+/** Возвращает true если инструмент полностью заблокирован для новых позиций. */
+export async function isInstrumentBanned(symbol: string): Promise<boolean> {
+  return (await getInstrumentStatus(symbol)) === "banned";
 }
 
 export async function getInstrumentStatus(symbol: string): Promise<InstrumentStatus> {

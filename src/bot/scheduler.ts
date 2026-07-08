@@ -373,6 +373,15 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           instrumentSizeMultiplier = 0.5;
           gate.pass("Instrument Watchlist", `${sub.symbol} deep watchlist, сигнал прошёл повышенный порог (размер ×0.5)`);
         }
+      } else if (!gate.rejected && instrumentStatus === "banned") {
+        // Полный бан: WR < 25% на 10+ сделках — инструмент-аутсайдер, не торгуем ни при каком сигнале.
+        // Разблокируется автоматически через updateAllInstrumentStatuses когда WR восстановится ≥ 25%.
+        gate.fail(
+          "Instrument Banned",
+          `${sub.symbol} заблокирован — устойчивый аутсайдер (WR < 25%, 10+ сделок)`,
+          `status: banned`,
+          "Разблокируется при WR ≥ 25%"
+        );
       } else if (!gate.rejected) {
         gate.skip("Instrument Watchlist", instrumentStatus === "normal" ? "Инструмент в норме" : "Предыдущий шаг не прошёл");
       }
@@ -388,6 +397,20 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
       } else {
         if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
+      }
+
+      // Явный фильтр TREND+sideways на уровне входа (не постфактум-адаптация).
+      // Данные: TREND имеет 52 убытка с причиной sideways_market — системная проблема.
+      // В боковике следует использовать REVERSAL или PULLBACK, а не TREND.
+      if (!gate.rejected && strat === "TREND" && (regime === "sideways" || regime === "low_vol")) {
+        gate.fail(
+          "TREND Sideways Filter",
+          `TREND запрещён в режиме ${regime} — высокая вероятность убытка`,
+          `strategy=${strat}, regime=${regime}`,
+          "Используйте REVERSAL или PULLBACK в боковике"
+        );
+      } else if (!gate.rejected) {
+        gate.skip("TREND Sideways Filter", strat !== "TREND" ? `${strat} — фильтр не применяется` : `regime=${regime} — тренд есть, OK`);
       }
 
       const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime, sub.interval).catch(() => ({ blocked: false, reason: '' }));
