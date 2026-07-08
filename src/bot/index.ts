@@ -889,13 +889,14 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
              FROM paper_closed_trades
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
+               AND chat_id   = $1
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`
+           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id]
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
@@ -1577,13 +1578,14 @@ import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.
              FROM paper_closed_trades
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
+               AND chat_id   = $1
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`
+           ORDER BY sew.strategy, sew.direction`, [ctx.chat!.id]
         );
           const regimeLabels: Record<string,string> = {
             trend_up:"📈 Тренд↑",trend_down:"📉 Тренд↓",
