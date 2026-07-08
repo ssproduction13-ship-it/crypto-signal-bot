@@ -210,6 +210,7 @@ const MIGRATIONS = [
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
+  "ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS reset_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01'",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'unknown'",
   // Concentration Risk: store effective risk % applied at trade open
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS risk_percent DOUBLE PRECISION",
