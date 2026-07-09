@@ -1112,7 +1112,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         await snapshotStrategyVersion(changes);
         const report  = await generateLearningReport();
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        const bulletLines = changes.split("\n").filter(Boolean).map((l: string) => "• " + l).join("\n");
+        const bulletLines = changes.split("\n").filter(Boolean).map((l: string) => "• " + l.replace(/_/g, "\\_")).join("\n");
         const deltaSection = bulletLines
           ? `📝 *Изменения:*\n${bulletLines}\n\n`
           : `📝 _Изменений нет — данных мало или веса уже актуальны._\n\n`;
