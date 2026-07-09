@@ -584,7 +584,15 @@ function pfToTargetWeight(pf: number): number {
     return { trades, wins, winPnl, lossPnl, totalPnl, pf };
   }
 
+  let _adaptationRunning = false;
+
   export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
+  if (_adaptationRunning) {
+    logger.warn("runAdaptationCycle: already running, skipping concurrent call");
+    return "";
+  }
+  _adaptationRunning = true;
+  try {
   const {rows:wRows} = await pool.query(
     "SELECT strategy,weight,disabled,quarantine,cycles_below_threshold FROM strategy_weights"
   );
@@ -708,6 +716,9 @@ function pfToTargetWeight(pf: number): number {
   }
 
   return changes.length > 0 ? changes.join("\n") : "Изменений нет — все стратегии в норме";
+  } finally {
+    _adaptationRunning = false;
+  }
 }
 
 export async function getClosedTradeCount(): Promise<number> {
