@@ -530,6 +530,30 @@ const MIGRATIONS = [
     direction_rows   INTEGER     NOT NULL DEFAULT 0,
     data             JSONB       NOT NULL DEFAULT '{}'
   )`,
+  // ── Instrument × Direction × Regime granular analytics ──────────────────
+  `CREATE TABLE IF NOT EXISTS instrument_regime_stats (
+    symbol     TEXT NOT NULL,
+    direction  TEXT NOT NULL,
+    regime     TEXT NOT NULL,
+    trades     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    wins       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    win_pnl    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    loss_pnl   DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_pnl  DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (symbol, direction, regime)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_irs_symbol ON instrument_regime_stats(symbol)",
+  // ── Entity × Symbol consecutive-loss cooldown ────────────────────────────
+  `CREATE TABLE IF NOT EXISTS entity_symbol_cooldown (
+    entity             TEXT NOT NULL,
+    symbol             TEXT NOT NULL,
+    consecutive_losses INTEGER NOT NULL DEFAULT 0,
+    last_result_at     TIMESTAMPTZ DEFAULT NOW(),
+    cooldown_until     TIMESTAMPTZ DEFAULT NULL,
+    PRIMARY KEY (entity, symbol)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_esc_cooldown ON entity_symbol_cooldown(cooldown_until) WHERE cooldown_until IS NOT NULL",
 ];
 
 

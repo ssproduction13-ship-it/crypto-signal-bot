@@ -15,6 +15,8 @@ import { recordRegimeTrade, recordDirectionTrade, recordLossReason, classifyLoss
 import { recordTimeTrade } from "./time-analytics.js";
 import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
+import { recordInstrumentRegimeTrade } from "./instrument-regime-stats.js";
+import { recordEntitySymbolResult } from "./entity-cooldown.js";
 
 
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
@@ -191,6 +193,7 @@ export async function checkPaperPositions(
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+              recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
               updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct, pos.id).catch(() => {});
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
@@ -234,6 +237,7 @@ export async function checkPaperPositions(
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
               recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+              recordInstrumentRegimeTrade(pos.symbol, pos.direction, regimeStale as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
               updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE").catch(() => {});
               updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct, pos.id).catch(() => {});
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
@@ -333,6 +337,8 @@ export async function checkPaperPositions(
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true, pos.interval ?? "ALL").catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, true).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, true).catch(() => {});
+        recordInstrumentRegimeTrade(pos.symbol, pos.direction, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true).catch(() => {});
+        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, true).catch(() => {});
         updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct, pos.id).catch(() => {});
         recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true).catch(() => {});
@@ -416,6 +422,8 @@ export async function checkPaperPositions(
         recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
         recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
         recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+        recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0).catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct, pos.id).catch(() => {});
         if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
           const lossReason = classifyLossReason((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, closeReason);

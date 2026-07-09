@@ -14,11 +14,13 @@ import type { TradeSignal } from "./signals.js";
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
     selectBestStrategy, recordLossReason, classifyLossReason, getAllEntityStatuses,
-    generateWeeklyRanking,
+    generateWeeklyRanking, runDecayCycle,
     type StrategySignalInput, type StrategySelectionResult,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
   import { getInstrumentPriority, getInstrumentStatus, updateAllInstrumentStatuses } from "./instrument-analytics.js";
+  import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
+  import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
   import { checkShadowPositions, openShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
@@ -435,6 +437,28 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");
       }
 
+      // ── Entity × Symbol Cooldown — серийные убытки по одной монете ──────────
+      let irdSizeMult = 1.0;
+      const { blocked: cooldownBlocked, until: cooldownUntil, consecutiveLosses } =
+        await isEntitySymbolOnCooldown(entityKey, sub.symbol).catch(() => ({ blocked: false, until: null, consecutiveLosses: 0 }));
+      if (!gate.rejected && cooldownBlocked) {
+        const untilStr = cooldownUntil ? new Date(cooldownUntil).toISOString().slice(0, 16) : "?";
+        gate.fail("Entity Cooldown", `${entityKey}/${sub.symbol}: ${consecutiveLosses} убытков подряд`, `до ${untilStr} UTC`, "");
+      } else if (!gate.rejected) {
+        gate.pass("Entity Cooldown", consecutiveLosses > 0 ? `${consecutiveLosses} убытков подряд (норма)` : "OK");
+      }
+
+      // ── Instrument × Direction × Regime — размер по комбо-статистике ─────────
+      const { blocked: irdBlocked, sizeMultiplier: _irdMult, reason: irdReason } =
+        await getInstrumentRegimeModifier(sub.symbol, sig.score.direction, regime)
+          .catch(() => ({ blocked: false, sizeMultiplier: 1.0, reason: "" }));
+      irdSizeMult = _irdMult;
+      if (!gate.rejected && irdBlocked) {
+        gate.fail("IRD Filter", `${sub.symbol} заблокирован в режиме ${regime}`, irdReason, "PF<0.6");
+      } else if (!gate.rejected) {
+        gate.pass("IRD Filter", irdReason || `${sub.symbol} ${sig.score.direction}/${regime}: OK`);
+      }
+
       if (!gate.rejected && stratWeight === 0) {
         gate.fail("Вес стратегии", "Стратегия отключена движком адаптации", "0%");
       } else if (!gate.rejected) {
@@ -564,13 +588,13 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight;
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight * irdSizeMult;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return null;
       }
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier }, 'Size reduced by guards');
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult }, 'Size reduced by guards');
       }
 
       return {
@@ -1092,6 +1116,18 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     });
 
     
+  // Weekly decay cycle — Sunday 04:00 UTC
+  // Умножает накопленные PnL-суммы аналитических таблиц на 0.95,
+  // чтобы недавние сделки имели больший вес чем 3-6 месячные данные.
+  cron.schedule("0 4 * * 0", async () => {
+    try {
+      const result = await runDecayCycle();
+      logger.info({ result }, "Weekly decay cycle complete");
+    } catch (err) {
+      logger.error({ err }, "Weekly decay cycle failed");
+    }
+  });
+
   // Daily analytics snapshot at 03:00 UTC (before cleanup window)
   cron.schedule("0 3 * * *", async () => {
     try {

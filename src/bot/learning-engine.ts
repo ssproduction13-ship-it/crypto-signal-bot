@@ -721,6 +721,51 @@ function pfToTargetWeight(pf: number): number {
   }
 }
 
+/**
+ * Decay цикл — еженедельный «забыватель» старых данных.
+ *
+ * Умножает все накопленные PnL-суммы в аналитических таблицах на DECAY_FACTOR.
+ * Таблицы хранят числа как DOUBLE PRECISION (не целые), поэтому дробное умножение корректно.
+ *
+ * Эффект: новые сделки, добавленные после decay, имеют пропорционально бо́льший вес.
+ * Пример: через ~3 месяца (13 недель) старые данные весят 0.95^13 ≈ 0.51 от исходного.
+ *
+ * PF (win_pnl / loss_pnl) внутри старых данных не меняется — оба множатся одинаково.
+ * Но когда новые сделки добавляются un-decayed, они сдвигают PF в свою сторону.
+ */
+export async function runDecayCycle(): Promise<string> {
+  const DECAY = 0.95;
+  const cols  = "trades = trades * $1, wins = wins * $1, win_pnl = win_pnl * $1, loss_pnl = loss_pnl * $1, total_pnl = total_pnl * $1";
+  const results: string[] = [];
+
+  const tables = [
+    "strategy_regime_stats",
+    "strategy_direction_stats",
+    "instrument_analytics",
+    "instrument_regime_stats",
+  ] as const;
+
+  for (const table of tables) {
+    try {
+      const { rowCount } = await pool.query(`UPDATE ${table} SET ${cols}`, [DECAY]);
+      results.push(`${table}: ${rowCount ?? 0} rows`);
+    } catch (err) {
+      results.push(`${table}: ошибка — ${String(err)}`);
+    }
+  }
+
+  // Плавное снижение trust_score для entity, по которым не было сделок 30+ дней
+  try {
+    await pool.query(
+      `UPDATE strategy_entity_weights
+       SET trust_score = GREATEST(0, trust_score - 5)
+       WHERE updated_at < NOW() - INTERVAL '30 days'`,
+    );
+  } catch { /* ignore */ }
+
+  return `Decay ×${DECAY} применён:\n` + results.join("\n");
+}
+
 export async function getClosedTradeCount(): Promise<number> {
   const {rows} = await pool.query("SELECT COUNT(*) as cnt FROM paper_closed_trades");
   return Number((rows[0] as Record<string,unknown>)["cnt"]);
