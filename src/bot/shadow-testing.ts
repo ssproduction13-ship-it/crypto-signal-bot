@@ -53,10 +53,15 @@ import { pool } from "../lib/db.js";
         if (closeReason) {
           const pnl = dir==="LONG" ? (closePrice-entry)*size : (entry-closePrice)*size;
           const pnlPct = dir==="LONG" ? ((closePrice-entry)/entry)*100 : ((entry-closePrice)/entry)*100;
+          // pnl_equity_pct: portfolio-impact % using reference equity 10000.
+          // Shadow positions risk $100/trade (size=100/stopDist), so referenceEquity=10000
+          // gives consistent scale with paper_closed_trades (1% risk per trade baseline).
+          const SHADOW_REF_EQUITY = 10000;
+          const pnlEquityPct = (pnl / SHADOW_REF_EQUITY) * 100;
           await pool.query(
-            `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-            [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"])]
+            `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,pnl_equity_pct,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"])]
           );
           await pool.query("DELETE FROM shadow_positions WHERE id=$1",[pos["id"]]);
         }
@@ -69,12 +74,17 @@ import { pool } from "../lib/db.js";
   }
 
   export async function getShadowStats(): Promise<ShadowStats> {
-    const {rows} = await pool.query("SELECT pnl_percent,is_win FROM shadow_closed_trades");
+    // COALESCE: use pnl_equity_pct (portfolio-impact %) when available,
+    // fall back to pnl_percent for legacy rows recorded before the column was added.
+    // Mixing scales caused anomalous shadow PF (e.g. TREND SHORT showed 4.56).
+    const {rows} = await pool.query(
+      "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl, is_win FROM shadow_closed_trades"
+    );
     if (!rows.length) return {trades:0,wins:0,winRate:0,profitFactor:0,totalPnl:0};
     const trades=rows.length;
     const wins=(rows as Record<string,unknown>[]).filter(r=>Boolean(r["is_win"])).length;
-    const winPnl=(rows as Record<string,unknown>[]).filter(r=>Boolean(r["is_win"])).reduce((a,r)=>a+Number(r["pnl_percent"]),0);
-    const lossPnl=Math.abs((rows as Record<string,unknown>[]).filter(r=>!Boolean(r["is_win"])).reduce((a,r)=>a+Number(r["pnl_percent"]),0));
+    const winPnl=(rows as Record<string,unknown>[]).filter(r=>Boolean(r["is_win"])).reduce((a,r)=>a+Number(r["pnl"]),0);
+    const lossPnl=Math.abs((rows as Record<string,unknown>[]).filter(r=>!Boolean(r["is_win"])).reduce((a,r)=>a+Number(r["pnl"]),0));
     return {trades,wins,winRate:wins/trades,profitFactor:lossPnl>0?winPnl/lossPnl:winPnl>0?99:0,totalPnl:winPnl-lossPnl};
   }
 

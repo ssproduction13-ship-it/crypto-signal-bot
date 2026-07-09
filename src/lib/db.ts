@@ -487,6 +487,10 @@ const MIGRATIONS = [
     ADD COLUMN IF NOT EXISTS is_direction_shadow BOOLEAN NOT NULL DEFAULT false`,
   `ALTER TABLE shadow_closed_trades
     ADD COLUMN IF NOT EXISTS is_direction_shadow BOOLEAN NOT NULL DEFAULT false`,
+  // pnl_equity_pct: portfolio-impact % (pnl / referenceEquity * 100).
+  // Shadow system uses size=100/stopDist → risks $100/trade → referenceEquity=10000.
+  // Required so getShadowStats() uses the same scale as paper_closed_trades PF.
+  "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
   "CREATE INDEX IF NOT EXISTS idx_sct_dir_shadow ON shadow_closed_trades(strategy, direction, is_direction_shadow, closed_at)",
   // ── 8-Entity Architecture: strategy × direction independent weights ─────────
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
