@@ -503,6 +503,7 @@ function pfToTargetWeight(pf: number): number {
       `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
        FROM paper_closed_trades
        WHERE strategy=$1
+         AND closed_at >= (SELECT COALESCE(reset_at::text, '1970-01-01') FROM paper_accounts LIMIT 1)
        ORDER BY closed_at DESC
        LIMIT $2`,
       [strategy, ADAPTATION_WINDOW]
@@ -553,6 +554,7 @@ function pfToTargetWeight(pf: number): number {
        WHERE strategy=$1
          AND direction=$2
          AND outcome NOT IN ('TIMEOUT_STALE')
+         AND closed_at >= (SELECT COALESCE(reset_at::text, '1970-01-01') FROM paper_accounts LIMIT 1)
        ORDER BY closed_at DESC
        LIMIT $3`,
       [strategy, direction, ADAPTATION_WINDOW]
@@ -664,7 +666,7 @@ function pfToTargetWeight(pf: number): number {
 
     // Мягкий карантин при PF 0.50-0.75 и 20+ сделках
     if (!newQuarantine && trades >= 20 && pf < 0.75 && isNegativeReturn) {
-      newWeight = Math.min(newWeight, 0.20);
+      newWeight = Math.min(newWeight, 0.25);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
       }
