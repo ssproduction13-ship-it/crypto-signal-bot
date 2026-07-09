@@ -263,12 +263,13 @@ export async function checkPaperPositions(
           pos.size += addSize;
           pos.pendingEntrySize = undefined;
           pos.pendingEntryTrigger = undefined;
-          msgs.push(
+          const secondEntryMsg =
             `📥 *Второй вход — ${pos.symbol}*\n` +
             `${dirLabel} | +${addSize.toFixed(4)} ед. по \`${formatPrice(price)}\`\n` +
-            `Средний вход: \`${formatPrice(blended)}\` | Комиссия: -$${addCommission.toFixed(2)}\n` +
-            `_Полная позиция набрана_`
-          );
+            `Средний вход: \`${formatPrice(blended)}\` | Комиссия: -${addCommission.toFixed(2)}\n` +
+            `_Полная позиция набрана_`;
+          msgs.push(secondEntryMsg);
+          if (sendNotification) await sendNotification(secondEntryMsg).catch(() => {});
         }
       }
 
@@ -292,12 +293,13 @@ export async function checkPaperPositions(
           : pos.stopLoss > pos.entryPrice;
         if (slNotAtEntry && originalStopDist > 0 && unrealizedGain >= 2 * originalStopDist) {
           pos.stopLoss = pos.entryPrice;
-          msgs.push(
+          const beMsg =
             `📌 *Стоп → безубыток — ${pos.symbol}*\n` +
             `${dirLabel} | Прибыль достигла 2× риска\n` +
             `Стоп перенесён в точку входа: \`${formatPrice(pos.entryPrice)}\`\n` +
-            `_Позиция теперь без риска убытка_`
-          );
+            `_Позиция теперь без риска убытка_`;
+          msgs.push(beMsg);
+          if (sendNotification) await sendNotification(beMsg).catch(() => {});
         }
       }
 
@@ -362,16 +364,17 @@ export async function checkPaperPositions(
                         `Средний вход скорректирован: \`${formatPrice(blendedEntry)}\` | TP2: \`${formatPrice(pos.tp2)}\``;
         }
 
-        msgs.push(
+        const tp1Msg =
           `🎯 *ЧАСТИЧНОЕ ЗАКРЫТИЕ — ${pos.symbol}*\n` +
           `${dirLabel} | TP1 зафиксировано 50% | ${stratLabel}\n` +
           `Вход: \`${formatPrice(pos.entryPrice)}\` → TP1: \`${formatPrice(realisticPrice)}\`\n` +
           `P&L (50%): *+${pnl.toFixed(2)}* (+${pnlPct.toFixed(2)}%)\n` +
-          `💸 комиссия -$${commission.toFixed(2)} | слипп -$${slippage.toFixed(2)}\n` +
+          `💸 комиссия -${commission.toFixed(2)} | слипп -${slippage.toFixed(2)}\n` +
           `📌 Стоп → безубыток` +
           pyramidNote + `\n` +
-          `💰 Баланс: *${account.balance.toFixed(2)}*`
-        );
+          `💰 Баланс: *${account.balance.toFixed(2)}*`;
+        msgs.push(tp1Msg);
+        if (sendNotification) await sendNotification(tp1Msg).catch(() => {});
 
         remaining.push(pos);
         continue;
@@ -455,9 +458,13 @@ export async function checkPaperPositions(
             `💰 Баланс: *${account.balance.toFixed(2)}*`;
 
         msgs.push(closeMsg);
+        if (sendNotification) await sendNotification(closeMsg).catch(() => {});
 
         const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0);
-        if (riskAlert) msgs.push(riskAlert);
+        if (riskAlert) {
+          msgs.push(riskAlert);
+          if (sendNotification) await sendNotification(riskAlert).catch(() => {});
+        }
 
         if (sendNotification) {
           await checkNewPeak(chatId, account.balance, account.peakBalance ?? account.balance, sendNotification);
