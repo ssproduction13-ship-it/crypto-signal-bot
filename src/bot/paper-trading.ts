@@ -332,13 +332,7 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        // Record TP1 as its own stat entry — consistent with paper_closed_trades (1 row per execution)
-        recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, true).catch(() => {});
-        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true, pos.interval ?? "ALL").catch(() => {});
-        recordTimeTrade(pos.openedAt, pnlEquityPct, true).catch(() => {});
-        recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, true).catch(() => {});
-        recordInstrumentRegimeTrade(pos.symbol, pos.direction, (pos.marketRegime ?? "sideways") as MarketRegime, pnlEquityPct, true).catch(() => {});
-        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, true).catch(() => {});
+        // TP1 partial close: accounting only — stats recorded at final close (1 trade per signal)
         updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct, pos.id).catch(() => {});
         recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true).catch(() => {});
@@ -412,8 +406,7 @@ export async function checkPaperPositions(
         account.balance += pnl;
         account.closedTrades.unshift(trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        // Combined PnL: TP1 portion (if any) + final close portion → 1 stat entry per signal
-        // Each partial close is its own stat entry — consistent with paper_closed_trades
+        // Final close: 1 stat entry per signal (TP1 partial excluded by design)
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
         // FIX Critical#7: record this final close in the active A/B variant (was defined but never called)
         recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
