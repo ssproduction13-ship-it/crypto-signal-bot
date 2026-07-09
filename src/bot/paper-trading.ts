@@ -348,10 +348,31 @@ export async function checkPaperPositions(
         const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
         const entityForPyramid = `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`;
         const { rows: pyramidEntityRows } = await pool.query(
-          "SELECT quarantine FROM strategy_entity_weights WHERE entity=$1",
+          "SELECT quarantine, weight FROM strategy_entity_weights WHERE entity=$1",
           [entityForPyramid]
         ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
-        const pyramidAllowed = pyramidEntityRows.length === 0 || !Boolean((pyramidEntityRows[0] as Record<string,unknown>)["quarantine"]);
+
+        // Текущий час UTC
+        const pyramidHour = new Date().getUTCHours();
+        const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3]);
+
+        // ATR процент от цены
+        const atrPercent = pos.trailAtr != null && realisticPrice > 0
+          ? (pos.trailAtr / realisticPrice) * 100
+          : 0;
+
+        // Мягкий карантин — weight < 0.40
+        const pyramidWeight = pyramidEntityRows.length > 0
+          ? Number((pyramidEntityRows[0] as Record<string,unknown>)["weight"] ?? 1)
+          : 1;
+        const softQuarantine = pyramidWeight < 0.40;
+
+        const pyramidAllowed =
+          (pyramidEntityRows.length === 0 || !Boolean((pyramidEntityRows[0] as Record<string,unknown>)["quarantine"])) &&
+          !FORCED_BLOCKED_HOURS.has(pyramidHour) &&   // не в ночные часы
+          atrPercent < 3.0 &&                          // не при высокой волатильности
+          !softQuarantine;                             // не при слабой сущности
+
         let pyramidNote = "";
         if (account.balance > pyramidCommission * 2 && pyramidAllowed) {
           account.balance = Math.max(0, account.balance - pyramidCommission); // L3
@@ -362,6 +383,14 @@ export async function checkPaperPositions(
           addAccountCosts(chatId, pyramidCommission, 0).catch(() => {});
           pyramidNote = `\n📈 *Пирамидинг*: +${pyramidUnits.toFixed(4)} ед. добавлено по TP1 (риска нет — стоп в BE)\n` +
                         `Средний вход скорректирован: \`${formatPrice(blendedEntry)}\` | TP2: \`${formatPrice(pos.tp2)}\``;
+        } else {
+          const reasons: string[] = [];
+          if (FORCED_BLOCKED_HOURS.has(pyramidHour)) reasons.push("ночной час");
+          if (atrPercent >= 3.0) reasons.push(`ATR ${atrPercent.toFixed(1)}%`);
+          if (softQuarantine) reasons.push(`вес ${(pyramidWeight * 100).toFixed(0)}%`);
+          if (!pyramidAllowed && reasons.length > 0) {
+            pyramidNote = `\n⛔ Пирамидинг пропущен: ${reasons.join(", ")}`;
+          }
         }
 
         const tp1Msg =
