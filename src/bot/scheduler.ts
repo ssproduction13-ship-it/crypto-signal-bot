@@ -13,7 +13,7 @@ import type { TradeSignal } from "./signals.js";
   import {
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
-    selectBestStrategy, recordLossReason, classifyLossReason, getAllStrategyStatuses,
+    selectBestStrategy, recordLossReason, classifyLossReason, getAllEntityStatuses,
     generateWeeklyRanking,
     type StrategySignalInput, type StrategySelectionResult,
   } from "./learning-engine.js";
@@ -273,11 +273,12 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const stratRanking = selectionResult.ranking ?? [];
       const isExploration = selectionResult.isExploration ?? false;
 
-      const [stratStatuses, stratWeights] = await Promise.all([
-        getAllStrategyStatuses().catch(() => [] as any[]),
+      const [entityStatuses, stratWeights] = await Promise.all([
+        getAllEntityStatuses(regime).catch(() => []),
         loadStrategyWeights().catch(() => ({} as Record<string,number>)),
       ]);
-      const stratStatus = stratStatuses.find((s: any) => s.strategy === strat);
+      const entityKey = `${strat}_${sig.score.direction}`;
+      const stratStatus = entityStatuses.find(s => s.entity === entityKey);
       const stratWeight = stratWeights[strat] ?? 1;
       const minScore = cachedMinScore;
 
@@ -396,7 +397,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.1) {
         gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
       } else {
-        if (!gate.rejected) gate.pass("Strategy PF", stratStatus?.trades >= 5 ? stratStatus.profitFactor.toFixed(2) : "мало данных");
+        if (!gate.rejected) gate.pass("Strategy PF", (stratStatus?.trades ?? 0) >= 5 ? stratStatus!.profitFactor.toFixed(2) : "мало данных");
       }
 
       // Явный фильтр TREND+sideways на уровне входа (не постфактум-адаптация).
@@ -421,7 +422,6 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       }
 
       // ── Entity Guard — независимый карантин/вес по strategy+direction ────────
-      const entityKey = `${strat}_${sig.score.direction}`;
       const { rows: entityWeightRows } = await pool.query(
         "SELECT weight, quarantine FROM strategy_entity_weights WHERE entity=$1",
         [entityKey]
