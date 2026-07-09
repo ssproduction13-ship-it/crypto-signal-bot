@@ -824,9 +824,7 @@ export async function generateLearningReport(): Promise<string> {
   for (const r of entityRows as Record<string,unknown>[]) {
     const entity=r["entity"] as string;
     const trades=Number(r["trades"]);
-    const safeEntity = entity.replace(/_/g, "\\_");
-    const pad = " ".repeat(Math.max(0, 22 - entity.length)); // pad by original length, not escaped
-    if (trades<5) { entityLines.push(`▪️ ${safeEntity}${pad}bootstrap (${trades}/5 сделок)`); continue; }
+    if (trades<5) { entityLines.push(`▪️ ${entity.padEnd(22)}bootstrap (${trades}/5 сделок)`); continue; }
     const wins=Number(r["wins"]);
     const winPnl=Number(r["win_pnl"]);
     const lossPnl=Number(r["loss_pnl"]);
@@ -837,7 +835,7 @@ export async function generateLearningReport(): Promise<string> {
     const wPct=(weight*100).toFixed(0);
     const sampleTag = trades < 30 ? " ⚠️<30сд" : "";
     const icon = quarantine ? "⚠️" : weight>=1.3 ? "🔥" : weight<=0.5 ? "📉" : "✅";
-    entityLines.push(`${icon} ${safeEntity}${pad}WR ${wr}% | PF ${pf} | Вес ${wPct}%${sampleTag}`);
+    entityLines.push(`${icon} ${entity.padEnd(22)}WR ${wr}% | PF ${pf} | Вес ${wPct}%${sampleTag}`);
   }
 
   let vLine="";

@@ -1101,6 +1101,19 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     });
 
     // ── Text fallback ──────────────────────────────────────────────────────
+
+    /** Convert the Markdown-formatted learning report to safe HTML.
+     *  Escapes HTML special chars first, then converts *bold* → <b> and _italic_ → <i>.
+     *  Entity names with underscores (TREND_LONG etc.) are safe in HTML — no escaping needed. */
+    function mdToHtml(md: string): string {
+      return md
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\*([^\n*]+)\*/g, "<b>$1</b>")
+        .replace(/_([^\n_]+)_/g, "<i>$1</i>");
+    }
+
     // /adapt — manually trigger strategy weight adaptation
     bot.command("adapt", async (ctx) => {
       const chatId = ctx.chat?.id;
@@ -1112,11 +1125,13 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         await snapshotStrategyVersion(changes);
         const report  = await generateLearningReport();
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        const bulletLines = changes.split("\n").filter(Boolean).map((l: string) => "• " + l.replace(/_/g, "\\_")).join("\n");
+        // HTML mode: underscores in entity names are not special — no escaping needed
+        const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const bulletLines = changes.split("\n").filter(Boolean).map((l: string) => "• " + esc(l)).join("\n");
         const deltaSection = bulletLines
-          ? `📝 *Изменения:*\n${bulletLines}\n\n`
-          : `📝 _Изменений нет — данных мало или веса уже актуальны._\n\n`;
-        await ctx.reply(deltaSection + report, { parse_mode: "Markdown",
+          ? `📝 <b>Изменения:</b>\n${bulletLines}\n\n`
+          : `📝 <i>Изменений нет — данных мало или веса уже актуальны.</i>\n\n`;
+        await ctx.reply(deltaSection + mdToHtml(report), { parse_mode: "HTML",
           ...Markup.inlineKeyboard([[Markup.button.callback("◀️ Меню", "menu_main")]]) });
       } catch (err) {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
