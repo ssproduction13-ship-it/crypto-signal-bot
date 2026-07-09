@@ -717,14 +717,17 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         const rejects = recent.filter(d => d.verdict === 'REJECT');
         const opens   = recent.filter(d => d.verdict === 'OPEN');
 
+        // HTML mode — dynamic fields (reason, check names) may contain _ which breaks legacy Markdown
+        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
         const lines: string[] = [
-          '🔍 *Почему не открываются сделки?*',
-          `_Последние 30 решений: ✅ ${opens.length} открыто, ❌ ${rejects.length} отклонено_`,
+          '🔍 <b>Почему не открываются сделки?</b>',
+          `<i>Последние 30 решений: ✅ ${opens.length} открыто, ❌ ${rejects.length} отклонено</i>`,
           '',
         ];
 
         if (!rejects.length && !opens.length) {
-          lines.push('⚠️ Данных нет. Бот ещё не анализировал сигналы.', '', '_Подождите следующего закрытия свечи (до 15 мин)._');
+          lines.push('⚠️ Данных нет. Бот ещё не анализировал сигналы.', '', '<i>Подождите следующего закрытия свечи (до 15 мин).</i>');
         } else {
           // Топ причин отказов за последние 30 решений
           const reasonCount = new Map<string, number>();
@@ -735,7 +738,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           const topReasons = [...reasonCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
 
           if (topReasons.length) {
-            lines.push('*Топ причин отказов:*');
+            lines.push('<b>Топ причин отказов:</b>');
             const icons: Record<string, string> = {
               'MTF': '📊', 'Score': '📉', 'Confidence': '🎯',
               'Trust': '🏆', 'Profit': '💰', 'Режим': '🌊',
@@ -745,7 +748,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
             for (const [reason, count] of topReasons) {
               const icon = Object.entries(icons).find(([k]) => reason.includes(k))?.[1] ?? '❌';
               const pct = Math.round((count / rejects.length) * 100);
-              lines.push(`${icon} ${reason}: *${count}x* (${pct}%)`);
+              lines.push(`${icon} ${esc(reason)}: <b>${count}x</b> (${pct}%)`);
             }
             lines.push('');
           }
@@ -753,11 +756,11 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           // Последние 3 полных трейса для диагностики
           const last3 = rejects.slice(0, 3);
           if (last3.length) {
-            lines.push('*Последние отказы (подробно):*');
+            lines.push('<b>Последние отказы (подробно):</b>');
             for (const trace of last3) {
               const ts = new Date(trace.timestamp).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
               const failStep = trace.steps.find(s => s.result === 'FAIL');
-              lines.push(`❌ ${trace.symbol} [${ts}] → ${failStep?.check ?? trace.rejectReason}`);
+              lines.push(`❌ ${esc(trace.symbol)} [${ts}] → ${esc(failStep?.check ?? trace.rejectReason ?? '?')}`);
             }
             lines.push('');
           }
@@ -766,12 +769,12 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           if (topReasons[0]) {
             const top = topReasons[0][0];
             const hints: Record<string, string> = {
-              'MTF': '📊 *4H фильтр* блокирует большинство сигналов. Это нормально при боковом рынке — ждём когда 4H EMA20 и EMA50 выстроятся в одну сторону.',
-              'Score': '📉 *Сигналы слабые* — score не дотягивает до порога. Рынок в консолидации, ждём импульса.',
-              'Нейтральный': '➡️ *Нейтральное направление* — рынок не определился. Нормально для бокового движения.',
-              'хаос': '🌪 *Хаотичный рынок* — ATR слишком высокий. Бот защищает от высоковолатильных входов.',
-              'Режим': '🌊 *Режим рынка* — текущая стратегия не подходит к условиям. Система ищет другую.',
-              'Trust': '🏆 *Trust Score* — стратегия ещё набирает репутацию. Нужно больше сделок для доверия.',
+              'MTF': '📊 <b>4H фильтр</b> блокирует большинство сигналов. Это нормально при боковом рынке — ждём когда 4H EMA20 и EMA50 выстроятся в одну сторону.',
+              'Score': '📉 <b>Сигналы слабые</b> — score не дотягивает до порога. Рынок в консолидации, ждём импульса.',
+              'Нейтральный': '➡️ <b>Нейтральное направление</b> — рынок не определился. Нормально для бокового движения.',
+              'хаос': '🌪 <b>Хаотичный рынок</b> — ATR слишком высокий. Бот защищает от высоковолатильных входов.',
+              'Режим': '🌊 <b>Режим рынка</b> — текущая стратегия не подходит к условиям. Система ищет другую.',
+              'Trust': '🏆 <b>Trust Score</b> — стратегия ещё набирает репутацию. Нужно больше сделок для доверия.',
             };
             const hint = Object.entries(hints).find(([k]) => top.includes(k))?.[1];
             if (hint) lines.push('💡 ' + hint);
@@ -779,7 +782,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         }
 
         await ctx.telegram.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
-        await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+        await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
       } catch (err) {
         await ctx.telegram.deleteMessage(loading.chat.id, loading.message_id).catch(() => {});
         const msg = err instanceof Error ? err.message : String(err);
