@@ -240,7 +240,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     return 0.30;                       // пограничный — -70%
   }
 
-  function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
+  async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
     const debounceKey = `${sub.chatId}:${sub.symbol}`;
     const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
     if (Date.now() - lastRun < DEBOUNCE_MS) return null;
