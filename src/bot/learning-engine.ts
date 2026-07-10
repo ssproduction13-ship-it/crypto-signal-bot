@@ -666,12 +666,18 @@ function pfToTargetWeight(pf: number): number {
       }
     }
 
-    // Мягкий карантин при PF 0.50-0.75 и 50+ сделках
-    if (!newQuarantine && trades >= 50 && pf < 0.75 && isNegativeReturn) {
+    // Мягкий карантин при PF 0.50-0.75 и 10+ сделках
+    if (!newQuarantine && trades >= 10 && pf < 0.75 && isNegativeReturn) {
       newWeight = Math.min(newWeight, 0.25);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
       }
+    }
+
+    // Дополнительное условие — при PF < 0.4 жёсткий мягкий лимит без проверки totalPnl
+    if (!newQuarantine && trades >= 10 && pf < 0.40) {
+      newWeight = Math.min(newWeight, 0.15);
+      changes.push(`📉 ${entity}: жёсткий мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
     }
 
     const MIN_ENTITY_WEIGHT = 0.10;
