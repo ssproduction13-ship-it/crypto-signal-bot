@@ -3,7 +3,7 @@ import cron from "node-cron";
   import { generateSignal } from "./signals.js";
 import type { TradeSignal } from "./signals.js";
   import { checkPaperPositions, openPaperPosition, getPaperStats } from "./paper-trading.js";
-  import { canOpenTrade, checkConcentrationLimits } from "./risk-manager.js";
+  import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
   import { evaluateABVariants, checkDegradation } from "./ab-testing.js";
@@ -232,7 +232,15 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
   // ── Evaluate trade candidate: all gates + corrRisk/cooldown → candidate or null ────
   // Trace saved immediately for rejections; deferred for passes (caller adds Concentration step).
-  async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
+  async function finalScoreSizeMultiplier(finalScore: number): number {
+    if (finalScore >= 60) return 1.20; // отличный сигнал — +20%
+    if (finalScore >= 40) return 1.00; // хороший — норма
+    if (finalScore >= 25) return 0.75; // средний — -25%
+    if (finalScore >= 15) return 0.50; // слабый — -50%
+    return 0.30;                       // пограничный — -70%
+  }
+
+  function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
     const debounceKey = `${sub.chatId}:${sub.symbol}`;
     const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
     if (Date.now() - lastRun < DEBOUNCE_MS) return null;
@@ -588,11 +596,18 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       if (settings.riskPercent <= 0 || !isFinite(settings.riskPercent)) {
         logger.warn({ symbol: sub.symbol, rawRiskPct: settings.riskPercent }, 'RISK_INVALID: riskPercent null/0/NaN — using default 2%');
       }
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight * irdSizeMult;
+      const portfolioRiskState = await loadRiskState();
+      const portfolioTiltMult  = getPortfolioTiltMultiplier(portfolioRiskState.consecutiveLosses);
+      const fsMult             = finalScoreSizeMultiplier(stratFScore);
+      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight * irdSizeMult * portfolioTiltMult * fsMult;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
         return null;
       }
+      if (portfolioTiltMult < 1.0) {
+        gate.pass("Portfolio Tilt", `${portfolioRiskState.consecutiveLosses} убытков подряд → размер ×${(portfolioTiltMult * 100).toFixed(0)}%`);
+      }
+      gate.pass("FinalScore Size", `FS ${stratFScore.toFixed(1)} → размер ×${(fsMult * 100).toFixed(0)}%`);
       if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0) {
         logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult }, 'Size reduced by guards');
       }
