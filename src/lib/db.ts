@@ -554,6 +554,11 @@ const MIGRATIONS = [
     PRIMARY KEY (entity, symbol)
   )`,
   "CREATE INDEX IF NOT EXISTS idx_esc_cooldown ON entity_symbol_cooldown(cooldown_until) WHERE cooldown_until IS NOT NULL",
+  // ── Fix reset_at default: epoch caused entity-stats to include all history ─
+  // Ensure the column is TIMESTAMPTZ (no-op if already correct) and reset
+  // the default to NOW() so new accounts never inherit the 1970 baseline.
+  "ALTER TABLE paper_accounts ALTER COLUMN reset_at TYPE TIMESTAMPTZ USING reset_at::timestamptz",
+  "ALTER TABLE paper_accounts ALTER COLUMN reset_at SET DEFAULT NOW()",
 ];
 
 
