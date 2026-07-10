@@ -649,7 +649,7 @@ function pfToTargetWeight(pf: number): number {
     let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
 
-    if (trades >= 10 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
+    if (trades >= 50 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
       newQuarantine = true;
       newWeight = 0.10;
       changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
@@ -668,8 +668,8 @@ function pfToTargetWeight(pf: number): number {
       }
     }
 
-    // Мягкий карантин при PF 0.50-0.75 и 20+ сделках
-    if (!newQuarantine && trades >= 20 && pf < 0.75 && isNegativeReturn) {
+    // Мягкий карантин при PF 0.50-0.75 и 50+ сделках
+    if (!newQuarantine && trades >= 50 && pf < 0.75 && isNegativeReturn) {
       newWeight = Math.min(newWeight, 0.25);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
