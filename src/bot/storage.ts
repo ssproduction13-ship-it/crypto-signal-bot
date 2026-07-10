@@ -251,7 +251,11 @@ import { pool } from "../lib/db.js";
       totalSlippage:    acc?Number(acc["total_slippage"]??0):0,
       positions:   p.rows.map(r=>toPos(r as Record<string,unknown>)),
       closedTrades:t.rows.map(r=>toTrade(r as Record<string,unknown>)),
-      resetAt: acc ? String(acc["reset_at"] ?? '') : '',
+      resetAt: acc
+        ? (acc["reset_at"] instanceof Date
+            ? (acc["reset_at"] as Date).toISOString()
+            : String(acc["reset_at"] ?? ''))
+        : '',
     };
   }
   export async function savePaperAccount(chatId: number, a: PaperAccount): Promise<void> {

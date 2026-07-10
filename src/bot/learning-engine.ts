@@ -503,7 +503,7 @@ function pfToTargetWeight(pf: number): number {
       `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
        FROM paper_closed_trades
        WHERE strategy=$1
-         AND closed_at >= (SELECT COALESCE(reset_at::text, '1970-01-01') FROM paper_accounts LIMIT 1)
+         AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
        ORDER BY closed_at DESC
        LIMIT $2`,
       [strategy, ADAPTATION_WINDOW]
@@ -554,7 +554,7 @@ function pfToTargetWeight(pf: number): number {
        WHERE strategy=$1
          AND direction=$2
          AND outcome NOT IN ('TIMEOUT_STALE')
-         AND closed_at >= (SELECT COALESCE(reset_at::text, '1970-01-01') FROM paper_accounts LIMIT 1)
+         AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
        ORDER BY closed_at DESC
        LIMIT $3`,
       [strategy, direction, ADAPTATION_WINDOW]

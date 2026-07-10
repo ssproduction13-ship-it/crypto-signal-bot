@@ -901,7 +901,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
                AND chat_id   = $1
-               AND closed_at >= $2
+               AND closed_at::timestamptz >= $2::timestamptz
                AND outcome NOT IN ('TIMEOUT_STALE')
              ORDER BY closed_at DESC
              LIMIT 150
