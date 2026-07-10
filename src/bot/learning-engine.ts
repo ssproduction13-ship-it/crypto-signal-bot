@@ -299,12 +299,10 @@ export async function selectBestStrategy(
     // Learning mode: never fully exclude an entity — min weight 0.10 (TZ §2 exploration floor)
     const weight = Math.max(0.10, wRow ? Number(wRow["weight"]) : 1);
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
-
-    // Entity quarantine: block signal entirely
-    if (isQuarantine) {
-      logger.debug({ entity }, "Entity in quarantine — skipping signal");
-      continue;
-    }
+    const effectiveWeight = isQuarantine
+      ? 0.10  // exploration floor — карантинные сущности скорятся минимальным весом
+      : Math.max(0.10, weight);
+    // Убрано: continue при карантине — пусть Entity Guard в scheduler решает
 
     const recent = await getRecentEntityStats(entity);
     const trustScore = await calcTrustScore(sig.strategy, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
@@ -329,7 +327,7 @@ export async function selectBestStrategy(
     const trustFloor = recent.trades < 30 ? 0.25 : 0.15;
     const finalScore = Math.min(100, sig.score
       * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 25% if trades<30, else 15%
-      * Math.max(0.10, weight)
+      * Math.max(0.10, effectiveWeight)  // ← effectiveWeight вместо weight
       * Math.max(0.10, regimePF));
 
     scored.push({sig, trustScore, regimePF, weight, finalScore});
