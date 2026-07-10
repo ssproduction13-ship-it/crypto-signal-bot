@@ -589,6 +589,18 @@ export async function resetAllData(): Promise<number[]> {
     await client.query(
       "INSERT INTO factor_weights (id) VALUES (1) ON CONFLICT DO NOTHING"
     ).catch(() => {});
+    // Re-seed paper_accounts with reset_at = NOW() so that the entity-stats
+    // filter (closed_at >= reset_at) starts from this reset, not from 1970.
+    for (const chatId of chatIdList) {
+      await client.query(
+        `INSERT INTO paper_accounts (chat_id, balance, initial_balance, peak_balance, reset_at)
+         VALUES ($1, 10000, 10000, 10000, NOW())
+         ON CONFLICT (chat_id) DO UPDATE SET
+           balance = 10000, initial_balance = 10000, peak_balance = 10000,
+           reset_at = NOW()`,
+        [chatId]
+      ).catch(() => {});
+    }
     logger.info({ tables: tables.length }, "resetAllData: all tables truncated");
   } finally { client.release(); }
   return chatIdList;
