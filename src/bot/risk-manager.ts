@@ -129,7 +129,7 @@ import { pool } from "../lib/db.js";
         `📚 *Режим обучения — все лимиты позиций сняты*`, "",
         `📅 Дневной P&L: ${s.dailyPnlPct >= 0 ? "+" : ""}${s.dailyPnlPct.toFixed(2)}% (только стат.)`,
         `📆 Недельный P&L: ${s.weeklyPnlPct >= 0 ? "+" : ""}${s.weeklyPnlPct.toFixed(2)}% (только стат.)`,
-        `📊 Убытков подряд: ${s.consecutiveLosses} (только стат.)`,
+        `📊 Убытков подряд: ${s.consecutiveLosses}`,
         `📂 Открытых позиций: ${s.openPositions} (без лимита)`,
       ].join("\n");
     }
@@ -196,4 +196,10 @@ import { pool } from "../lib/db.js";
 
     return { blocked: false };
   }
-  
+
+  export function getPortfolioTiltMultiplier(consecutiveLosses: number): number {
+    if (consecutiveLosses >= 7) return 0.30; // жёсткое снижение
+    if (consecutiveLosses >= 5) return 0.50;
+    if (consecutiveLosses >= 3) return 0.70;
+    return 1.0; // норма
+  }
