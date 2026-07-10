@@ -440,7 +440,19 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const entityWeight = entityRow ? Number(entityRow["weight"]) : 1.0;
       const entityQuarantine = entityRow ? Boolean(entityRow["quarantine"]) : false;
       if (!gate.rejected && entityQuarantine) {
-        gate.fail("Entity Guard", `${entityKey} в карантине`, `вес ${(entityWeight * 100).toFixed(0)}%`, "");
+        const highQuality = sig.score.total >= 65
+          && sig.confidence.score >= 40
+          && stratFScore >= 20;
+        if (highQuality) {
+          gate.pass("Entity Guard", `${entityKey} карантин — сильный сигнал пропущен (Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)})`);
+        } else {
+          gate.fail(
+            "Entity Guard",
+            `${entityKey} в карантине — недостаточное качество сигнала`,
+            `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)}`,
+            "Score≥65 | Conf≥40% | FS≥20"
+          );
+        }
       } else if (!gate.rejected) {
         gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");
       }
