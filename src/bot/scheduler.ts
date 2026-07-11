@@ -41,7 +41,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
-  export const MIN_FINAL_SCORE = 5;
+  export const MIN_FINAL_SCORE = 3;
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
