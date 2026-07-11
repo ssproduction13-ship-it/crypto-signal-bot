@@ -22,6 +22,8 @@ export type LLMProvider = (
 ) => Promise<LLMAnalysis>;
 
 let _provider: LLMProvider | null = null;
+let _llmFailCount     = 0;
+let _llmDisabledUntil = 0;
 
 export function registerLLMProvider(provider: LLMProvider): void {
   _provider = provider;
@@ -36,14 +38,30 @@ export async function analyzWithLLM(
     return null;
   }
 
-  try {
-    const analysis = await _provider(signal, news);
-    return analysis;
-  } catch (err) {
-    logger.error({ err }, "LLM analysis failed");
-    return null;
+  // Auto-disable after 5 consecutive failures for 30 minutes
+    if (Date.now() < _llmDisabledUntil) return null;
+
+    try {
+      const analysis = await Promise.race([
+        _provider(signal, news),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("LLM timeout")), 5000)
+        ),
+      ]);
+      _llmFailCount = 0;
+      return analysis;
+    } catch (err) {
+      _llmFailCount++;
+      if (_llmFailCount >= 5) {
+        _llmDisabledUntil = Date.now() + 30 * 60 * 1000;
+        _llmFailCount = 0;
+        logger.warn("LLM отключён на 30 минут из-за повторных ошибок");
+      } else {
+        logger.debug({ err, failCount: _llmFailCount }, "LLM analysis failed");
+      }
+      return null;
+    }
   }
-}
 
 export function formatLLMAnalysis(analysis: LLMAnalysis): string {
   const sentimentEmoji = {
