@@ -78,7 +78,7 @@ export async function fetchNews(symbol: string, limit = 5): Promise<NewsItem[]> 
       publishedAt: new Date(item.published_on * 1000).toISOString(),
     }));
   } catch (err) {
-    logger.warn({ err, symbol }, "Failed to fetch news from CryptoCompare");
+    logger.debug({ symbol }, "Failed to fetch news from CryptoCompare (suppressed)");
     return [];
   }
 }
