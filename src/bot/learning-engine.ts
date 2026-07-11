@@ -327,7 +327,7 @@ export async function selectBestStrategy(
     const trustFloor = recent.trades < 30 ? 0.25 : 0.15;
     const finalScore = Math.min(100, sig.score
       * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 25% if trades<30, else 15%
-      * Math.max(0.10, effectiveWeight)  // ← effectiveWeight вместо weight
+      * Math.max(0.30, effectiveWeight)  // ← floor 30%: при bootstrap даже слабый weight даёт FinalScore > 5
       * Math.max(0.10, regimePF));
 
     scored.push({sig, trustScore, regimePF, weight, finalScore});
