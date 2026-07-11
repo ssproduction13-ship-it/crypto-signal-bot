@@ -613,7 +613,20 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const fsMult             = finalScoreSizeMultiplier(stratFScore);
       const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight * irdSizeMult * portfolioTiltMult * fsMult;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
-        logger.warn({ symbol: sub.symbol, effectiveRiskPct }, 'RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade');
+        logger.warn({
+          baseRisk,
+          corrRiskMult: corrRisk.sizeMultiplier,
+          mtfSizeMult: mtfSizeMultiplier,
+          cooldownMult: cooldown.sizeMultiplier,
+          atrSizeMult: atrSizeMultiplier,
+          instrumentSizeMult: instrumentSizeMultiplier,
+          timeSizeMult: timeSizeMultiplier,
+          entityWeight,
+          irdSizeMult,
+          portfolioTiltMult,
+          fsMult,
+          effectiveRiskPct,
+        }, "RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade");
         return null;
       }
       if (portfolioTiltMult < 1.0) {
