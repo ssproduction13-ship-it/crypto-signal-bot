@@ -41,7 +41,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
-  export const MIN_FINAL_SCORE = 10;
+  export const MIN_FINAL_SCORE = 5;
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
@@ -611,7 +611,17 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const portfolioRiskState = await loadRiskState();
       const portfolioTiltMult  = getPortfolioTiltMultiplier(portfolioRiskState.consecutiveLosses);
       const fsMult             = finalScoreSizeMultiplier(stratFScore);
-      const effectiveRiskPct = baseRisk * corrRisk.sizeMultiplier * mtfSizeMultiplier * cooldown.sizeMultiplier * atrSizeMultiplier * instrumentSizeMultiplier * timeSizeMultiplier * entityWeight * irdSizeMult * portfolioTiltMult * fsMult;
+      const safeCorr     = isFinite(corrRisk.sizeMultiplier)  && corrRisk.sizeMultiplier  > 0 ? corrRisk.sizeMultiplier  : 1.0;
+        const safeMtf      = isFinite(mtfSizeMultiplier)        && mtfSizeMultiplier        > 0 ? mtfSizeMultiplier        : 1.0;
+        const safeCooldown = isFinite(cooldown.sizeMultiplier)  && cooldown.sizeMultiplier  > 0 ? cooldown.sizeMultiplier  : 1.0;
+        const safeAtr      = isFinite(atrSizeMultiplier)        && atrSizeMultiplier        > 0 ? atrSizeMultiplier        : 1.0;
+        const safeInstr    = isFinite(instrumentSizeMultiplier) && instrumentSizeMultiplier > 0 ? instrumentSizeMultiplier : 1.0;
+        const safeTime     = isFinite(timeSizeMultiplier)       && timeSizeMultiplier       > 0 ? timeSizeMultiplier       : 1.0;
+        const safeEntity   = isFinite(entityWeight)             && entityWeight             > 0 ? entityWeight             : 1.0;
+        const safeIrd      = isFinite(irdSizeMult)              && irdSizeMult              > 0 ? irdSizeMult              : 1.0;
+        const safePTilt    = isFinite(portfolioTiltMult)        && portfolioTiltMult        > 0 ? portfolioTiltMult        : 1.0;
+        const safeFs       = isFinite(fsMult)                   && fsMult                   > 0 ? fsMult                   : 1.0;
+        const effectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs;
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({
           baseRisk,
