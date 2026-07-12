@@ -301,7 +301,7 @@ export async function selectBestStrategy(
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
     const effectiveWeight = isQuarantine
       ? 0.10  // exploration floor — карантинные сущности скорятся минимальным весом
-      : Math.max(0.10, weight);
+      : Math.max(0.30, weight);  // non-quarantine floor 0.30
     // Убрано: continue при карантине — пусть Entity Guard в scheduler решает
 
     const recent = await getRecentEntityStats(entity);
@@ -327,7 +327,7 @@ export async function selectBestStrategy(
     const trustFloor = recent.trades < 30 ? 0.40 : 0.20;
     const finalScore = Math.min(100, sig.score
       * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 25% if trades<30, else 15%
-      * Math.max(0.30, effectiveWeight)  // ← floor 30%: при bootstrap даже слабый weight даёт FinalScore > 5
+      * Math.max(0.10, effectiveWeight)  // ← floor уже в effectiveWeight (0.30 normal / 0.10 quarantine)
       * Math.max(0.50, regimePF));
 
     scored.push({sig, trustScore, regimePF, weight, finalScore});
