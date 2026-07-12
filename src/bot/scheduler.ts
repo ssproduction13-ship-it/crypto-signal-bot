@@ -1048,11 +1048,6 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           const msg = `${icon} *Market Drift обнаружен!*\n\n${drift.message}\n\nConfidence снижен на ${drift.confidenceReduction}%`;
           for (const chatId of chatIds) await safeSend(chatId, msg);
         }
-        if (drift.hasDrift && drift.severity === "severe") {
-          logger.info("Market Drift severe — unscheduled adaptation triggered");
-          const changes = await runAdaptationCycle(chatIds).catch(() => "");
-          if (changes) for (const chatId of chatIds) await safeSend(chatId, `⚡ *Внеплановая адаптация* (дрейф рынка):\n${changes}`);
-        }
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
 
@@ -1174,12 +1169,12 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   // Weekly decay cycle — Sunday 04:00 UTC
   // Умножает накопленные PnL-суммы аналитических таблиц на 0.95,
   // чтобы недавние сделки имели больший вес чем 3-6 месячные данные.
-  cron.schedule("0 4 * * *", async () => {
+  cron.schedule("0 4 * * 0", async () => {
     try {
       const result = await runDecayCycle();
-      logger.info({ result }, "Daily decay cycle complete ×0.985");
+      logger.info({ result }, "Weekly decay cycle complete");
     } catch (err) {
-      logger.error({ err }, "Daily decay cycle failed");
+      logger.error({ err }, "Weekly decay cycle failed");
     }
   });
 
