@@ -301,7 +301,7 @@ export async function selectBestStrategy(
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
     const effectiveWeight = isQuarantine
       ? 0.10  // exploration floor — карантинные сущности скорятся минимальным весом
-      : Math.max(0.30, weight);  // non-quarantine floor 0.30
+      : Math.max(0.10, weight);
     // Убрано: continue при карантине — пусть Entity Guard в scheduler решает
 
     const recent = await getRecentEntityStats(entity);
@@ -327,7 +327,7 @@ export async function selectBestStrategy(
     const trustFloor = recent.trades < 30 ? 0.40 : 0.20;
     const finalScore = Math.min(100, sig.score
       * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 25% if trades<30, else 15%
-      * Math.max(0.10, effectiveWeight)  // ← floor уже в effectiveWeight (0.30 normal / 0.10 quarantine)
+      * Math.max(0.30, effectiveWeight)  // ← floor 30%: при bootstrap даже слабый weight даёт FinalScore > 5
       * Math.max(0.50, regimePF));
 
     scored.push({sig, trustScore, regimePF, weight, finalScore});
@@ -524,21 +524,69 @@ function pfToTargetWeight(pf: number): number {
       const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
       return { trades: ssTrades, wins, winPnl, lossPnl, totalPnl, pf };
     }
-    // rows sorted DESC — freshest first; weight 3.0 (fresh) → 1.0 (old)
-      const totalRows = rows.length;
-      const weighted = (rows as Record<string, unknown>[]).map((r, i) => {
-        const pnl = Number(r["pnl"]) || 0;
-        const w   = 3.0 - (i / Math.max(1, totalRows - 1)) * 2.0;
-        return { pnl, w };
-      });
-      const trades   = totalRows;
-      const wins     = weighted.filter(p => p.pnl > 0).length;
-      const winPnl   = weighted.filter(p => p.pnl > 0).reduce((a, b) => a + b.pnl * b.w, 0);
-      const lossPnl  = Math.abs(weighted.filter(p => p.pnl < 0).reduce((a, b) => a + b.pnl * b.w, 0));
-      const totalPnl = weighted.reduce((a, b) => a + b.pnl * b.w, 0);
+    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+    const trades   = pnls.length;
+    const wins     = pnls.filter(p => p > 0).length;
+    const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+    const totalPnl = pnls.reduce((a, b) => a + b, 0);
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    return { trades, wins, winPnl, lossPnl, totalPnl, pf };
+  }
+
+  // NOTE (ТЗ Шаг 9.3): getRecentDirectionStats was here as a leftover from the
+  // pre-entity direction-quarantine system. It was never called anywhere after
+  // the migration to per-entity (strategy×direction) adaptation, so it has
+  // been removed as dead code. getRecentStrategyStats above is intentionally
+  // KEPT (deviation from a literal reading of Шаг 9.3): it still backs
+  // getAllStrategyStatuses()/strategy_weights, which Шаг 9.4 explicitly says
+  // to keep populated for backward compatibility (scheduler.ts Trust Score /
+  // Strategy PF gates and other consumers read it).
+
+  async function getRecentEntityStats(entity: StrategyEntity): Promise<{
+    trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
+  }> {
+    const parts = entity.split("_");
+    const direction = parts.pop() as string;
+    const strategy = parts.join("_");
+    const { rows } = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+       FROM paper_closed_trades
+       WHERE strategy=$1
+         AND direction=$2
+         AND outcome NOT IN ('TIMEOUT_STALE')
+         AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
+       ORDER BY closed_at DESC
+       LIMIT $3`,
+      [strategy, direction, ADAPTATION_WINDOW]
+    );
+    // Fall back to strategy_direction_stats when live trades table has less history
+    // (handles DB resets where paper_closed_trades was wiped but analytics tables are preserved)
+    const { rows: sdsRows } = await pool.query(
+      `SELECT trades, wins, win_pnl, loss_pnl, total_pnl
+       FROM strategy_direction_stats WHERE strategy=$1 AND direction=$2`,
+      [strategy, direction]
+    ).catch(() => ({ rows: [] }));
+    const sds = (sdsRows as Record<string, unknown>[])[0];
+    const sdsTrades = sds ? Number(sds["trades"]) : 0;
+    // Only fall back to cached stats on a true cold start (zero live trades).
+    if (rows.length === 0 && sdsTrades > 0) {
+      const wins     = sds ? Number(sds["wins"])      : 0;
+      const winPnl   = sds ? Number(sds["win_pnl"])   : 0;
+      const lossPnl  = sds ? Number(sds["loss_pnl"])  : 0;
+      const totalPnl = sds ? Number(sds["total_pnl"]) : 0;
       const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
-      return { trades, wins, winPnl, lossPnl, totalPnl, pf };
+      return { trades: sdsTrades, wins, winPnl, lossPnl, totalPnl, pf };
     }
+    const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
+    const trades   = pnls.length;
+    const wins     = pnls.filter(p => p > 0).length;
+    const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+    const totalPnl = pnls.reduce((a, b) => a + b, 0);
+    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    return { trades, wins, winPnl, lossPnl, totalPnl, pf };
+  }
 
   let _adaptationRunning = false;
 
@@ -610,12 +658,7 @@ function pfToTargetWeight(pf: number): number {
     } else {
       const targetW = pfToTargetWeight(pf);
       const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0.1;
-      const degradation = Math.max(0, cur.weight - targetW);
-        const adaptiveBlendSpeed = Math.min(0.40, 0.15 + degradation * 0.50);
-        if (adaptiveBlendSpeed > 0.25) {
-          logger.info({ entity, adaptiveBlendSpeed: adaptiveBlendSpeed.toFixed(3), degradation: degradation.toFixed(3) }, 'Fast adaptation triggered');
-        }
-        const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * adaptiveBlendSpeed;
+      const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * 0.15;
       newWeight = Math.max(0.10, Math.min(1.50, blendedW));
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         const dirIcon = newWeight > cur.weight ? "📈" : "📉";
@@ -701,7 +744,7 @@ function pfToTargetWeight(pf: number): number {
  * Но когда новые сделки добавляются un-decayed, они сдвигают PF в свою сторону.
  */
 export async function runDecayCycle(): Promise<string> {
-  const DECAY = 0.985; // daily ×0.985 ≈ weekly ×0.90 — faster forgetting of stale data
+  const DECAY = 0.95;
   const cols  = "trades = trades * $1, wins = wins * $1, win_pnl = win_pnl * $1, loss_pnl = loss_pnl * $1, total_pnl = total_pnl * $1";
   const results: string[] = [];
 
