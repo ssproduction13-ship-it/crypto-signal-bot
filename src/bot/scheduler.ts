@@ -679,7 +679,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       sub.chatId, sub.symbol, sig.score.direction,
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
       effectiveRiskPct, sig.risk.atr,
-      strat, regime, sub.interval
+      strat, regime, sub.interval, stratFScore ?? 0
     );
 
     if (res.success) {
