@@ -559,6 +559,9 @@ const MIGRATIONS = [
   // the default to NOW() so new accounts never inherit the 1970 baseline.
   "ALTER TABLE paper_accounts ALTER COLUMN reset_at TYPE TIMESTAMPTZ USING reset_at::timestamptz",
   "ALTER TABLE paper_accounts ALTER COLUMN reset_at SET DEFAULT NOW()",
+  // ── ТЗ "Условный пирамидинг": store the FinalScore at position open so the
+  // pyramiding quality gate can re-check signal quality without re-deriving it ─
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS final_score DOUBLE PRECISION",
 ];
 
 

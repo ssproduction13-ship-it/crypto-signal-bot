@@ -580,15 +580,38 @@ function pfToTargetWeight(pf: number): number {
     }
     const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
     const trades   = pnls.length;
-    const wins     = pnls.filter(p => p > 0).length;
+    const wins     = pnls.filter(p => p > 0).length; // unweighted — quarantine thresholds/WR reporting unaffected
     const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
     const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
     const totalPnl = pnls.reduce((a, b) => a + b, 0);
-    const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
+    // ── ТЗ "Три фичи ускорения адаптации" Feature 2: weighted-average PF ──────
+    // `rows` is DESC-sorted by closed_at (index 0 = most recent). Recent trades
+    // weigh 3.0 down to 1.0 (oldest) on a linear ramp, so the entity's PF reacts
+    // faster to a recent quality shift without needing a full quarantine cycle.
+    // Only `pf` is weighted — trades/wins/winPnl/lossPnl/totalPnl stay raw so
+    // quarantine trade-count thresholds and WR reporting are unaffected.
+    let weightedWinPnl = 0, weightedLossPnl = 0;
+    for (let i = 0; i < trades; i++) {
+      const w = trades > 1 ? 3.0 - (2.0 * i) / (trades - 1) : 3.0;
+      const p = pnls[i] ?? 0;
+      if (p > 0) weightedWinPnl += p * w;
+      else weightedLossPnl += Math.abs(p) * w;
+    }
+    const pf = weightedLossPnl > 0 ? weightedWinPnl / weightedLossPnl : weightedWinPnl > 0 ? 2.0 : 0;
     return { trades, wins, winPnl, lossPnl, totalPnl, pf };
   }
 
   let _adaptationRunning = false;
+  // ── ТЗ "Три фичи ускорения адаптации" Feature 3: drift-triggered unscheduled
+  // adaptation cooldown — lives here so it survives module reloads together
+  // with the adaptation lock above (scheduler.ts imports/reads it via runAdaptationCycle).
+  let _lastDriftAdaptationAt = 0;
+  export function canRunDriftAdaptation(cooldownMs: number): boolean {
+    return Date.now() - _lastDriftAdaptationAt >= cooldownMs;
+  }
+  export function markDriftAdaptationRun(): void {
+    _lastDriftAdaptationAt = Date.now();
+  }
 
   export async function runAdaptationCycle(_chatIds:Set<number>): Promise<string> {
   if (_adaptationRunning) {
@@ -647,39 +670,67 @@ function pfToTargetWeight(pf: number): number {
     let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
 
+    // ── ТЗ "Глобальная автономная адаптация" — explicit 7-step check order ────
+    // Do NOT reorder: each step's `else` depends on the earlier ones having
+    // already handled the full-quarantine entry/exit and fast-rollback cases.
+
+    // Step 1: full quarantine entry (untouched — trades≥50 threshold is load-bearing)
     if (trades >= 50 && pf < 0.5 && isNegativeReturn && !cur.quarantine) {
       newQuarantine = true;
       newWeight = 0.10;
       changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
+    // Step 2: full quarantine exit (untouched)
     } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
       newQuarantine = false;
       newWeight = Math.min(0.50, cur.weight + 0.10);
       changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)})`);
+    // Step 3: fast rollback — sharp, immediate cut when an entity is clearly
+    // degrading (PF<0.60, 15+ сделок, отрицательный результат), instead of
+    // waiting for the slow blended adjustment in Step 4 to catch up.
+    } else if (trades >= 15 && pf < 0.60 && isNegativeReturn) {
+      const rolledBack = cur.weight * 0.60;
+      newWeight = Math.max(0.10, Math.min(1.50, rolledBack));
+      if (Math.abs(newWeight - cur.weight) > 0.005) {
+        changes.push(`⏪ ${entity}: fast rollback (PF ${pf.toFixed(2)}, n=${trades}) вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}%`);
+      }
+    // Step 4: normal blended adjustment toward the PF-implied target weight,
+    // with an adaptive blend speed (Feature 1, ТЗ "Три фичи ускорения адаптации"):
+    // the further PF has degraded below breakeven, the faster we blend.
     } else {
       const targetW = pfToTargetWeight(pf);
       const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0.1;
-      const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * 0.15;
+      const degradation = pf < 1.0 ? Math.min(1, 1.0 - pf) : 0;
+      const blendSpeed = Math.min(0.40, 0.15 + degradation * 0.50);
+      const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
       newWeight = Math.max(0.10, Math.min(1.50, blendedW));
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         const dirIcon = newWeight > cur.weight ? "📈" : "📉";
-        changes.push(`${dirIcon} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades})`);
+        changes.push(`${dirIcon} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades}, speed ${(blendSpeed*100).toFixed(0)}%)`);
       }
     }
 
-    // Мягкий карантин при PF 0.50-0.75 и 10+ сделках
-    if (!newQuarantine && trades >= 10 && pf < 0.75 && isNegativeReturn) {
+    // Step 5: max weight cap by trade count — caps how far a low-sample entity
+    // can climb even if its recent PF looks great; the cap widens with n.
+    const maxWeightForTrades = trades >= 50 ? 1.50 : trades >= 30 ? 1.00 : trades >= 15 ? 0.70 : 0.50;
+    if (!newQuarantine && newWeight > maxWeightForTrades) {
+      newWeight = maxWeightForTrades;
+    }
+
+    // Step 6: two-tier soft/hard quarantine caps (replaces the old single
+    // 20-trade/0.75 soft limit) — hard tier bites first if both apply.
+    if (!newQuarantine && trades >= 10 && pf < 0.50) {
+      newWeight = Math.min(newWeight, 0.15);
+      if (Math.abs(newWeight - cur.weight) > 0.005) {
+        changes.push(`📉 ${entity}: жёсткий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
+      }
+    } else if (!newQuarantine && trades >= 15 && pf < 0.75) {
       newWeight = Math.min(newWeight, 0.25);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
       }
     }
 
-    // Дополнительное условие — при PF < 0.4 жёсткий мягкий лимит без проверки totalPnl
-    if (!newQuarantine && trades >= 10 && pf < 0.40) {
-      newWeight = Math.min(newWeight, 0.15);
-      changes.push(`📉 ${entity}: жёсткий мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
-    }
-
+    // Step 7: absolute floor — never below the quarantine/active minimum
     const MIN_ENTITY_WEIGHT = 0.10;
     newWeight = Math.max(newWeight, newQuarantine ? MIN_ENTITY_WEIGHT : 0.20);
 
@@ -744,7 +795,11 @@ function pfToTargetWeight(pf: number): number {
  * Но когда новые сделки добавляются un-decayed, они сдвигают PF в свою сторону.
  */
 export async function runDecayCycle(): Promise<string> {
-  const DECAY = 0.95;
+  // ── ТЗ "Три фичи ускорения адаптации" Feature 4: 0.95 → 0.92 — old data
+  // fades faster (13-week half-life ≈ 0.51 → ≈ 0.34), so the entity/instrument
+  // stats used by adaptation lean more heavily on recent behaviour. Schedule
+  // stays weekly (Sunday 04:00 UTC, see scheduler.ts) — do not change to daily.
+  const DECAY = 0.92;
   const cols  = "trades = trades * $1, wins = wins * $1, win_pnl = win_pnl * $1, loss_pnl = loss_pnl * $1, total_pnl = total_pnl * $1";
   const results: string[] = [];
 
@@ -757,7 +812,10 @@ export async function runDecayCycle(): Promise<string> {
 
   for (const table of tables) {
     try {
-      const { rowCount } = await pool.query(`UPDATE ${table} SET ${cols}`, [DECAY]);
+      // Guard added: skip rows with trades=0 — decaying an all-zero row is a
+      // no-op anyway, but the WHERE clause keeps updated_at/row-touch counts
+      // (and rowCount reporting below) meaningful for tables that track it.
+      const { rowCount } = await pool.query(`UPDATE ${table} SET ${cols} WHERE trades > 0`, [DECAY]);
       results.push(`${table}: ${rowCount ?? 0} rows`);
     } catch (err) {
       results.push(`${table}: ошибка — ${String(err)}`);

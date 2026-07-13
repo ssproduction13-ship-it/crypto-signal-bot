@@ -14,7 +14,7 @@ import type { TradeSignal } from "./signals.js";
     detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
     selectBestStrategy, recordLossReason, classifyLossReason, getAllEntityStatuses,
-    generateWeeklyRanking, runDecayCycle,
+    generateWeeklyRanking, runDecayCycle, canRunDriftAdaptation, markDriftAdaptationRun,
     type StrategySignalInput, type StrategySelectionResult,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
@@ -66,6 +66,8 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   let _bot: Telegraf | null = null;
   let _lastMilestoneTrades  = 0;
   let _lastAdaptationTrades = 0; // for 12h time-based adaptation guard
+  // ТЗ Feature 3: minimum gap between drift-triggered unscheduled adaptation cycles
+  const DRIFT_ADAPTATION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
   // Restore milestone counter from DB so restarts don't re-trigger the same report
   async function initLastMilestoneTrades(): Promise<void> {
@@ -676,7 +678,8 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       sub.chatId, sub.symbol, sig.score.direction,
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
       effectiveRiskPct, sig.risk.atr,
-      strat, regime, sub.interval
+      strat, regime, sub.interval,
+      stratFScore
     );
 
     if (res.success) {
@@ -1047,6 +1050,31 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           const icon = drift.severity === "severe" ? "🚨" : "⚠️";
           const msg = `${icon} *Market Drift обнаружен!*\n\n${drift.message}\n\nConfidence снижен на ${drift.confidenceReduction}%`;
           for (const chatId of chatIds) await safeSend(chatId, msg);
+        }
+
+        // ── ТЗ "Три фичи ускорения адаптации" Feature 3: severe drift triggers
+        // an unscheduled adaptation cycle instead of waiting for the next 12h
+        // tick — but only every 6h at most (module-level cooldown in
+        // learning-engine.ts), and never let a failure here break the drift
+        // check above.
+        if (drift.hasDrift && drift.severity === "severe" && chatIds.size) {
+          if (canRunDriftAdaptation(DRIFT_ADAPTATION_COOLDOWN_MS)) {
+            try {
+              markDriftAdaptationRun();
+              logger.info({ severity: drift.severity }, "Severe market drift — running unscheduled adaptation cycle");
+              const changes = await runAdaptationCycle(chatIds);
+              await snapshotStrategyVersion(changes);
+              const report = await generateLearningReport();
+              for (const chatId of chatIds) {
+                await safeSend(chatId, `🚨 *Внеплановая адаптация* (market drift)\n\n${changes || "_Изменений нет_"}`);
+                await safeSend(chatId, report);
+              }
+            } catch (err) {
+              logger.error({ err }, "Drift-triggered adaptation cycle failed");
+            }
+          } else {
+            logger.debug("Severe drift detected but drift-adaptation cooldown still active — skipping");
+          }
         }
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
