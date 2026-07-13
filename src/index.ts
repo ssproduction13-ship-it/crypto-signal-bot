@@ -5,6 +5,17 @@ import app from "./app.js";
   import { initDb } from "./lib/db.js";
   import { syncPositionsCount } from "./bot/risk-manager.js";
 
+  // ── Month-long unattended operation: a single uncaught error/rejection in any
+  // of the many cron jobs, WS handlers, or Telegram callbacks must NEVER take
+  // down the whole process — otherwise training-data collection just stops
+  // until someone notices and manually restarts on Railway. Log and keep running.
+  process.on("uncaughtException", (err) => {
+    logger.error({ err }, "uncaughtException — bot continues running");
+  });
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ err: reason }, "unhandledRejection — bot continues running");
+  });
+
   const rawPort = process.env["PORT"];
 
   if (!rawPort) {

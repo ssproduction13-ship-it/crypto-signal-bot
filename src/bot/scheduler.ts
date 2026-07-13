@@ -797,7 +797,18 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   }
 
   // ── Batch scan: collect all candidates, sort by FinalScore, open in priority order ─
+  // Wrapped by the caller (cron callback) in try/catch too, but this function is also
+  // exported/awaited directly elsewhere — keep its own top-level guard so a single bad
+  // candidate/DB hiccup can never escape as an unhandled rejection during a month-long run.
   async function runBatchScanCycle(): Promise<void> {
+    try {
+      await runBatchScanCycleInner();
+    } catch (err) {
+      logger.error({ err }, "runBatchScanCycle error — cycle aborted, will retry next tick");
+    }
+  }
+
+  async function runBatchScanCycleInner(): Promise<void> {
     if (!subs.size) return;
     logger.debug({ count: subs.size }, "Batch scan cycle: collecting candidates");
     const candidates: TradeCandidate[] = [];

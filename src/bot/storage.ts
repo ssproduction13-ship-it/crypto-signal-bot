@@ -263,34 +263,50 @@ import { pool } from "../lib/db.js";
   }
   export async function savePaperAccount(chatId: number, a: PaperAccount): Promise<void> {
     const peak = Math.max(a.balance, a.peakBalance ?? a.balance);
-    await pool.query(
-      `INSERT INTO paper_accounts(chat_id,balance,initial_balance,peak_balance,reset_at)
-       VALUES($1,$2,$3,$4,$5)
-       ON CONFLICT(chat_id) DO UPDATE SET
-         balance=EXCLUDED.balance,
-         peak_balance=EXCLUDED.peak_balance,
-         reset_at=COALESCE(EXCLUDED.reset_at, paper_accounts.reset_at)`,
-      [chatId,a.balance,a.initialBalance,peak,a.resetAt||null]
-    );
-    await pool.query("DELETE FROM paper_positions WHERE chat_id=$1",[chatId]);
-    for (const pos of a.positions) {
-      await pool.query(
-        `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,risk_percent)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-        [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
-         pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
-         pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.riskPercent??null]
+    // ── Robustness for month-long unattended runs: this used to be a sequence of
+    // unguarded pool.query() calls — a crash/restart between the DELETE and the
+    // re-INSERTs (e.g. Railway redeploy) would leave chatId with zero open
+    // positions in the DB even though the in-memory account still had them.
+    // Wrapped in a transaction (same pattern as closePositionAndInsertTrade) so
+    // it's all-or-nothing.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO paper_accounts(chat_id,balance,initial_balance,peak_balance,reset_at)
+         VALUES($1,$2,$3,$4,$5)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           balance=EXCLUDED.balance,
+           peak_balance=EXCLUDED.peak_balance,
+           reset_at=COALESCE(EXCLUDED.reset_at, paper_accounts.reset_at)`,
+        [chatId,a.balance,a.initialBalance,peak,a.resetAt||null]
       );
-    }
-    for (const t of a.closedTrades) {
-      await pool.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,pnl_equity_pct,entity)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(id) DO NOTHING`,
-        [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
-         t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
-         t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
-         t.pnlEquityPct??null,t.entity??`${t.strategy??'TREND'}_${t.direction}`]
-      );
+      await client.query("DELETE FROM paper_positions WHERE chat_id=$1",[chatId]);
+      for (const pos of a.positions) {
+        await client.query(
+          `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,risk_percent)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
+           pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
+           pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.riskPercent??null]
+        );
+      }
+      for (const t of a.closedTrades) {
+        await client.query(
+          `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,pnl_equity_pct,entity)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(id) DO NOTHING`,
+          [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
+           t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
+           t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
+           t.pnlEquityPct??null,t.entity??`${t.strategy??'TREND'}_${t.direction}`]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
   }
   export async function loadWeights(): Promise<FactorWeights> {
