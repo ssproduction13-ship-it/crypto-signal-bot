@@ -74,8 +74,7 @@ export async function openPaperPosition(
   riskPercent?: number, atr?: number,
   strategy: StrategyName = "UNKNOWN",
   marketRegime: MarketRegime = "sideways",
-  interval: string = "1h",
-  finalScore: number = 0
+  interval: string = "1h"
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
@@ -119,7 +118,6 @@ export async function openPaperPosition(
     equityAtOpen: account.balance,
     pendingEntrySize, pendingEntryTrigger, marketRegime, interval,
     riskPercent: rp,
-    finalScore,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
@@ -369,15 +367,11 @@ export async function checkPaperPositions(
           : 1;
         const softQuarantine = pyramidWeight < 0.40;
 
-        const PYRAMID_MIN_FINAL_SCORE = 15;
-        const BAD_REGIMES_FOR_PYRAMID = new Set(['sideways', 'low_vol', 'chaos']);
         const pyramidAllowed =
           (pyramidEntityRows.length === 0 || !Boolean((pyramidEntityRows[0] as Record<string,unknown>)["quarantine"])) &&
-          !FORCED_BLOCKED_HOURS.has(pyramidHour) &&                        // не в ночные часы
-          atrPercent < 3.0 &&                                              // не при высокой волатильности
-          !softQuarantine &&                                               // не при слабой сущности
-          (pos.finalScore ?? 0) >= PYRAMID_MIN_FINAL_SCORE &&             // качество исходного сигнала
-          !BAD_REGIMES_FOR_PYRAMID.has(pos.marketRegime ?? '');           // не в боковом режиме
+          !FORCED_BLOCKED_HOURS.has(pyramidHour) &&   // не в ночные часы
+          atrPercent < 3.0 &&                          // не при высокой волатильности
+          !softQuarantine;                             // не при слабой сущности
 
         let pyramidNote = "";
         if (account.balance > pyramidCommission * 2 && pyramidAllowed) {
@@ -394,8 +388,6 @@ export async function checkPaperPositions(
           if (FORCED_BLOCKED_HOURS.has(pyramidHour)) reasons.push("ночной час");
           if (atrPercent >= 3.0) reasons.push(`ATR ${atrPercent.toFixed(1)}%`);
           if (softQuarantine) reasons.push(`вес ${(pyramidWeight * 100).toFixed(0)}%`);
-          if ((pos.finalScore ?? 0) < PYRAMID_MIN_FINAL_SCORE) reasons.push(`слабый сигнал (FS ${pos.finalScore?.toFixed(1) ?? 0} < ${PYRAMID_MIN_FINAL_SCORE})`);
-          if (BAD_REGIMES_FOR_PYRAMID.has(pos.marketRegime ?? '')) reasons.push(`режим ${pos.marketRegime}`);
           if (!pyramidAllowed && reasons.length > 0) {
             pyramidNote = `\n⛔ Пирамидинг пропущен: ${reasons.join(", ")}`;
           }
