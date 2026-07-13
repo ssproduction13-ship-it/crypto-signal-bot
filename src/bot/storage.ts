@@ -28,6 +28,8 @@ import { pool } from "../lib/db.js";
     interval?: string;
     /** Effective risk % of deposit applied at open — for concentration limit calculations */
     riskPercent?: number;
+    /** FinalScore of the signal at the time the position was opened — used for pyramid quality gate */
+    finalScore?: number;
   }
   export interface ClosedPaperTrade {
     id: string; symbol: string; direction: "LONG"|"SHORT";
@@ -109,6 +111,7 @@ import { pool } from "../lib/db.js";
       pendingEntryTrigger:r["pending_entry_trigger"]!=null?Number(r["pending_entry_trigger"]):undefined,
       marketRegime:(r["market_regime"] as string|null)??undefined,
       interval:(r["interval"] as string|null)??undefined,
+      finalScore:r["final_score"]!=null?Number(r["final_score"]):undefined,
     };
   }
   function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
@@ -414,12 +417,12 @@ import { pool } from "../lib/db.js";
   }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
        pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
        pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null,
-       pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.interval??'1h', pos.riskPercent??null]
+       pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.interval??'1h', pos.riskPercent??null, pos.finalScore??0]
     );
   }
   export async function deletePosition(chatId: number, posId: string): Promise<void> {
