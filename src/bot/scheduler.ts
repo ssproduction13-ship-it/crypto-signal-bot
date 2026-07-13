@@ -43,9 +43,6 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 3;
 
-  let lastDriftAdaptationAt = 0;
-  const DRIFT_ADAPTATION_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 часов между вызовами
-
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
   // ── Candidate for batch signal prioritization ──────────────────────────────
@@ -679,7 +676,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       sub.chatId, sub.symbol, sig.score.direction,
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
       effectiveRiskPct, sig.risk.atr,
-      strat, regime, sub.interval, stratFScore ?? 0
+      strat, regime, sub.interval
     );
 
     if (res.success) {
@@ -1051,27 +1048,6 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           const msg = `${icon} *Market Drift обнаружен!*\n\n${drift.message}\n\nConfidence снижен на ${drift.confidenceReduction}%`;
           for (const chatId of chatIds) await safeSend(chatId, msg);
         }
-        if (drift.severity === "severe" || drift.severity === "heavy") {
-          const now = Date.now();
-          if (now - lastDriftAdaptationAt > DRIFT_ADAPTATION_COOLDOWN_MS) {
-            lastDriftAdaptationAt = now;
-            logger.info("Market Drift: triggering unscheduled adaptation cycle");
-            const changes = await runAdaptationCycle(chatIds).catch((err) => {
-              logger.error({ err }, "Drift adaptation failed");
-              return [] as string[];
-            });
-            if (changes.length > 0) {
-              for (const chatId of chatIds) {
-                await safeSend(chatId,
-                  `⚡ *Внеплановая адаптация*\nПричина: тяжёлый дрейф рынка\n\n${changes.join("\n")}`
-                ).catch(() => {});
-              }
-            }
-          } else {
-            const minutesLeft = Math.ceil((DRIFT_ADAPTATION_COOLDOWN_MS - (now - lastDriftAdaptationAt)) / 60000);
-            logger.debug({ minutesLeft }, "Drift adaptation skipped — cooldown active");
-          }
-        }
       } catch (err) { logger.warn({ err }, "Market drift check error"); }
     });
 
@@ -1190,13 +1166,13 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     });
 
     
-  // Weekly decay cycle — Sunday 04:00 UTC (×0.92)
+  // Weekly decay cycle — Sunday 04:00 UTC
   // Умножает накопленные PnL-суммы аналитических таблиц на 0.95,
   // чтобы недавние сделки имели больший вес чем 3-6 месячные данные.
   cron.schedule("0 4 * * 0", async () => {
     try {
       const result = await runDecayCycle();
-      logger.info({ result }, "Weekly decay complete ×0.92 — old data depreciated");
+      logger.info({ result }, "Weekly decay cycle complete");
     } catch (err) {
       logger.error({ err }, "Weekly decay cycle failed");
     }
