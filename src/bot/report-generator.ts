@@ -76,13 +76,20 @@ async function collectData(chatId: number): Promise<ReportData> {
   const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes, sdsRes] = await Promise.all([
     pool.query("SELECT * FROM risk_state WHERE id=1"),
     pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200"),
-    pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5").catch(() => ({ rows: [] })),
-    pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30").catch(() => ({ rows: [] })),
-    pool.query("SELECT * FROM strategy_weights").catch(() => ({ rows: [] })),
-    pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day").catch(() => ({ rows: [] })),
-    pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC").catch(() => ({ rows: [] })),
-    pool.query("SELECT entity, strategy, direction, weight, quarantine, trust_score FROM strategy_entity_weights ORDER BY strategy, direction").catch(() => ({ rows: [] })),
-    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats").catch(() => ({ rows: [] })),
+    pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5")
+      .catch((err) => { logger.error({ err }, "report-generator: learning_reports query failed"); return { rows: [] }; }),
+    pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30")
+      .catch((err) => { logger.error({ err }, "report-generator: strategy_history query failed"); return { rows: [] }; }),
+    pool.query("SELECT * FROM strategy_weights")
+      .catch((err) => { logger.error({ err }, "report-generator: strategy_weights query failed"); return { rows: [] }; }),
+    pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day")
+      .catch((err) => { logger.error({ err }, "report-generator: time_analytics query failed"); return { rows: [] }; }),
+    pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC")
+      .catch((err) => { logger.error({ err }, "report-generator: instrument_analytics query failed"); return { rows: [] }; }),
+    pool.query("SELECT entity, strategy, direction, weight, quarantine, trust_score FROM strategy_entity_weights ORDER BY strategy, direction")
+      .catch((err) => { logger.error({ err }, "report-generator: strategy_entity_weights query failed"); return { rows: [] }; }),
+    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats")
+      .catch((err) => { logger.error({ err }, "report-generator: strategy_direction_stats query failed"); return { rows: [] }; }),
   ]);
 
   const positionPrices: Record<string, number> = {};
