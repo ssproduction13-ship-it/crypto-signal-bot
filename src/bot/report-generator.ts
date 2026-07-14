@@ -551,7 +551,7 @@ function buildLearningJournal(learningReports: Array<Record<string, unknown>>, s
         </div>
         <div style="margin-top:8px;font-size:13px;color:#94a3b8;white-space:pre-wrap">${esc(String(r["summary"] ?? "").slice(0, 500))}</div>
       </div>`;
-    }).join("")}` : "";
+    }).join("")}` : '<div class="section-title" style="margin-top:16px">Циклы адаптации</div><div class="empty">Циклов адаптации пока не было</div>';
 
   return statusHtml + historyHtml + reportsHtml;
 }

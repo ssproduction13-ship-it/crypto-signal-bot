@@ -82,12 +82,31 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     }
   }
 
-  // Restore timed-adaptation baseline from DB so restarts don't re-trigger immediately
+  // Restore timed-adaptation baseline from DB so restarts don't re-trigger immediately.
+  //
+  // BUG FIX: this used to reset the baseline to the CURRENT closed-trade count on every
+  // boot. That means every redeploy/restart pushed the "5 new trades since last
+  // adaptation" requirement forward to right now — if restarts happen more often than
+  // trades close (e.g. several deploys in a row, or a slow trading period), the 12h
+  // adaptation cycle never accumulates enough new trades and never fires. This silently
+  // stalls the "ЖУРНАЛ ОБУЧЕНИЯ AI" section of the HTML report, since it's populated from
+  // learning_reports rows written only when an adaptation cycle actually runs.
+  // Fix: restore the baseline from the last REAL adaptation cycle's trade count
+  // (persisted in learning_reports), not from a value derived at boot time. Only fall
+  // back to the current total if no adaptation has ever run yet.
   async function initLastAdaptationTrades(): Promise<void> {
     try {
-      const total = await getClosedTradeCount();
-      _lastAdaptationTrades = total;
-      logger.info({ total }, 'Adaptation baseline restored from DB');
+      const { rows } = await pool.query(
+        "SELECT trade_count_at_report FROM learning_reports ORDER BY created_at DESC LIMIT 1"
+      );
+      if (rows.length) {
+        _lastAdaptationTrades = Number(rows[0]!["trade_count_at_report"]);
+        logger.info({ _lastAdaptationTrades }, 'Adaptation baseline restored from last learning_reports row');
+      } else {
+        const total = await getClosedTradeCount();
+        _lastAdaptationTrades = total;
+        logger.info({ total }, 'No prior learning_reports — adaptation baseline set to current trade count');
+      }
     } catch (err) {
       logger.warn({ err }, 'Could not restore adaptation baseline');
     }
