@@ -79,7 +79,7 @@ export async function saveTradeFeatures(positionId: string, features: TradeFeatu
      ON CONFLICT(position_id) DO NOTHING`,
     [positionId, features.symbol, features.strategy, features.direction, features.interval,
      JSON.stringify(features), new Date().toISOString()]
-  ).catch(err => logger.debug({err}, "saveTradeFeatures failed"));
+  ).catch(err => logger.error({ err, positionId, symbol: features.symbol }, "saveTradeFeatures INSERT failed — trade_features row NOT written"));
 }
 
 // ── Update features with trade result at close ────────────────────────────────
@@ -89,7 +89,7 @@ export async function updateTradeResult(
   await pool.query(
     `UPDATE trade_features SET pnl_percent=$2, is_win=$3, outcome=$4 WHERE position_id=$1`,
     [positionId, pnlPercent, isWin, outcome]
-  ).catch(err => logger.debug({err}, "updateTradeResult failed"));
+  ).catch(err => logger.error({ err, positionId }, "updateTradeResult UPDATE failed — trade_features row NOT updated"));
 }
 
 // ── Find similar trades ────────────────────────────────────────────────────────

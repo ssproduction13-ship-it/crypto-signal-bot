@@ -620,7 +620,15 @@ export async function resetAllData(): Promise<number[]> {
     const client = await pool.connect();
     try {
       await client.query(INIT_SQL);
-      for (const sql of MIGRATIONS) await client.query(sql).catch(() => {});
+      for (const sql of MIGRATIONS) {
+        await client.query(sql).catch(err => {
+          // Most entries here are idempotent ALTER/CREATE ... IF NOT EXISTS
+          // statements expected to no-op on repeat boots, but a genuine failure
+          // (e.g. a typo or dependency issue) must not vanish silently —
+          // otherwise a table can end up missing with no trace in the logs.
+          logger.error({ err, sql: sql.slice(0, 120) }, "DB migration statement failed");
+        });
+      }
       logger.info("PostgreSQL tables ready");
     } finally { client.release(); }
   }
