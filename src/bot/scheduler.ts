@@ -28,7 +28,9 @@ import { generateDailyReport } from "./report-generator.js";
   import { runAIResearch } from "./ai-researcher.js";
   import { detectMarketDrift } from "./market-drift.js";
   import { checkLearningHealth } from "./health-monitor.js";
-  import { makeTrace, saveDecisionTrace } from "./decision-trace.js";
+  import { makeTrace, saveDecisionTrace, type DecisionStep } from "./decision-trace.js";
+  import type { StrategyName } from "./strategies.js";
+  import type { MarketRegime } from "./learning-engine.js";
   import { runWalkForwardTest } from "./walk-forward.js";
   import { evaluateCooldown } from "./auto-cooldown.js";
   import { generateWeeklyResearch } from "./weekly-research.js";
@@ -49,17 +51,17 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   interface TradeCandidate {
     sub: Sub;
     sig: TradeSignal;
-    strat: string;
+    strat: StrategyName;
     stratFScore: number;
     stratTrust: number;
     stratWeight: number;
     stratStatus: { trades: number; trustScore: number; profitFactor: number; status: string } | undefined;
     stratRanking: Array<{ strategy: string; finalScore: number; trustScore: number; weight: number }>;
     isExploration: boolean;
-    regime: string;
+    regime: MarketRegime;
     minScore: number;
     effectiveRiskPct: number;
-    gateSteps: Array<{ check: string; result: "PASS"|"FAIL"|"SKIP"; value?: unknown; note?: string }>;
+    gateSteps: DecisionStep[];
   }
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
@@ -234,7 +236,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   // ── Signal analysis + auto-trade ─────────────────────────────────────────────
   // ── Evaluate trade candidate: all gates + corrRisk/cooldown → candidate or null ────
   // Trace saved immediately for rejections; deferred for passes (caller adds Concentration step).
-  async function finalScoreSizeMultiplier(finalScore: number): number {
+  async function finalScoreSizeMultiplier(finalScore: number): Promise<number> {
     if (finalScore >= 60) return 1.20; // отличный сигнал — +20%
     if (finalScore >= 40) return 1.00; // хороший — норма
     if (finalScore >= 25) return 0.75; // средний — -25%
@@ -612,7 +614,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       }
       const portfolioRiskState = await loadRiskState();
       const portfolioTiltMult  = getPortfolioTiltMultiplier(portfolioRiskState.consecutiveLosses);
-      const fsMult             = finalScoreSizeMultiplier(stratFScore);
+      const fsMult             = await finalScoreSizeMultiplier(stratFScore);
       const safeCorr     = isFinite(corrRisk.sizeMultiplier)  && corrRisk.sizeMultiplier  > 0 ? corrRisk.sizeMultiplier  : 1.0;
         const safeMtf      = isFinite(mtfSizeMultiplier)        && mtfSizeMultiplier        > 0 ? mtfSizeMultiplier        : 1.0;
         const safeCooldown = isFinite(cooldown.sizeMultiplier)  && cooldown.sizeMultiplier  > 0 ? cooldown.sizeMultiplier  : 1.0;
@@ -675,7 +677,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     const { sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
     const res = await openPaperPosition(
-      sub.chatId, sub.symbol, sig.score.direction,
+      sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
       effectiveRiskPct, sig.risk.atr,
       strat, regime, sub.interval,
@@ -696,7 +698,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         const features: TradeFeatures = {
           symbol: sub.symbol,
           strategy: strat,
-          direction: sig.score.direction,
+          direction: sig.score.direction as "LONG"|"SHORT",
           interval: sub.interval,
           score: sig.score.total,
           confidence: sig.confidence.score,

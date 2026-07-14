@@ -213,10 +213,14 @@ export function classifyLossReason(
   regime: MarketRegime,
   _outcome: string
 ): LossReason {
+  // Strategy-specific label takes priority over the generic regime label
+  // (was previously unreachable dead code — sideways/low_vol regime checks below
+  // always returned first, so BREAKOUT losses in those regimes were never labeled
+  // "fake_breakout"; this only affects loss-reason analytics text, not trading gates).
+  if (strategy === "BREAKOUT" && (regime === "sideways" || regime === "low_vol")) return "fake_breakout";
   if (regime === "sideways") return "sideways_market";
   if (regime === "low_vol") return "low_volume";
   if (regime === "high_vol") return "high_volatility";
-  if (strategy === "BREAKOUT" && (regime === "sideways" || regime === "low_vol")) return "fake_breakout";
   if (regime === "trend_down" && strategy === "TREND") return "trend_reversal";
   if (regime === "trend_up" && strategy === "MEAN_REVERSION") return "trend_reversal";
   return "other";

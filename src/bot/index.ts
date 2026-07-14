@@ -497,7 +497,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     bot.action("paperreset_do", async (ctx) => {
       await ctx.answerCbQuery();
       const { savePaperAccount } = await import("./storage.js");
-      await savePaperAccount(ctx.chat!.id, { balance:10000, initialBalance:10000, peakBalance:10000, positions:[], closedTrades:[], resetAt: new Date().toISOString() });
+      await savePaperAccount(ctx.chat!.id, { balance:10000, initialBalance:10000, peakBalance:10000, positions:[], closedTrades:[], totalCommission:0, totalSlippage:0, resetAt: new Date().toISOString() });
       await ctx.reply("✅ Счёт сброшен до $10,000", mainMenu());
     });
 
