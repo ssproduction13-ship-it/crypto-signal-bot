@@ -37,13 +37,13 @@ export function calcRisk(
   let tp2: number;
 
   if (direction === "LONG") {
-    stopLoss = entryPrice - atr * 1.5;
-    tp1 = entryPrice + atr * 2.25;
-    tp2 = entryPrice + atr * 3.75;
+    stopLoss = entryPrice - atr * 1.3;
+    tp1 = entryPrice + atr * 3.0;
+    tp2 = entryPrice + atr * 5.0;
   } else {
-    stopLoss = entryPrice + atr * 1.5;
-    tp1 = entryPrice - atr * 2.25;
-    tp2 = entryPrice - atr * 3.75;
+    stopLoss = entryPrice + atr * 1.3;
+    tp1 = entryPrice - atr * 3.0;
+    tp2 = entryPrice - atr * 5.0;
   }
 
   const stopDistancePct =
@@ -57,7 +57,7 @@ export function calcRisk(
   const maxLossAmount = accountSize * (riskPercent / 100);
   const positionSize = maxLossAmount / Math.abs(entryPrice - stopLoss);
 
-  const isRRViable = rrRatio1 >= 1.5;
+  const isRRViable = rrRatio1 >= 2.0;
 
   return {
     entryPrice,
