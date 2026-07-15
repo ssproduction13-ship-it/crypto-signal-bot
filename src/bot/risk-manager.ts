@@ -106,12 +106,13 @@ import { pool } from "../lib/db.js";
     }
 
     // Tracks P&L for stats only — no trading stops in learning mode
-    export async function recordPositionClosed(pnlPct: number, isWin: boolean): Promise<string | null> {
+    export async function recordPositionClosed(pnlPct: number, isWin: boolean, openedAt?: string): Promise<string | null> {
       const s = await loadRiskState();
       s.openPositions      = Math.max(0, s.openPositions - 1);
       s.dailyPnlPct       += pnlPct;
       s.weeklyPnlPct      += pnlPct;
-      s.consecutiveLosses  = isWin ? 0 : s.consecutiveLosses + 1;
+      const hoursOpen = openedAt ? (Date.now() - new Date(openedAt).getTime()) / 3_600_000 : 0;
+      s.consecutiveLosses  = isWin ? 0 : (hoursOpen < 48 ? s.consecutiveLosses + 1 : s.consecutiveLosses);
       await saveRiskState(s);
       return null; // no alerts in learning mode
     }
