@@ -953,21 +953,23 @@ export async function generateLearningReport(): Promise<string> {
 
   // ТЗ Шаг 8: единый список из 8 сущностей (strategy×direction) вместо
   // отдельной секции "4 стратегии" + отдельной секции "LONG vs SHORT".
+  // Используем getRecentEntityStats — тот же источник PF/WR что и адаптация
+  // (последние ${ADAPTATION_WINDOW} сделок, взвешенный PF), чтобы данные
+  // в отчёте совпадали с данными в строках изменений адаптации.
   const {rows:entityRows} = await pool.query(
-    "SELECT entity, strategy, direction, trades, wins, win_pnl, loss_pnl, weight, quarantine FROM strategy_entity_weights ORDER BY strategy, direction"
+    "SELECT entity, weight, quarantine FROM strategy_entity_weights ORDER BY strategy, direction"
   );
   const entityLines:string[]=[];
   for (const r of entityRows as Record<string,unknown>[]) {
-    const entity=r["entity"] as string;
-    const trades=Number(r["trades"]);
-    if (trades<5) { entityLines.push(`▪️ ${entity.padEnd(22)}bootstrap (${trades}/5 сделок)`); continue; }
-    const wins=Number(r["wins"]);
-    const winPnl=Number(r["win_pnl"]);
-    const lossPnl=Number(r["loss_pnl"]);
+    const entity=r["entity"] as StrategyEntity;
     const weight=Number(r["weight"]);
     const quarantine=Boolean(r["quarantine"]);
-    const wr=(wins/trades*100).toFixed(0);
-    const pf=lossPnl>0?(winPnl/lossPnl).toFixed(2):"∞";
+    // Используем тот же getRecentEntityStats что использует runAdaptationCycle
+    const recent = await getRecentEntityStats(entity);
+    const { trades, wins, pf: pfRaw } = recent;
+    if (trades<5) { entityLines.push(`▪️ ${entity.padEnd(22)}bootstrap (${trades}/5 сделок)`); continue; }
+    const wr=(trades>0 ? wins/trades*100 : 0).toFixed(0);
+    const pf=pfRaw.toFixed(2);
     const wPct=(weight*100).toFixed(0);
     const sampleTag = trades < 30 ? " ⚠️<30сд" : "";
     const icon = quarantine ? "⚠️" : weight>=1.3 ? "🔥" : weight<=0.5 ? "📉" : "✅";
