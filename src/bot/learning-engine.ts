@@ -675,6 +675,8 @@ function pfToTargetWeight(pf: number): number {
 
     let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
+    let changeTag = "📉";
+    let changeDesc = "";
 
     // ── ТЗ "Глобальная автономная адаптация" — explicit 7-step check order ────
     // Do NOT reorder: each step's `else` depends on the earlier ones having
@@ -694,11 +696,10 @@ function pfToTargetWeight(pf: number): number {
     // degrading (PF<0.45, 15+ сделок, отрицательный результат), instead of
     // waiting for the slow blended adjustment in Step 4 to catch up.
     } else if (trades >= 15 && pf < 0.45 && isNegativeReturn) {
+      // Step 3: fast rollback
       const rolledBack = cur.weight * 0.60;
       newWeight = Math.max(0.10, Math.min(1.50, rolledBack));
-      if (Math.abs(newWeight - cur.weight) > 0.005) {
-        changes.push(`⏪ ${entity}: fast rollback (PF ${pf.toFixed(2)}, n=${trades}) вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}%`);
-      }
+      changeTag = "⏪"; changeDesc = `fast rollback (PF ${pf.toFixed(2)}, n=${trades})`;
     // Step 4: normal blended adjustment toward the PF-implied target weight,
     // with an adaptive blend speed (Feature 1, ТЗ "Три фичи ускорения адаптации"):
     // the further PF has degraded below breakeven, the faster we blend.
@@ -709,10 +710,8 @@ function pfToTargetWeight(pf: number): number {
       const blendSpeed = Math.min(0.40, 0.15 + degradation * 0.50);
       const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
       newWeight = Math.max(0.10, Math.min(1.50, blendedW));
-      if (Math.abs(newWeight - cur.weight) > 0.005) {
-        const dirIcon = newWeight > cur.weight ? "📈" : "📉";
-        changes.push(`${dirIcon} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (PF ${pf.toFixed(2)}, n=${trades}, speed ${(blendSpeed*100).toFixed(0)}%)`);
-      }
+      changeTag = newWeight > cur.weight ? "📈" : "📉";
+      changeDesc = `PF ${pf.toFixed(2)}, n=${trades}, speed ${(blendSpeed*100).toFixed(0)}%`;
     }
 
     // Step 5: max weight cap by trade count — caps how far a low-sample entity
@@ -722,23 +721,26 @@ function pfToTargetWeight(pf: number): number {
       newWeight = maxWeightForTrades;
     }
 
-    // Step 6: two-tier soft/hard quarantine caps (replaces the old single
-    // 20-trade/0.75 soft limit) — hard tier bites first if both apply.
+    // Step 6: two-tier soft/hard quarantine caps — track but don't log yet
+    let limitNote = "";
     if (!newQuarantine && trades >= 10 && pf < 0.40) {
       newWeight = Math.min(newWeight, 0.15);
-      if (Math.abs(newWeight - cur.weight) > 0.005) {
-        changes.push(`📉 ${entity}: жёсткий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
-      }
+      limitNote = " [жёсткий лимит]";
     } else if (!newQuarantine && trades >= 15 && pf < 0.65) {
       newWeight = Math.min(newWeight, 0.25);
-      if (Math.abs(newWeight - cur.weight) > 0.005) {
-        changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
-      }
+      limitNote = " [мягкий лимит]";
     }
 
     // Step 7: absolute floor — never below the quarantine/active minimum
     const MIN_ENTITY_WEIGHT = 0.10;
+    const preFloor = newWeight;
     newWeight = Math.max(newWeight, newQuarantine ? MIN_ENTITY_WEIGHT : 0.20);
+    const floorNote = newWeight > preFloor ? ` [floor ${(newWeight*100).toFixed(0)}%]` : "";
+
+    // Single log entry with FINAL weight after all steps
+    if (changeDesc && Math.abs(newWeight - cur.weight) > 0.005) {
+      changes.push(`${changeTag} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (${changeDesc}${limitNote}${floorNote})`);
+    }
 
     entityUpdates.push({ entity, newWeight, newQuarantine, trustScore, pf });
     void entityDir; // used above for calcTrustScore
