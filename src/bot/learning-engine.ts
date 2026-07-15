@@ -418,8 +418,6 @@ export async function getAllEntityStatuses(
     "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
   );
   const results: EntityTrustResult[] = [];
-  const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number}> = [];
-
   for (const entity of ENTITIES) {
     const recent = await getRecentEntityStats(entity);
     const wRow = (ewRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
@@ -658,6 +656,8 @@ function pfToTargetWeight(pf: number): number {
     "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
     "BREAKOUT_LONG", "BREAKOUT_SHORT",
   ];
+
+  const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number}> = [];
 
   for (const entity of ENTITIES) {
     const recent = await getRecentEntityStats(entity);
