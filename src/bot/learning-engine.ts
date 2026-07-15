@@ -872,7 +872,7 @@ export async function snapshotStrategyVersion(changes:string): Promise<void> {
   const {rows:wRows} = await pool.query("SELECT * FROM factor_weights WHERE id=1");
   const weights=wRows.length ? wRows[0] as Record<string,unknown> : {};
   const {rows:statsRows} = await pool.query(
-    "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 100"
+    "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1) ORDER BY closed_at DESC LIMIT 100"
   );
   const pnls=statsRows.map(r=>Number((r as Record<string,unknown>)["pnl"]));
   const wins=pnls.filter(p=>p>0);
