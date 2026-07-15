@@ -418,6 +418,8 @@ export async function getAllEntityStatuses(
     "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
   );
   const results: EntityTrustResult[] = [];
+  const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number}> = [];
+
   for (const entity of ENTITIES) {
     const recent = await getRecentEntityStats(entity);
     const wRow = (ewRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
@@ -689,9 +691,9 @@ function pfToTargetWeight(pf: number): number {
       newWeight = Math.min(0.50, cur.weight + 0.10);
       changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)})`);
     // Step 3: fast rollback — sharp, immediate cut when an entity is clearly
-    // degrading (PF<0.60, 15+ сделок, отрицательный результат), instead of
+    // degrading (PF<0.45, 15+ сделок, отрицательный результат), instead of
     // waiting for the slow blended adjustment in Step 4 to catch up.
-    } else if (trades >= 15 && pf < 0.60 && isNegativeReturn) {
+    } else if (trades >= 15 && pf < 0.45 && isNegativeReturn) {
       const rolledBack = cur.weight * 0.60;
       newWeight = Math.max(0.10, Math.min(1.50, rolledBack));
       if (Math.abs(newWeight - cur.weight) > 0.005) {
@@ -722,12 +724,12 @@ function pfToTargetWeight(pf: number): number {
 
     // Step 6: two-tier soft/hard quarantine caps (replaces the old single
     // 20-trade/0.75 soft limit) — hard tier bites first if both apply.
-    if (!newQuarantine && trades >= 10 && pf < 0.50) {
+    if (!newQuarantine && trades >= 10 && pf < 0.40) {
       newWeight = Math.min(newWeight, 0.15);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: жёсткий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
       }
-    } else if (!newQuarantine && trades >= 15 && pf < 0.75) {
+    } else if (!newQuarantine && trades >= 15 && pf < 0.65) {
       newWeight = Math.min(newWeight, 0.25);
       if (Math.abs(newWeight - cur.weight) > 0.005) {
         changes.push(`📉 ${entity}: мягкий лимит (PF ${pf.toFixed(2)}, n=${trades}) → вес ${(newWeight*100).toFixed(0)}%`);
@@ -738,13 +740,28 @@ function pfToTargetWeight(pf: number): number {
     const MIN_ENTITY_WEIGHT = 0.10;
     newWeight = Math.max(newWeight, newQuarantine ? MIN_ENTITY_WEIGHT : 0.20);
 
+    entityUpdates.push({ entity, newWeight, newQuarantine, trustScore, pf });
+    void entityDir; // used above for calcTrustScore
+  }
+
+  // ── Защита от полной остановки торговли ──────────────────────────────────
+  if (entityUpdates.length > 0) {
+    const maxW = Math.max(...entityUpdates.map(e => e.newWeight));
+    if (maxW < 0.30) {
+      const best = entityUpdates.reduce((a, b) => a.pf > b.pf ? a : b);
+      best.newWeight = Math.max(best.newWeight, 0.40);
+      changes.push(`🛡 ${best.entity}: защита от остановки → вес поднят до ${(best.newWeight*100).toFixed(0)}%`);
+    }
+  }
+
+  // Записать все entity updates в БД
+  for (const upd of entityUpdates) {
     await pool.query(
       `UPDATE strategy_entity_weights
        SET weight=$2, quarantine=$3, trust_score=$4, updated_at=$5
        WHERE entity=$1`,
-      [entity, newWeight, newQuarantine, trustScore, new Date().toISOString()]
+      [upd.entity, upd.newWeight, upd.newQuarantine, upd.trustScore, new Date().toISOString()]
     );
-    void entityDir; // used above for calcTrustScore
   }
 
   // ── Keep strategy_weights in sync for backward compat (readiness-index, reports) ──
