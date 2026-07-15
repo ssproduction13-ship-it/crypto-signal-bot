@@ -373,7 +373,10 @@ export async function checkPaperPositions(
         // ── ТЗ "Условный пирамидинг": quality gate — only pyramid on high-quality
         // entry signals, and never in choppy/low-information market regimes ────
         const PYRAMID_MIN_FINAL_SCORE = 15;
-        const finalScoreOk = (pos.finalScore ?? 0) >= PYRAMID_MIN_FINAL_SCORE;
+        // Если finalScore не записан (NULL/0) — нет данных, пирамидинг разрешаем
+        const finalScoreOk = (pos.finalScore == null || pos.finalScore === 0)
+          ? true
+          : pos.finalScore >= PYRAMID_MIN_FINAL_SCORE;
         const PYRAMID_BLOCKED_REGIMES = new Set(["sideways", "low_vol", "chaos"]);
         const regimeBlocked = PYRAMID_BLOCKED_REGIMES.has(pos.marketRegime ?? "sideways");
 
@@ -400,7 +403,7 @@ export async function checkPaperPositions(
           if (FORCED_BLOCKED_HOURS.has(pyramidHour)) reasons.push("ночной час");
           if (atrPercent >= 3.0) reasons.push(`ATR ${atrPercent.toFixed(1)}%`);
           if (softQuarantine) reasons.push(`вес ${(pyramidWeight * 100).toFixed(0)}%`);
-          if (!finalScoreOk) reasons.push(`FinalScore ${(pos.finalScore ?? 0).toFixed(1)} < ${PYRAMID_MIN_FINAL_SCORE}`);
+          if (!finalScoreOk) reasons.push(`FinalScore ${pos.finalScore?.toFixed(1) ?? "?"} < ${PYRAMID_MIN_FINAL_SCORE}`);
           if (regimeBlocked) reasons.push(`режим ${pos.marketRegime ?? "sideways"}`);
           if (!pyramidAllowed && reasons.length > 0) {
             pyramidNote = `\n⛔ Пирамидинг пропущен: ${reasons.join(", ")}`;
@@ -504,7 +507,7 @@ export async function checkPaperPositions(
         msgs.push(closeMsg);
         if (sendNotification) await sendNotification(closeMsg).catch(() => {});
 
-        const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0);
+        const riskAlert = await recordPositionClosed((pnl/(account.balance-pnl+0.001))*100, pnl>0, pos.openedAt);
         if (riskAlert) {
           msgs.push(riskAlert);
           if (sendNotification) await sendNotification(riskAlert).catch(() => {});
