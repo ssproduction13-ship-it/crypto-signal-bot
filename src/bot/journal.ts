@@ -5,6 +5,7 @@ import {
   saveWeights,
   type JournalEntry,
 } from "./storage.js";
+import { pool } from "../lib/db.js";
 import { getPrice } from "./binance.js";
 import { logger } from "../lib/logger.js";
 

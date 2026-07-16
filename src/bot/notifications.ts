@@ -32,7 +32,7 @@ async function loadState(chatId: number): Promise<NotificationState> {
     const s: NotificationState = { lastPeakNotified: 0, lastDrawdownNotified: 0, lastMilestoneNotified: 0 };
     for (const r of rows as Record<string, unknown>[]) {
       const k = r['key'] as keyof NotificationState;
-      if (k in s) (s as Record<string, number>)[k] = Number(r['value']);
+      if (k in s) (s as unknown as Record<string, number>)[k] = Number(r['value']);
     }
     memCache.set(chatId, s);
     return s;
@@ -45,7 +45,7 @@ async function loadState(chatId: number): Promise<NotificationState> {
 
 async function saveStateKey(chatId: number, key: keyof NotificationState, value: number): Promise<void> {
   const s = memCache.get(chatId);
-  if (s) (s as Record<string, number>)[key] = value;
+  if (s) (s as unknown as Record<string, number>)[key] = value;
   await pool.query(
     `INSERT INTO notification_state(chat_id, key, value) VALUES($1,$2,$3)
      ON CONFLICT(chat_id, key) DO UPDATE SET value=EXCLUDED.value`,
