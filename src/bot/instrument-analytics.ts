@@ -129,11 +129,11 @@ export type InstrumentStatus = "normal" | "watchlist" | "deep_watchlist" | "bann
 
 function classifyInstrument(stats: { trades: number; pf: number; wr: number }): InstrumentStatus {
   if (stats.trades < 10) return "normal";
-  // Полный бан: WR < 25% при 10+ сделках — статистически устойчивый аутсайдер.
-  // По данным instrument_analytics: AAVEUSDT 2/12 (17%), ARBUSDT 2/12 (17%), ONDOUSDT 2/11 (18%).
-  // Эти инструменты не получают новые позиции до восстановления WR ≥ 25%.
+  // Полный бан: WR < 25% OR PF < 0.4 при 10+ сделках — статистически устойчивый аутсайдер.
+  // Разблокируется автоматически при WR ≥ 25% И PF ≥ 0.4 в последних 20 сделках.
   if (stats.wr < 0.25 && stats.trades >= 10) return "banned";
-  if (stats.pf < 0.3 && stats.trades >= 15) return "deep_watchlist";
+  if (stats.pf < 0.4 && stats.trades >= 10) return "banned";  // Coin shadow trading: PF-based block
+  if (stats.pf < 0.6 && stats.trades >= 10) return "deep_watchlist";
   if (stats.pf < 0.6) return "watchlist";
   return "normal";
 }
