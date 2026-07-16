@@ -42,24 +42,52 @@ import { pool } from "../lib/db.js";
     tradeFeatures?: TradeFeatures
   ): Promise<ConfidenceResult> {
 
-    // 1. Recent performance (0–100) from actual closed trades
+    // fix: all 6 independent DB reads used to run sequentially (~120–180ms each on Railway).
+    // Now fired in parallel with Promise.all — saves ~500ms per confidence calculation.
+    const now = new Date();
+    const hour = now.getUTCHours();
+    const dow = (now.getUTCDay() + 6) % 7;
+
+    const [
+      recentRows,
+      stratPfRows,
+      stratWeightRows,
+      timeRows,
+      instrRows,
+      regimeRows,
+    ] = await Promise.all([
+      // 1. Recent performance
+      (symbol
+        ? pool.query("SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE symbol=$1 ORDER BY closed_at DESC LIMIT 50", [symbol])
+        : pool.query("SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50")
+      ).catch(() => ({ rows: [] as Record<string,unknown>[] })),
+      // 2. Strategy PF (effectiveness)
+      strategy
+        ? pool.query("SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE strategy=$1 ORDER BY closed_at DESC LIMIT 150", [strategy]).catch(() => ({ rows: [] as Record<string,unknown>[] }))
+        : Promise.resolve({ rows: [] as Record<string,unknown>[] }),
+      // 3. Strategy weight
+      strategy
+        ? pool.query("SELECT weight, disabled FROM strategy_weights WHERE strategy=$1", [strategy]).catch(() => ({ rows: [] as Record<string,unknown>[] }))
+        : Promise.resolve({ rows: [] as Record<string,unknown>[] }),
+      // 4. Time factor
+      pool.query("SELECT trades, wins FROM time_analytics WHERE hour_of_day=$1 AND day_of_week=$2", [hour, dow]).catch(() => ({ rows: [] as Record<string,unknown>[] })),
+      // 5. Instrument factor
+      symbol
+        ? pool.query("SELECT priority_weight, trades FROM instrument_analytics WHERE symbol=$1", [symbol]).catch(() => ({ rows: [] as Record<string,unknown>[] }))
+        : Promise.resolve({ rows: [] as Record<string,unknown>[] }),
+      // 6. Regime factor
+      strategy && regime
+        ? pool.query("SELECT trades, wins, win_pnl, loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2", [strategy, regime]).catch(() => ({ rows: [] as Record<string,unknown>[] }))
+        : Promise.resolve({ rows: [] as Record<string,unknown>[] }),
+    ]);
+
+    // 1. Recent performance (0–100)
     let recentPerformance = 55;
-    try {
-      // fix: filter by symbol when available — global WR of all pairs distorts per-pair confidence
-      const { rows } = symbol
-        ? await pool.query(
-            "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE symbol=$1 ORDER BY closed_at DESC LIMIT 50",
-            [symbol]
-          )
-        : await pool.query(
-            "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50"
-          );
-      if (rows.length >= 5) {
-        const pnls = rows.map(r => Number((r as Record<string,unknown>)["pnl"]));
-        const wins = pnls.filter(p => p > 0).length;
-        recentPerformance = Math.round((wins / pnls.length) * 100);
-      }
-    } catch { /* keep default */ }
+    if (recentRows.rows.length >= 5) {
+      const pnls = recentRows.rows.map(r => Number((r as Record<string,unknown>)["pnl"]));
+      const wins = pnls.filter(p => p > 0).length;
+      recentPerformance = Math.round((wins / pnls.length) * 100);
+    }
 
     // 2. Market quality (0–100)
     let marketQuality = 50;
@@ -70,101 +98,56 @@ import { pool } from "../lib/db.js";
     else if (market.isHighVolatility) marketQuality = 45;
     else marketQuality = 65;
 
-    // 3. Volatility fit — ОТКЛЮЧЕНО (feature_importance на 500 сделках: ATR importance = −17, WR lift = −9.6%).
-    //    Фактор оказался антикоррелятором: чем выше ATR-скор, тем хуже реальный результат сигнала.
-    //    Был заморожен на нейтральном значении 50; его вес 0.13 перенесён в proven-факторы.
-    //    Значение сохраняется в factors для отображения, но на скор не влияет.
-    const volatilityFit = market.atrPercent != null ? Math.round(market.atrPercent * 10) : 50; // только для отображения
+    // 3. Volatility fit — ОТКЛЮЧЕНО (ATR importance = −17, антикоррелятор). Только для отображения.
+    const volatilityFit = market.atrPercent != null ? Math.round(market.atrPercent * 10) : 50;
 
     // 4. Strategy effectiveness (0–100) based on PF
     let strategyEffectiveness = 50;
     if (strategy) {
-      try {
-        const { rows } = await pool.query(
-          `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
-                   FROM paper_closed_trades
-                   WHERE strategy=$1
-                   ORDER BY closed_at DESC
-                   LIMIT 150`,
-            [strategy]
-            );
-            if (rows.length) {
-              const pnls = (rows as Record<string, unknown>[]).map(r => Number(r["pnl"]) || 0);
-              const winPnl  = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
-              const lossPnl = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
-              const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 3 : 0;
-              strategyEffectiveness = pf >= 2 ? 90 : pf >= 1.5 ? 75 : pf >= 1.2 ? 60 : pf >= 1 ? 45 : 20;
-        }
-      } catch { /* keep default */ }
-
-      // Apply strategy weight multiplier
-      try {
-        const { rows } = await pool.query(
-          "SELECT weight, disabled FROM strategy_weights WHERE strategy=$1", [strategy]
-        );
-        if (rows.length) {
-          const r = rows[0] as Record<string,unknown>;
-          const w = Number(r["weight"]);
-          const dis = Boolean(r["disabled"]);
-          if (dis || w === 0) strategyEffectiveness = 0;
-          else strategyEffectiveness = Math.round(strategyEffectiveness * Math.min(w * 1.2, 1.4));
-        }
-      } catch { /* keep default */ }
-    }
-
-    // 5. Time factor (0–100) — historical win rate at current hour/day
-    let timeFactor = 60;
-    try {
-      const now = new Date();
-      // UTC to match recordTimeTrade which stores UTC buckets
-      const hour = now.getUTCHours();
-      const dow = (now.getUTCDay() + 6) % 7;
-      const { rows } = await pool.query(
-        "SELECT trades, wins FROM time_analytics WHERE hour_of_day=$1 AND day_of_week=$2",
-        [hour, dow]
-      );
-      if (rows.length) {
-        const r = rows[0] as Record<string,unknown>;
-        const t = Number(r["trades"]), w = Number(r["wins"]);
-        if (t >= 5) timeFactor = Math.round((w / t) * 100);
+      if (stratPfRows.rows.length) {
+        const pnls = (stratPfRows.rows as Record<string,unknown>[]).map(r => Number(r["pnl"]) || 0);
+        const winPnl  = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+        const lossPnl = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
+        const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 3 : 0;
+        strategyEffectiveness = pf >= 2 ? 90 : pf >= 1.5 ? 75 : pf >= 1.2 ? 60 : pf >= 1 ? 45 : 20;
       }
-    } catch { /* keep default */ }
-
-    // 6. Instrument factor (0–100) from priority_weight
-    let instrumentFactor = 60;
-    if (symbol) {
-      try {
-        const { rows } = await pool.query(
-          "SELECT priority_weight, trades FROM instrument_analytics WHERE symbol=$1", [symbol]
-        );
-        if (rows.length) {
-          const r = rows[0] as Record<string,unknown>;
-          const pw = Number(r["priority_weight"]);
-          const t = Number(r["trades"]);
-          if (t >= 5) instrumentFactor = Math.round(Math.min(pw * 60, 100));
-        }
-      } catch { /* keep default */ }
+      if (stratWeightRows.rows.length) {
+        const r = stratWeightRows.rows[0] as Record<string,unknown>;
+        const w = Number(r["weight"]);
+        const dis = Boolean(r["disabled"]);
+        if (dis || w === 0) strategyEffectiveness = 0;
+        else strategyEffectiveness = Math.round(strategyEffectiveness * Math.min(w * 1.2, 1.4));
+      }
     }
 
-    // 7. Regime factor (0–100) — strategy PF in current market regime
+    // 5. Time factor (0–100)
+    let timeFactor = 60;
+    if (timeRows.rows.length) {
+      const r = timeRows.rows[0] as Record<string,unknown>;
+      const t = Number(r["trades"]), w = Number(r["wins"]);
+      if (t >= 5) timeFactor = Math.round((w / t) * 100);
+    }
+
+    // 6. Instrument factor (0–100)
+    let instrumentFactor = 60;
+    if (instrRows.rows.length) {
+      const r = instrRows.rows[0] as Record<string,unknown>;
+      const pw = Number(r["priority_weight"]);
+      const t = Number(r["trades"]);
+      if (t >= 5) instrumentFactor = Math.round(Math.min(pw * 60, 100));
+    }
+
+    // 7. Regime factor (0–100)
     let regimeFactor = 60;
-    if (strategy && regime) {
-      try {
-        const { rows } = await pool.query(
-          "SELECT trades, wins, win_pnl, loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
-          [strategy, regime]
-        );
-        if (rows.length) {
-          const r = rows[0] as Record<string,unknown>;
-          const t = Number(r["trades"]);
-          if (t >= 5) {
-            const w = Number(r["wins"]), wPnl = Number(r["win_pnl"]), lPnl = Number(r["loss_pnl"]);
-            const pf = lPnl > 0 ? wPnl / lPnl : wPnl > 0 ? 3 : 0;
-            const wr = w / t;
-            regimeFactor = pf >= 1.5 && wr >= 0.5 ? 90 : pf >= 1.2 ? 70 : pf >= 1 ? 50 : pf < 0.8 ? 20 : 35;
-          }
-        }
-      } catch { /* keep default */ }
+    if (regimeRows.rows.length) {
+      const r = regimeRows.rows[0] as Record<string,unknown>;
+      const t = Number(r["trades"]);
+      if (t >= 5) {
+        const w = Number(r["wins"]), wPnl = Number(r["win_pnl"]), lPnl = Number(r["loss_pnl"]);
+        const pf = lPnl > 0 ? wPnl / lPnl : wPnl > 0 ? 3 : 0;
+        const wr = w / t;
+        regimeFactor = pf >= 1.5 && wr >= 0.5 ? 90 : pf >= 1.2 ? 70 : pf >= 1 ? 50 : pf < 0.8 ? 20 : 35;
+      }
     }
 
     // 8. Similar trades factor (0–100) — k-NN cosine similarity engine

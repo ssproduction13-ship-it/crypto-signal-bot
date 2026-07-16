@@ -1057,50 +1057,60 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 
     // ── /scan ──────────────────────────────────────────────────────────────
     bot.command("scan", async (ctx) => {
-      const chatId   = ctx.chat.id;
-      const subs     = listSubscriptions(chatId);
-      const settings = await loadSettings(chatId);
-      if (subs.length === 0) { await ctx.reply("⚠️ Нет активных подписок! Нажми /start → 🚀 Запустить", { parse_mode:"Markdown" }); return; }
-      if (!settings.autoPaperTrade) { await ctx.reply("⚠️ Авто-торговля выключена! Зайди в ⚙️ Настройки.", { parse_mode:"Markdown" }); return; }
-      const msg = await ctx.reply(`🔍 Сканирую ${AUTO_PAIRS.length} монет... (~30 сек)`, { parse_mode:"Markdown" });
-      const results: string[] = [];
-      let tradeable = 0;
-      for (const { symbol, interval } of AUTO_PAIRS.slice(0, 10)) {
-        try {
-          const sig = await generateSignal(symbol, interval, chatId);
-          const score = sig.score.total, dir = sig.score.direction, conf = sig.confidence.score;
-          let status: string;
-          if (sig.market.isChaotic)  status = "🌪 Хаос";
-          else if (dir === "NEUTRAL") status = "⚪ Нейтраль";
-          else if (score < 45)       status = `📉 Score ${score}<45`;
-          else if (conf < 20)        status = `🔴 Conf ${conf}%<20`;
-          else { status = `✅ ${dir} Score ${score} Conf ${conf}%`; tradeable++; }
-          results.push(`${symbol}: ${status}`);
-        } catch { results.push(`${symbol}: ❌ ошибка`); }
+      // fix: outer try/catch added — network or DB errors mid-scan silently crashed the handler
+      try {
+        const chatId   = ctx.chat.id;
+        const subs     = listSubscriptions(chatId);
+        const settings = await loadSettings(chatId);
+        if (subs.length === 0) { await ctx.reply("⚠️ Нет активных подписок! Нажми /start → 🚀 Запустить", { parse_mode:"Markdown" }); return; }
+        if (!settings.autoPaperTrade) { await ctx.reply("⚠️ Авто-торговля выключена! Зайди в ⚙️ Настройки.", { parse_mode:"Markdown" }); return; }
+        const msg = await ctx.reply(`🔍 Сканирую ${AUTO_PAIRS.length} монет... (~30 сек)`, { parse_mode:"Markdown" });
+        const results: string[] = [];
+        let tradeable = 0;
+        for (const { symbol, interval } of AUTO_PAIRS.slice(0, 10)) {
+          try {
+            const sig = await generateSignal(symbol, interval, chatId);
+            const score = sig.score.total, dir = sig.score.direction, conf = sig.confidence.score;
+            let status: string;
+            if (sig.market.isChaotic)  status = "🌪 Хаос";
+            else if (dir === "NEUTRAL") status = "⚪ Нейтраль";
+            else if (score < 45)       status = `📉 Score ${score}<45`;
+            else if (conf < 20)        status = `🔴 Conf ${conf}%<20`;
+            else { status = `✅ ${dir} Score ${score} Conf ${conf}%`; tradeable++; }
+            results.push(`${symbol}: ${status}`);
+          } catch { results.push(`${symbol}: ❌ ошибка`); }
+        }
+        await ctx.telegram.editMessageText(chatId, msg.message_id, undefined,
+          `🔍 *Скан рынка (топ-10 монет)*\n\n` + results.join("\n") +
+          `\n\n✅ Готовы к сделке: *${tradeable}*\n_Сделка откроется при закрытии следующей свечи_`,
+          { parse_mode:"Markdown" });
+      } catch (err) {
+        logger.error({ err }, "/scan handler error");
+        await ctx.reply("❌ Ошибка при сканировании: " + String(err)).catch(() => {});
       }
-      await ctx.telegram.editMessageText(chatId, msg.message_id, undefined,
-        `🔍 *Скан рынка (топ-10 монет)*\n\n` + results.join("\n") +
-        `\n\n✅ Готовы к сделке: *${tradeable}*\n_Сделка откроется при закрытии следующей свечи_`,
-        { parse_mode:"Markdown" });
     });
 
     // ── /status ────────────────────────────────────────────────────────────
     bot.command("status", async (ctx) => {
-      const chatId  = ctx.chat.id;
-      const subs    = listSubscriptions(chatId);
-      const s       = await loadSettings(chatId);
-      const account = await loadPaperAccount(chatId);
-      const ret = ((account.balance - account.initialBalance) / account.initialBalance * 100).toFixed(2);
-      await ctx.reply(
-        `📊 *Статус бота*\n\n` +
-        `📡 Подписок: *${subs.length}* монет\n` +
-        `🤖 Авто-торговля: *${s.autoPaperTrade ? "ВКЛ ✅" : "ВЫКЛ ❌"}*\n` +
-        `📂 Открыто позиций: *${account.positions.length}*
-` +
-        `💰 Баланс: *$${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
-        (subs.length === 0 ? `⚠️ Нажми /start → 🚀 Запустить` : `🟢 Бот активен, жду сигнал`),
-        { parse_mode:"Markdown", ...mainMenu() }
-      );
+      // fix: outer try/catch added — DB error on loadPaperAccount silently crashed the handler
+      try {
+        const chatId  = ctx.chat.id;
+        const subs    = listSubscriptions(chatId);
+        const [s, account] = await Promise.all([loadSettings(chatId), loadPaperAccount(chatId)]);
+        const ret = ((account.balance - account.initialBalance) / account.initialBalance * 100).toFixed(2);
+        await ctx.reply(
+          `📊 *Статус бота*\n\n` +
+          `📡 Подписок: *${subs.length}* монет\n` +
+          `🤖 Авто-торговля: *${s.autoPaperTrade ? "ВКЛ ✅" : "ВЫКЛ ❌"}*\n` +
+          `📂 Открыто позиций: *${account.positions.length}*\n` +
+          `💰 Баланс: *${account.balance.toFixed(2)}* (${Number(ret) >= 0 ? "+" : ""}${ret}%)\n\n` +
+          (subs.length === 0 ? `⚠️ Нажми /start → 🚀 Запустить` : `🟢 Бот активен, жду сигнал`),
+          { parse_mode:"Markdown", ...mainMenu() }
+        );
+      } catch (err) {
+        logger.error({ err }, "/status handler error");
+        await ctx.reply("❌ Ошибка /status: " + String(err)).catch(() => {});
+      }
     });
 
     // ── Text fallback ──────────────────────────────────────────────────────

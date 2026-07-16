@@ -31,7 +31,9 @@ export function assessMarket(
   // produce avgVolume=0 → Infinity volumeRatio → false isChaotic/isLowVolume result.
   const volSlice = volumes.slice(-20);
   const avgVolume = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
-  const lastVolume = volumes[volumes.length - 1]!;
+  // fix: same as scoring.ts — candles[length-1] is the current open (incomplete) candle.
+  // Its volume is always low at period start, causing false isLowVolume detections.
+  const lastVolume = volumes.length >= 2 ? volumes[volumes.length - 2]! : volumes[volumes.length - 1]!;
   const volumeRatio = avgVolume > 0 ? lastVolume / avgVolume : 0;
 
   const warnings: string[] = [];

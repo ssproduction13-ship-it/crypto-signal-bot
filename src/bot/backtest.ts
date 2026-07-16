@@ -67,6 +67,9 @@ export async function runBacktest(
     for (let j = 0; j < future.length; j++) {
       const bar = future[j]!;
 
+      // fix: TP2 was checked before TP1 — since TP1 is always closer to entry it
+      // must be evaluated first. Checking TP2 first skips TP1 and records TP2 wins
+      // even when the bar only touched TP1, inflating backtest PnL.
       if (scoreResult.direction === "LONG") {
         if (bar.low <= risk.stopLoss) {
           outcome = "SL";
@@ -74,15 +77,15 @@ export async function runBacktest(
           barsHeld = j + 1;
           break;
         }
-        if (bar.high >= risk.tp2) {
-          outcome = "TP2";
-          closePrice = risk.tp2;
-          barsHeld = j + 1;
-          break;
-        }
         if (bar.high >= risk.tp1) {
           outcome = "TP1";
           closePrice = risk.tp1;
+          barsHeld = j + 1;
+          break;
+        }
+        if (bar.high >= risk.tp2) {
+          outcome = "TP2";
+          closePrice = risk.tp2;
           barsHeld = j + 1;
           break;
         }
@@ -93,15 +96,15 @@ export async function runBacktest(
           barsHeld = j + 1;
           break;
         }
-        if (bar.low <= risk.tp2) {
-          outcome = "TP2";
-          closePrice = risk.tp2;
-          barsHeld = j + 1;
-          break;
-        }
         if (bar.low <= risk.tp1) {
           outcome = "TP1";
           closePrice = risk.tp1;
+          barsHeld = j + 1;
+          break;
+        }
+        if (bar.low <= risk.tp2) {
+          outcome = "TP2";
+          closePrice = risk.tp2;
           barsHeld = j + 1;
           break;
         }
