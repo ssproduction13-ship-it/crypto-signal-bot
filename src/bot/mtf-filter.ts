@@ -19,7 +19,13 @@
     sizeMultiplier: number;
   }
 
-  export async function checkMTFAlignment(
+  
+// ── Cache: 4H candles update every 4 hours; checking every 5 min is wasteful
+// fix: 60 pairs × every 5 min = 60 KuCoin requests/5min → rate-limit risk
+const mtfCache = new Map<string, { result: MTFResult; expiresAt: number }>();
+const MTF_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+export async function checkMTFAlignment(
     symbol: string,
     direction: "LONG" | "SHORT"
   ): Promise<MTFResult> {
@@ -62,11 +68,13 @@
         };
       }
 
-      return {
+      const finalResult = {
         allowed: true, trend4h, sizeMultiplier: 1.0,
         reason: `4H ${trend4h} подтверждает ${direction} — полный размер`,
         ema20_4h: ema20, ema50_4h: ema50,
       };
+      mtfCache.set(cacheKey, { result: finalResult, expiresAt: Date.now() + MTF_CACHE_TTL_MS });
+      return finalResult;
     } catch (err) {
       logger.warn({ err, symbol }, "MTF filter: failed to fetch 4H candles, allowing trade");
       return { allowed: true, trend4h: "NEUTRAL", sizeMultiplier: 1.0,

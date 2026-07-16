@@ -67,6 +67,7 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
   const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
 
   if (pattern.name === "BREAKOUT") {
+    // Pattern already confirmed the breakout — add its score and direction
     score += 30;
     reasons.push(pattern.description);
     if (pattern.description.toLowerCase().includes("бычий") || pattern.description.toLowerCase().includes("сопротивления")) {
@@ -74,17 +75,18 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
     } else {
       direction = "SHORT";
     }
-  }
-
-  // FIX High: require confirmed breakout ABOVE resistance (was 0.999 = allowed price below)
-  if (levels.nearestResistance && price > levels.nearestResistance * 1.001) {
-    score += 20; direction = "LONG";
-    reasons.push(`Пробой сопротивления ${levels.nearestResistance.toFixed(4)}`);
-  }
-  // FIX High: require confirmed breakdown BELOW support (was 1.001 = allowed price above)
-  if (levels.nearestSupport && price < levels.nearestSupport * 0.999) {
-    score += 20; direction = "SHORT";
-    reasons.push(`Пробой поддержки ${levels.nearestSupport.toFixed(4)}`);
+    // fix: skip level checks when pattern already fired — same price event, prevents double-counting
+    // (was: pattern +30 AND level +20 for the same breakout = score 90 before volume check)
+  } else {
+    // Only apply level-based breakout score when pattern module did NOT detect it
+    if (levels.nearestResistance && price > levels.nearestResistance * 1.001) {
+      score += 20; direction = "LONG";
+      reasons.push(`Пробой сопротивления ${levels.nearestResistance.toFixed(4)}`);
+    }
+    if (levels.nearestSupport && price < levels.nearestSupport * 0.999) {
+      score += 20; direction = "SHORT";
+      reasons.push(`Пробой поддержки ${levels.nearestSupport.toFixed(4)}`);
+    }
   }
 
   if (volRatio > 1.5) { score += 15; reasons.push(`Объём ${(volRatio * 100).toFixed(0)}% — подтверждение`); }

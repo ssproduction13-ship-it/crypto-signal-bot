@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS notifications_log (
   message TEXT NOT NULL,
   sent_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notification_state (
+  chat_id BIGINT NOT NULL,
+  key TEXT NOT NULL,
+  value DOUBLE PRECISION NOT NULL DEFAULT 0,
+  PRIMARY KEY (chat_id, key)
+);
   CREATE TABLE IF NOT EXISTS strategy_weights (
     strategy TEXT PRIMARY KEY,
     weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,

@@ -45,9 +45,15 @@ import { pool } from "../lib/db.js";
     // 1. Recent performance (0–100) from actual closed trades
     let recentPerformance = 55;
     try {
-      const { rows } = await pool.query(
-        "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50"
-      );
+      // fix: filter by symbol when available — global WR of all pairs distorts per-pair confidence
+      const { rows } = symbol
+        ? await pool.query(
+            "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE symbol=$1 ORDER BY closed_at DESC LIMIT 50",
+            [symbol]
+          )
+        : await pool.query(
+            "SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades ORDER BY closed_at DESC LIMIT 50"
+          );
       if (rows.length >= 5) {
         const pnls = rows.map(r => Number((r as Record<string,unknown>)["pnl"]));
         const wins = pnls.filter(p => p > 0).length;

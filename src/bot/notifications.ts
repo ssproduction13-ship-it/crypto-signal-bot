@@ -18,13 +18,39 @@ interface NotificationState {
   lastMilestoneNotified: number;
 }
 
-const state: Map<number, NotificationState> = new Map();
+// fix: was in-memory Map — lost on every Railway redeploy → duplicate notifications
+// Now backed by notification_state table; in-memory Map used as write-through cache for speed.
+const memCache: Map<number, NotificationState> = new Map();
 
-function getState(chatId: number): NotificationState {
-  if (!state.has(chatId)) {
-    state.set(chatId, { lastPeakNotified: 0, lastDrawdownNotified: 0, lastMilestoneNotified: 0 });
+async function loadState(chatId: number): Promise<NotificationState> {
+  if (memCache.has(chatId)) return memCache.get(chatId)!;
+  try {
+    const { rows } = await pool.query(
+      `SELECT key, value FROM notification_state WHERE chat_id=$1`,
+      [chatId]
+    );
+    const s: NotificationState = { lastPeakNotified: 0, lastDrawdownNotified: 0, lastMilestoneNotified: 0 };
+    for (const r of rows as Record<string, unknown>[]) {
+      const k = r['key'] as keyof NotificationState;
+      if (k in s) (s as Record<string, number>)[k] = Number(r['value']);
+    }
+    memCache.set(chatId, s);
+    return s;
+  } catch {
+    const s: NotificationState = { lastPeakNotified: 0, lastDrawdownNotified: 0, lastMilestoneNotified: 0 };
+    memCache.set(chatId, s);
+    return s;
   }
-  return state.get(chatId)!;
+}
+
+async function saveStateKey(chatId: number, key: keyof NotificationState, value: number): Promise<void> {
+  const s = memCache.get(chatId);
+  if (s) (s as Record<string, number>)[key] = value;
+  await pool.query(
+    `INSERT INTO notification_state(chat_id, key, value) VALUES($1,$2,$3)
+     ON CONFLICT(chat_id, key) DO UPDATE SET value=EXCLUDED.value`,
+    [chatId, key, value]
+  ).catch(err => logger.debug({ err }, 'notification_state save failed'));
 }
 
 async function logNotification(chatId: number, type: NotificationType, message: string): Promise<void> {
@@ -42,11 +68,11 @@ export async function checkNewPeak(
   send: (msg: string) => Promise<void>
 ): Promise<void> {
   if (balance <= peakBalance) return;
-  const s = getState(chatId);
+  const s = await loadState(chatId);
   if (balance <= s.lastPeakNotified * 1.01) return; // avoid spam: only notify on >1% new high
 
-  s.lastPeakNotified = balance;
-  const msg = `🏆 *Новый максимум капитала!*\n\nБаланс: *$${balance.toFixed(2)}*\nПредыдущий пик: $${peakBalance.toFixed(2)}`;
+  await saveStateKey(chatId, 'lastPeakNotified', balance);
+  const msg = `🏆 *Новый максимум капитала!*\n\nБаланс: *${balance.toFixed(2)}*\nПредыдущий пик: ${peakBalance.toFixed(2)}`;
   await send(msg);
   await logNotification(chatId, "NEW_PEAK", msg);
 }
@@ -60,13 +86,13 @@ export async function checkDrawdown(
 ): Promise<void> {
   if (peakBalance <= 0) return;
   const dd = ((peakBalance - balance) / peakBalance) * 100;
-  if (dd < 5) { getState(chatId).lastDrawdownNotified = 0; return; }
+  if (dd < 5) { await saveStateKey(chatId, 'lastDrawdownNotified', 0); return; }
 
-  const s = getState(chatId);
+  const s = await loadState(chatId);
   const threshold = dd >= 15 ? 15 : dd >= 10 ? 10 : 5;
   if (s.lastDrawdownNotified >= threshold) return;
 
-  s.lastDrawdownNotified = threshold;
+  await saveStateKey(chatId, 'lastDrawdownNotified', threshold);
   const icon = dd >= 15 ? "🚨" : dd >= 10 ? "⚠️" : "📉";
   const msg = `${icon} *Просадка ${dd.toFixed(1)}%!*\n\nБаланс: $${balance.toFixed(2)}\nПик: $${peakBalance.toFixed(2)}\n\n${dd >= 15 ? "❗ Рекомендую приостановить торговлю" : "Контролируй риски"}`;
   await send(msg);
@@ -85,10 +111,10 @@ export async function checkMilestone(
   const milestone = Math.floor(growthPct / 10) * 10;
   if (milestone <= 0) return;
 
-  const s = getState(chatId);
+  const s = await loadState(chatId);
   if (s.lastMilestoneNotified >= milestone) return;
 
-  s.lastMilestoneNotified = milestone;
+  await saveStateKey(chatId, 'lastMilestoneNotified', milestone);
   const msg = `🎉 *Депозит вырос на ${milestone}%!*\n\nБаланс: *$${balance.toFixed(2)}*\nНачало: $${initialBalance.toFixed(2)}\nРост: +$${(balance - initialBalance).toFixed(2)}`;
   await send(msg);
   await logNotification(chatId, "BALANCE_MILESTONE", msg);
