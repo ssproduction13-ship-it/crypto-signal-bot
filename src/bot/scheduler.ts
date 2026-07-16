@@ -114,6 +114,9 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
 
   const recentlyProcessed = new Map<string, number>();
   const DEBOUNCE_MS = 30_000;
+  // Shadow position debounce for banned coins — open at most once per 4h per symbol
+  const shadowBannedDebounce = new Map<string, number>();
+  const SHADOW_BANNED_DEBOUNCE_MS = 4 * 60 * 60 * 1000;
 
   // ── One-per-hour notification dedup maps ──────────────────────────────────
   const lastCorrGuardNotify = new Map<number, number>(); // chatId → timestamp
@@ -408,14 +411,27 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           gate.pass("Instrument Watchlist", `${sub.symbol} deep watchlist, сигнал прошёл повышенный порог (размер ×0.5)`);
         }
       } else if (!gate.rejected && instrumentStatus === "banned") {
-        // Полный бан: WR < 25% на 10+ сделках — инструмент-аутсайдер, не торгуем ни при каком сигнале.
-        // Разблокируется автоматически через updateAllInstrumentStatuses когда WR восстановится ≥ 25%.
+        // Полный бан: WR < 25% или PF < 0.4 на 10+ сделках — инструмент-аутсайдер.
+        // Разблокируется автоматически через updateAllInstrumentStatuses когда WR ≥ 25% и PF ≥ 0.4.
         gate.fail(
           "Instrument Banned",
-          `${sub.symbol} заблокирован — устойчивый аутсайдер (WR < 25%, 10+ сделок)`,
+          `${sub.symbol} заблокирован (WR < 25% или PF < 0.4 на 10+ сделок)`,
           `status: banned`,
-          "Разблокируется при WR ≥ 25%"
+          "Разблокируется при WR ≥ 25% и PF ≥ 0.4"
         );
+        // Coin shadow trading: продолжаем отслеживание забаненных монет через shadow positions
+        const shadowBannedKey = `shadow:${sub.symbol}`;
+        if (Date.now() - (shadowBannedDebounce.get(shadowBannedKey) ?? 0) > SHADOW_BANNED_DEBOUNCE_MS) {
+          shadowBannedDebounce.set(shadowBannedKey, Date.now());
+          loadWeights().then(w =>
+            openShadowPosition(
+              sub.symbol,
+              (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
+              sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+              strat, w, regime
+            ).catch(() => {})
+          ).catch(() => {});
+        }
       } else if (!gate.rejected) {
         gate.skip("Instrument Watchlist", instrumentStatus === "normal" ? "Инструмент в норме" : "Предыдущий шаг не прошёл");
       }
