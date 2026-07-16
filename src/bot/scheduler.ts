@@ -755,8 +755,8 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           volumeAbove: 0,
           isSideways: sig.market.isSideways ? 1 : 0,
           isHighVol: sig.market.isHighVolatility ? 1 : 0,
-          hour: now.getUTCHours(),      // UTC for ML feature consistency
-          dayOfWeek: now.getUTCDay(),   // UTC to match time_analytics buckets
+          hour: now.getUTCHours(),           // UTC for ML feature consistency
+          dayOfWeek: (now.getUTCDay() + 6) % 7, // 0=Mon…6=Sun — matches time_analytics buckets
         };
         saveTradeFeatures(res.position.id, features).catch(() => {});
       }

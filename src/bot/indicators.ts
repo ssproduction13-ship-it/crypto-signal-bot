@@ -29,6 +29,15 @@ export interface IndicatorResult {
 }
 
 export function calcIndicators(candles: Candle[]): IndicatorResult {
+  if (!candles.length) {
+    return {
+      rsi: null, macdSignal: "neutral", macdHistogram: null,
+      bbSignal: "neutral", bbPercent: null, emaCrossSignal: "neutral",
+      ema20: null, ema50: null, ema200: null, stochRsi: null,
+      stochSignal: "neutral", adxValue: null, trendStrength: "weak",
+      volumeSignal: "below_avg", atr: null, atrPercent: null,
+    };
+  }
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
   const lows = candles.map((c) => c.low);

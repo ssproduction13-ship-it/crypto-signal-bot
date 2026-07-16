@@ -50,7 +50,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         });
       }
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // 2. Best/worst strategies
   try {
@@ -74,7 +74,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         });
       }
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // 3. Best/worst market regime per strategy
   try {
@@ -101,7 +101,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         break; // one regime hypothesis at a time
       }
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // 4. Loss reasons analysis
   try {
@@ -124,7 +124,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         experiment: `Добавить проверку ATR/объёма перед открытием ${strat}. Shadow Test 40 сделок без этого паттерна.`,
       });
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // 5. Best instruments
   try {
@@ -144,7 +144,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         experiment: `Повысить priority_weight для ${topSymbols} на 20%. Отслеживать влияние на итоговый PF.`,
       });
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // 6. Period comparison (last 50 vs previous 50)
   try {
@@ -167,7 +167,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
         });
       }
     }
-  } catch { /* skip */ }
+  } catch (err) { logger.warn({ err }, "ai-researcher: pattern query failed"); }
 
   // ── Save hypotheses to DB ──────────────────────────────────────────────────
   const now = new Date().toISOString();
@@ -178,7 +178,7 @@ export async function runAIResearch(tradeCount: number): Promise<string> {
       `INSERT INTO ai_research_reports(date, pattern, hypothesis, experiment, status, trade_count_at)
        VALUES($1,$2,$3,$4,'generated',$5)`,
       [now, p.pattern, p.hypothesis, p.experiment, tradeCount]
-    ).catch(() => {});
+    ).catch((err) => logger.warn({ err }, "ai-researcher: hypothesis save failed"));
   }
 
   if (!hypotheses.length) {
