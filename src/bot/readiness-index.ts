@@ -42,8 +42,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   // 1. Trade count (max 15)
   const { rows: cntRows } = await pool.query(
     chatId != null
-      ? `SELECT COUNT(*) as cnt FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL`
-      : `SELECT COUNT(*) as cnt FROM paper_closed_trades WHERE outcome IS NOT NULL`,
+      ? `SELECT COUNT(*) as cnt FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)`
+      : `SELECT COUNT(*) as cnt FROM paper_closed_trades WHERE outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)`,
     chatId != null ? [chatId] : []
   );
   const totalTrades = Number((cntRows[0] as Record<string, unknown>)["cnt"]);
@@ -60,8 +60,8 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   // 2. Profit Factor (max 20) — последние PF_WINDOW сделок
   const { rows: pfRows } = await pool.query(
     chatId != null
-      ? `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
-      : `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE outcome IS NOT NULL ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
+      ? `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE chat_id = $1 AND outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1) ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`
+      : `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1) ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
     chatId != null ? [chatId] : []
   );
   const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl"]));
@@ -133,7 +133,7 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
 
   // 7. Minimum runtime (max 10) — proxy: check if first trade is old enough
   const { rows: firstRows } = await pool.query(
-    `SELECT MIN(closed_at) as first FROM paper_closed_trades WHERE outcome IS NOT NULL`
+    `SELECT MIN(closed_at) as first FROM paper_closed_trades WHERE outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)`
   );
   const firstTradeDate = (firstRows[0] as Record<string, unknown>)["first"] as string | null;
   let runtimeScore = 0;
