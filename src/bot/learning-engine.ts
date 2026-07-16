@@ -693,11 +693,15 @@ function pfToTargetWeight(pf: number): number {
       newQuarantine = true;
       newWeight = 0.10;
       changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
-    // Step 2: full quarantine exit (untouched)
+    // Step 2: quarantine exit — стартовый вес пропорционален реальному PF,
+    // а не фиксированный +0.10. Это даёт быстрый старт восстановления при
+    // действительно хорошем PF, и консервативный — при PF чуть выше 1.0.
     } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
       newQuarantine = false;
-      newWeight = Math.min(0.50, cur.weight + 0.10);
-      changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)})`);
+      const pfTarget = pfToTargetWeight(pf);
+      // 30% от целевого веса, но не ниже 0.25 и не выше 0.55
+      newWeight = Math.min(0.55, Math.max(0.25, pfTarget * 0.30));
+      changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)}, старт ${(newWeight*100).toFixed(0)}%)`);
     // Step 3: fast rollback — sharp, immediate cut when an entity is clearly
     // degrading (PF<0.45, 15+ сделок, отрицательный результат), instead of
     // waiting for the slow blended adjustment in Step 4 to catch up.
@@ -713,7 +717,11 @@ function pfToTargetWeight(pf: number): number {
       const targetW = pfToTargetWeight(pf);
       const confidenceScale = trades >= 100 ? 1.0 : trades >= 50 ? 0.7 : trades >= 20 ? 0.3 : 0.1;
       const degradation = pf < 1.0 ? Math.min(1, 1.0 - pf) : 0;
-      const blendSpeed = Math.min(0.40, 0.15 + degradation * 0.50);
+      // FIX: добавлен recovery bonus — чем выше PF выше 1.0, тем быстрее восстановление.
+      // Раньше восстановление всегда шло со скоростью 0.15, а наказание — до 0.40.
+      // Теперь симметрично: PF=1.5 → recovery=0.33 → blendSpeed≈0.23; PF=2.0 → 0.40 (макс).
+      const recovery = pf > 1.0 ? Math.min(1, (pf - 1.0) / 1.5) : 0;
+      const blendSpeed = Math.min(0.40, 0.15 + degradation * 0.50 + recovery * 0.25);
       const blendedW = cur.weight + (targetW - cur.weight) * confidenceScale * blendSpeed;
       newWeight = Math.max(0.10, Math.min(1.50, blendedW));
       changeTag = newWeight > cur.weight ? "📈" : "📉";
