@@ -72,7 +72,8 @@ import { pool } from "../lib/db.js";
   }
 
   const DEF_W: FactorWeights = {trend:0.30,volume:0.25,momentum:0.20,levels:0.15,pattern:0.10};
-  const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:1,accountSize:10000,autoPaperTrade:true};
+  // FIX: riskPercent 1% → 2%. С 1% и 10 перемноженными множителями размер позиции был < $20 на $10k депозите.
+const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accountSize:10000,autoPaperTrade:true};
   const DEF_G: GeminiWeights = {minConfidence:45,blockOnConflict:true,highRiskMultiplier:0.5,conflictAccuracy:0,confidenceAccuracy:0,tradesAnalyzed:0};
 
   function toJE(r: Record<string,unknown>): JournalEntry {

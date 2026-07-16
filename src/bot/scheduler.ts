@@ -272,7 +272,10 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
     if (finalScore >= 40) return 1.00; // хороший — норма
     if (finalScore >= 25) return 0.75; // средний — -25%
     if (finalScore >= 15) return 0.50; // слабый — -50%
-    return 0.30;                       // пограничный — -70%
+    // FIX: bootstrap зона — было 0.30 (-70%), теперь 0.50 (-50%).
+    // При MIN_FINAL_SCORE=3 большинство сигналов попадают сюда и в связке с 9 другими
+    // множителями итоговый размер схлопывался до < 0.05% депозита.
+    return 0.50;                       // пограничный — -50%
   }
 
   async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
@@ -669,7 +672,11 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         const safeIrd      = isFinite(irdSizeMult)              && irdSizeMult              > 0 ? irdSizeMult              : 1.0;
         const safePTilt    = isFinite(portfolioTiltMult)        && portfolioTiltMult        > 0 ? portfolioTiltMult        : 1.0;
         const safeFs       = isFinite(fsMult)                   && fsMult                   > 0 ? fsMult                   : 1.0;
-        const effectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs;
+        // FIX: 10 множителей перемножаются — итог может схлопнуться до < 0.05% депозита.
+        // Нижняя граница: effectiveRiskPct не ниже 30% от baseRisk.
+        // Пример: baseRisk=2%, 0.30 пол → минимум 0.6% — разумный минимум для paper trading.
+        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs;
+        const effectiveRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({
           baseRisk,
