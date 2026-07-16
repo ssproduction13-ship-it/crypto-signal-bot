@@ -6,7 +6,7 @@ import { getPrice } from "./binance.js";
 import { getRecentDecisionLog, getDecisionStats, type DecisionTrace } from "./decision-trace.js";
 import { logger } from "../lib/logger.js";
 
-const BOT_VERSION = "1.0.0-phase1";
+const BOT_VERSION = "2.0.0";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -650,6 +650,27 @@ function buildHtml(d: ReportData): string {
   const readColor= readiness.total >= 70 ? "#16a34a" : readiness.total >= 50 ? "#d97706" : "#dc2626";
   const totalRet = ((d.balance - d.initialBalance) / d.initialBalance) * 100;
   const dd       = d.peakBalance > 0 ? ((d.peakBalance - d.balance) / d.peakBalance) * 100 : 0;
+
+  // Risk metrics for KPI cards
+  const _pnlPcts = [...d.closedTrades].reverse().map(t => t.pnlPercent);
+  const _mean    = _pnlPcts.length ? _pnlPcts.reduce((a,b) => a+b,0) / _pnlPcts.length : 0;
+  const _std     = _pnlPcts.length > 1
+    ? Math.sqrt(_pnlPcts.reduce((a,b) => a+(_mean-b)**2,0) / (_pnlPcts.length-1))
+    : 0;
+  const sharpe   = _std > 0 ? (_mean / _std) * Math.sqrt(252) : 0;
+  const sqn      = _std > 0 ? (_mean / _std) * Math.sqrt(_pnlPcts.length) : 0;
+  const sqnLabel = sqn >= 5 ? "Отлично" : sqn >= 3 ? "Хорошо" : sqn >= 2 ? "Норм" : sqn >= 1 ? "Слабо" : "—";
+  // Max drawdown (from % pnl series)
+  let _pk = 0, _eq = 0, maxDDpct = 0;
+  for (const p of _pnlPcts) { _eq += p; if (_eq > _pk) _pk = _eq; const d_ = _pk>0?(_pk-_eq)/_pk*100:0; if (d_>maxDDpct) maxDDpct=d_; }
+  const firstTradeDate = d.closedTrades.length
+    ? d.closedTrades[d.closedTrades.length-1]!.openedAt
+    : null;
+  const daysSince = firstTradeDate
+    ? (Date.now() - new Date(firstTradeDate).getTime()) / 86400000
+    : 0;
+  const annualRet = daysSince > 7 ? totalRet * (365 / daysSince) : 0;
+  const calmar    = maxDDpct > 0 ? annualRet / maxDDpct : 0;
   const now = Date.now();
   const pnlDay  = d.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 86400000).reduce((a, t) => a + t.pnl, 0);
   const pnlWeek = d.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 604800000).reduce((a, t) => a + t.pnl, 0);
@@ -741,6 +762,12 @@ tr:hover td{background:#263348}
   </div>
 </div>
 
+<!-- AI SUMMARY — at a glance -->
+<div class="ai-summary">
+  <h3>🤖 AI Summary</h3>
+  ${buildAISummary(d, allStats, last30w, prev30w, readiness)}
+</div>
+
 <div class="kpi-grid">
   <div class="kpi"><div class="label">Баланс</div>
     <div class="value ${totalRet >= 0 ? "pos" : "neg"}">$${fmt(d.balance)}</div>
@@ -766,6 +793,18 @@ tr:hover td{background:#263348}
   <div class="kpi"><div class="label">Готовность</div>
     <div class="value" style="color:${readColor}">${readiness.total}/100</div>
     <div class="sub">${readiness.pfPenalty ? "⚠️ ограничено PF" : "к реальной торговле"}</div></div>
+  <div class="kpi"><div class="label">Sharpe Ratio</div>
+    <div class="value ${sharpe >= 1 ? "pos" : sharpe >= 0.5 ? "warn" : "neg"}">${sharpe.toFixed(2)}</div>
+    <div class="sub">Цель: 1.0+</div></div>
+  <div class="kpi"><div class="label">SQN</div>
+    <div class="value ${sqn >= 2 ? "pos" : sqn >= 1 ? "warn" : "neg"}">${sqn.toFixed(2)}</div>
+    <div class="sub">${sqnLabel}</div></div>
+  <div class="kpi"><div class="label">Calmar Ratio</div>
+    <div class="value ${calmar >= 1 ? "pos" : calmar >= 0.5 ? "warn" : "neg"}">${calmar.toFixed(2)}</div>
+    <div class="sub">Год.рет/макс.DD</div></div>
+  <div class="kpi"><div class="label">Макс. просадка</div>
+    <div class="value ${maxDDpct < 10 ? "pos" : maxDDpct < 20 ? "warn" : "neg"}">${maxDDpct.toFixed(2)}%</div>
+    <div class="sub">за всё время</div></div>
 </div>
 
 <!-- 2. Account state -->
@@ -1100,12 +1139,6 @@ tr:hover td{background:#263348}
   </div>
 </details>
 
-<!-- AI SUMMARY (пункт 8) -->
-<div class="ai-summary">
-  <h3>🤖 AI Summary</h3>
-  ${buildAISummary(d, allStats, last30w, prev30w, readiness)}
-</div>
-
 <div style="text-align:center;color:#334155;font-size:12px;padding:16px">
   Сгенерировано автоматически · ${new Date(d.date).toUTCString()} · AI Paper Trader v${BOT_VERSION}
 </div>
@@ -1124,19 +1157,107 @@ export async function generateDailyReport(chatId: number): Promise<ReportResult>
   const data  = await collectData(chatId);
   const html  = buildHtml(data);
   const stats = calcWindow(data.closedTrades, "");
+  const last30w = calcWindow(data.closedTrades.slice(0, 30), "");
   const dd    = data.peakBalance > 0 ? ((data.peakBalance - data.balance) / data.peakBalance) * 100 : 0;
   const ret   = ((data.balance - data.initialBalance) / data.initialBalance) * 100;
   const date  = new Date().toISOString().slice(0, 10);
+  const now   = Date.now();
 
-  const summary =
-    `📊 *Daily Report — ${date}*\n\n` +
-    `💰 Баланс: *$${data.balance.toFixed(2)}* (${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%)\n` +
-    `📈 PF: *${stats ? (stats.pf >= 999 ? "∞" : stats.pf.toFixed(2)) : "—"}*\n` +
-    `🎯 WR: *${stats ? stats.wr.toFixed(1) + "%" : "—"}*\n` +
-    `📉 Просадка: *${dd.toFixed(2)}%*\n` +
-    `📂 Сделок: *${data.closedTrades.length}*\n` +
-    `🔬 Решений AI (7д): *${data.decisionStats.total}* (принято ${data.decisionStats.opened})\n\n` +
-    `📄 Полный HTML-отчёт — файл ниже`;
+  // Period P&L
+  const pnlDay   = data.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 86400000).reduce((a,t) => a+t.pnl, 0);
+  const pnlWeek  = data.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 604800000).reduce((a,t) => a+t.pnl, 0);
+  const pnlMonth = data.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 2592000000).reduce((a,t) => a+t.pnl, 0);
+
+  // Risk metrics
+  const pnlPcts = [...data.closedTrades].reverse().map(t => t.pnlPercent);
+  const _mean   = pnlPcts.length ? pnlPcts.reduce((a,b) => a+b,0) / pnlPcts.length : 0;
+  const _std    = pnlPcts.length > 1
+    ? Math.sqrt(pnlPcts.reduce((a,b) => a+(_mean-b)**2,0) / (pnlPcts.length-1))
+    : 0;
+  const sharpe  = _std > 0 ? (_mean / _std) * Math.sqrt(252) : 0;
+  const sqn     = _std > 0 ? (_mean / _std) * Math.sqrt(pnlPcts.length) : 0;
+
+  // Max drawdown from pnl%
+  let _peak = 0, _eq = 0, maxDDpct = 0;
+  for (const p of pnlPcts) {
+    _eq += p; if (_eq > _peak) _peak = _eq;
+    const cur = _peak > 0 ? (_peak - _eq) / _peak * 100 : 0;
+    if (cur > maxDDpct) maxDDpct = cur;
+  }
+
+  // Best / worst strategy (by PF, min 5 trades)
+  const stratsWithTrades = data.strategyDetails.filter(s => s.trades >= 5);
+  const bestStrat  = [...stratsWithTrades].sort((a,b) => b.profitFactor - a.profitFactor)[0];
+  const worstStrat = [...stratsWithTrades].sort((a,b) => a.profitFactor - b.profitFactor)[0];
+
+  // PF trend
+  const pfAll = stats?.pf ?? 0;
+  const pf30  = last30w?.pf ?? 0;
+  const pfTrendStr = last30w && stats
+    ? (pf30 > pfAll + 0.1 ? "📈 растёт" : pf30 < pfAll - 0.1 ? "📉 падает" : "→ стабилен")
+    : "—";
+
+  // Health quick
+  const healthStr = (() => {
+    const s30 = last30w;
+    if (!s30 || s30.trades < 5) return "❓ мало данных";
+    if (s30.pf >= 1.3) return "🟢 норма";
+    if (s30.pf >= 1.0) return "🟡 осторожно";
+    return "🔴 внимание";
+  })();
+
+  // Readiness
+  const readiness = calcReadiness(data, stats);
+
+  // Top insight (1 line)
+  const insight = (() => {
+    if (dd > 15) return `⚠️ Просадка ${dd.toFixed(1)}% — рекомендую снизить risk%`;
+    if (stats && last30w && pf30 < pfAll - 0.15) return `📉 PF деградирует: посл.30 = ${pf30.toFixed(2)} < ср = ${pfAll.toFixed(2)}`;
+    if (stats && last30w && pf30 > pfAll + 0.15) return `📈 PF растёт: посл.30 = ${pf30.toFixed(2)} > ср = ${pfAll.toFixed(2)}`;
+    if (data.decisionStats.total > 0 && data.decisionStats.opened / data.decisionStats.total < 0.10)
+      return `🔬 Жёсткие фильтры: принято ${((data.decisionStats.opened/data.decisionStats.total)*100).toFixed(0)}% сигналов`;
+    if (stats && stats.pf >= 1.5) return `🚀 Система в отличной форме — PF ${stats.pf.toFixed(2)}`;
+    return `✅ Система работает штатно`;
+  })();
+
+  const sp  = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+  const pfStr = stats ? (stats.pf >= 999 ? "∞" : stats.pf.toFixed(2)) : "—";
+  const wrStr = stats ? stats.wr.toFixed(1) + "%" : "—";
+  const expStr = stats ? sp(stats.expectancy) + "%/сд" : "—";
+  const rrStr  = stats && stats.avgLoss > 0 ? (stats.avgWin / stats.avgLoss).toFixed(2) + ":1" : "—";
+  const ddIcon = dd < 5 ? "🟢" : dd < 15 ? "🟡" : "🔴";
+
+  const summary = [
+    `📊 *AI Трейдер — Отчёт ${date}*`,
+    ``,
+    `💰 Баланс: *${data.balance.toFixed(2)}*  (${sp(ret)}%)`,
+    `${ddIcon} DD: *${dd.toFixed(2)}%* · макс: ${maxDDpct.toFixed(2)}% · пик: ${data.peakBalance.toFixed(2)}`,
+    ``,
+    `*Метрики:*`,
+    `├ PF: *${pfStr}*  WR: *${wrStr}*`,
+    `├ Sharpe: *${sharpe.toFixed(2)}*  SQN: *${sqn.toFixed(2)}*`,
+    `├ Expectancy: *${expStr}*  RR: *${rrStr}*`,
+    `└ PF тренд: ${pfTrendStr}`,
+    ``,
+    `*P&L:*`,
+    `├ Сегодня:  \`${sp(pnlDay)}$\``,
+    `├ Неделя:   \`${sp(pnlWeek)}$\``,
+    `└ Месяц:    \`${sp(pnlMonth)}$\``,
+    ...(bestStrat && worstStrat && bestStrat.strategy !== worstStrat.strategy ? [
+      ``,
+      `*Стратегии:*`,
+      `├ 🟢 ${bestStrat.strategy}: PF ${bestStrat.profitFactor >= 999 ? "∞" : bestStrat.profitFactor.toFixed(2)} · WR ${bestStrat.winRate.toFixed(0)}%`,
+      `└ 🔴 ${worstStrat.strategy}: PF ${worstStrat.profitFactor.toFixed(2)} · WR ${worstStrat.winRate.toFixed(0)}%`,
+    ] : []),
+    ``,
+    `*Статус:*  ❤️ ${healthStr}  ·  🎯 ${readiness.total}/100`,
+    `*Позиций:* ${data.positions.length} открыто · ${data.closedTrades.length} закрыто`,
+    `*Сигналов (7д):* ${data.decisionStats.total} · принято ${data.decisionStats.opened}`,
+    ``,
+    insight,
+    ``,
+    `📎 *Полный HTML-отчёт — файл ниже* 👇`,
+  ].join("\n");
 
   return { html: Buffer.from(html, "utf8"), filename: `report_${date}.html`, summary };
 }
