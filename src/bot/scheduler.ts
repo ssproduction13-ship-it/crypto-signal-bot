@@ -43,7 +43,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
-  export const MIN_FINAL_SCORE = 3;
+  export const MIN_FINAL_SCORE = 8;
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
@@ -338,7 +338,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
-      if (!gate.rejected && sig.confidence.score < 8) {
+      if (!gate.rejected && sig.confidence.score < 12) {
         gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
       } else if (!gate.rejected) {
         gate.pass("Confidence", `${sig.confidence.score}%`);
@@ -348,9 +348,9 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       let atrSizeMultiplier = 1.0;
       if (!gate.rejected && sig.risk.atr != null && sig.risk.entryPrice > 0) {
         const atrPercent = (sig.risk.atr / sig.risk.entryPrice) * 100;
-        if (atrPercent > 4.0) {
-          gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 4%");
-        } else if (atrPercent >= 2.5) {
+        if (atrPercent > 3.5) {
+          gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 3.5%");
+        } else if (atrPercent >= 2.0) {
           atrSizeMultiplier = 0.5;
           gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — размер снижен до 50%`);
         } else {
