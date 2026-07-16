@@ -1305,15 +1305,18 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         await _bot?.telegram.sendDocument(chatId, { source: html, filename }, { caption: "📄 Полный HTML-отчёт" });
         // Daily backup of strategy weights
         try {
-          const [ss, fw, sw, srs] = await Promise.all([
+          const [ss, fw, sew, sw, srs] = await Promise.all([
             pool.query("SELECT * FROM strategy_stats"),
             pool.query("SELECT * FROM factor_weights"),
-            pool.query("SELECT * FROM strategy_entity_weights"), // fix: was strategy_weights (table does not exist)
+            pool.query("SELECT * FROM strategy_entity_weights"),
+            pool.query("SELECT * FROM strategy_weights"),
             pool.query("SELECT * FROM strategy_regime_stats"),
           ]);
           const backupData = {
             strategy_stats: ss.rows, factor_weights: fw.rows,
-            strategy_entity_weights: sw.rows, strategy_regime_stats: srs.rows,
+            strategy_entity_weights: sew.rows,
+            strategy_weights: sw.rows,
+            strategy_regime_stats: srs.rows,
             exported_at: new Date().toISOString(),
           };
           const dateStr = new Date().toISOString().slice(0, 10);

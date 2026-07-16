@@ -369,7 +369,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
             ]),
           });
         } catch (err) {
-          console.error("[menu_dashboard] buildDashboardMessage failed:", err);
+          logger.error({ err }, "[menu_dashboard] buildDashboardMessage failed");
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("⚠️ Ошибка загрузки обзора.", backMenu());
         }
@@ -1279,7 +1279,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           ]),
         });
       } catch (err) {
-        console.error("[/summary] buildDashboardMessage failed:", err);
+        logger.error({ err }, "[/summary] buildDashboardMessage failed");
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
         await ctx.reply("⚠️ Ошибка загрузки обзора.");
       }
