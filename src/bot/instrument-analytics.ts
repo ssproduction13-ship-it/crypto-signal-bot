@@ -76,10 +76,12 @@ import { pool } from "../lib/db.js";
     const [{rows}, {rows: dirRows}] = await Promise.all([
       pool.query("SELECT * FROM instrument_analytics WHERE trades>=5 ORDER BY (CASE WHEN loss_pnl>0 THEN win_pnl/loss_pnl ELSE win_pnl+1 END) DESC"),
       pool.query(`SELECT symbol, direction, COUNT(*) AS trades,
-        SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) AS wins,
-        SUM(CASE WHEN pnl>0 THEN pnl ELSE 0 END) AS win_pnl,
-        SUM(CASE WHEN pnl<0 THEN ABS(pnl) ELSE 0 END) AS loss_pnl
-        FROM paper_closed_trades GROUP BY symbol, direction HAVING COUNT(*) >= 5`),
+        SUM(CASE WHEN COALESCE(pnl_equity_pct,pnl)>0 THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN COALESCE(pnl_equity_pct,pnl)>0 THEN COALESCE(pnl_equity_pct,pnl) ELSE 0 END) AS win_pnl,
+        SUM(CASE WHEN COALESCE(pnl_equity_pct,pnl)<0 THEN ABS(COALESCE(pnl_equity_pct,pnl)) ELSE 0 END) AS loss_pnl
+        FROM paper_closed_trades
+        WHERE closed_at::timestamptz >= (SELECT COALESCE(reset_at,'1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
+        GROUP BY symbol, direction HAVING COUNT(*) >= 5`),
     ]);
     if (!rows.length) return "📊 *Аналитика по инструментам*\n\nНедостаточно данных (нужно ≥5 сделок на инструмент).";
 
@@ -177,7 +179,10 @@ export async function updateAllInstrumentStatuses(): Promise<
 
       // Последние 20 сделок — чтобы монета могла выйти из watchlist после улучшения
       const { rows: recentRows } = await pool.query(
-        `SELECT pnl FROM paper_closed_trades WHERE symbol=$1 ORDER BY closed_at DESC LIMIT 20`,
+        `SELECT COALESCE(pnl_equity_pct, pnl) AS pnl FROM paper_closed_trades
+          WHERE symbol=$1
+            AND closed_at::timestamptz >= (SELECT COALESCE(reset_at,'1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
+          ORDER BY closed_at DESC LIMIT 20`,
         [symbol]
       );
       const recentN = recentRows.length;
