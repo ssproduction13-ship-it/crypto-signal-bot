@@ -51,9 +51,10 @@ interface TradeRow {
 
 async function getClosedTradesForStrategy(strategy: StrategyName): Promise<TradeRow[]> {
   const { rows } = await pool.query<TradeRow>(
-    `SELECT pnl_percent, outcome, strategy, closed_at
+    `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl_percent, outcome, strategy, closed_at
      FROM paper_closed_trades
      WHERE strategy = $1 AND outcome IS NOT NULL
+       AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
      ORDER BY closed_at ASC`,
     [strategy]
   );
