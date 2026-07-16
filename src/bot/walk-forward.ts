@@ -193,3 +193,41 @@ export async function getWalkForwardResult(strategy: StrategyName): Promise<Walk
     computedAt: String(r["computed_at"]),
   };
 }
+
+export async function getLatestWalkForwardResults(): Promise<WalkForwardResult[]> {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (strategy) strategy, windows_count, avg_train_pf, avg_test_pf,
+       avg_train_wr, avg_test_wr, overfit_risk, is_valid, summary, computed_at
+     FROM walk_forward_results
+     ORDER BY strategy, computed_at DESC`
+  );
+  return rows.map(r => {
+    const row = r as Record<string, unknown>;
+    return {
+      strategy: row["strategy"] as StrategyName,
+      windows: [],
+      avgTrainPF: Number(row["avg_train_pf"]),
+      avgTestPF: Number(row["avg_test_pf"]),
+      avgTrainWR: Number(row["avg_train_wr"]),
+      avgTestWR: Number(row["avg_test_wr"]),
+      overfitRisk: row["overfit_risk"] as "low" | "medium" | "high",
+      isValid: Boolean(row["is_valid"]),
+      summary: row["summary"] as string,
+      computedAt: row["computed_at"] as string,
+    };
+  });
+}
+
+export function formatWalkForwardReport(results: WalkForwardResult[]): string {
+  if (!results.length) return "📊 *Walk-Forward Testing*\n\nНедостаточно данных (нужно 120+ закрытых сделок).";
+
+  let text = "📊 *Walk-Forward Testing*\n\n";
+  for (const r of results) {
+    const risk = r.overfitRisk === "low" ? "🟢" : r.overfitRisk === "medium" ? "🟡" : "🔴";
+    text += `*${r.strategy}*\n`;
+    text += `Train PF: ${r.avgTrainPF.toFixed(2)} → Test PF: ${r.avgTestPF.toFixed(2)}\n`;
+    text += `Train WR: ${(r.avgTrainWR * 100).toFixed(1)}% → Test WR: ${(r.avgTestWR * 100).toFixed(1)}%\n`;
+    text += `Переобучение: ${risk} ${r.overfitRisk.toUpperCase()} | ${r.isValid ? "✅ OK" : "❌ FAIL"}\n\n`;
+  }
+  return text.trim();
+}
