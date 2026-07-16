@@ -1,5 +1,6 @@
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { formatPrice } from "./risk.js";
 
 type NotificationType =
   | "TRADE_OPENED"
@@ -107,8 +108,8 @@ export function buildTradeOpenedMsg(
     `${dir} *${symbol}*\n` +
     `Стратегия: ${stratNames[strategy] ?? strategy}\n` +
     `Score: ${score}/100 | Confidence: ${confidence}%\n` +
-    `Вход: \`${entryPrice.toPrecision(6)}\`\n` +
-    `Стоп: \`${stopLoss.toPrecision(6)}\`\n` +
-    `TP1: \`${tp1.toPrecision(6)}\` | TP2: \`${tp2.toPrecision(6)}\``
+    `Вход: \`${formatPrice(entryPrice)}\`\n` +
+    `Стоп: \`${formatPrice(stopLoss)}\`\n` +
+    `TP1: \`${formatPrice(tp1)}\` | TP2: \`${formatPrice(tp2)}\``
   );
 }

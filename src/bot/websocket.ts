@@ -55,7 +55,7 @@ import { createRequire } from "node:module";
       this.running = false;
       if (this.pingTimer)      clearInterval(this.pingTimer);
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      try { this.ws?.close(); } catch {}
+      try { this.ws?.close(); } catch (err) { logger.debug({ err }, "WS close error"); }
     }
 
     private doSubscribe(topic: string) {
@@ -93,7 +93,7 @@ import { createRequire } from "node:module";
               if (this.subs.has(`${symbol}:${interval}`))
                 for (const cb of this.cbs) cb(symbol, interval);
             }
-          } catch {}
+          } catch (err) { logger.debug({ err }, "WS message parse error"); }
         });
 
         this.ws.on("close", () => {

@@ -51,9 +51,12 @@ function buildCloseRecord(
     ? (realisticPrice - pos.entryPrice) * size
     : (pos.entryPrice - realisticPrice) * size;
   const pnl    = rawPnl - commission;
-  const pnlPct = pos.direction === "LONG"
+  // Net pnlPct: gross price-move % minus commission % (fix: was gross-only, misled confidence & strategy stats)
+  const grossPnlPct = pos.direction === "LONG"
     ? ((realisticPrice - pos.entryPrice) / pos.entryPrice) * 100
     : ((pos.entryPrice - realisticPrice) / pos.entryPrice) * 100;
+  const commissionPct = size > 0 ? (commission / (pos.entryPrice * size)) * 100 : 0;
+  const pnlPct = grossPnlPct - commissionPct;
   const pnlEquityPct = equityAtOpen > 0 ? (pnl / equityAtOpen) * 100 : 0;
 
   const trade: ClosedPaperTrade = {

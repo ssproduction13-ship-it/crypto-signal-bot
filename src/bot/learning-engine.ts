@@ -315,7 +315,7 @@ export async function selectBestStrategy(
     let regimePF = 1;
     try {
       const {rows:regRows} = await pool.query(
-        "SELECT win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2",
+        "SELECT win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2 AND interval='ALL'",
         [sig.strategy, regime]
       );
       if (regRows.length) {

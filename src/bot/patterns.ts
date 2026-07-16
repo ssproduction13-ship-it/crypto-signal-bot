@@ -83,27 +83,33 @@ export function detectPattern(candles: Candle[]): PatternResult {
   }
 
   const prevHighs = highs.slice(-20, -5);
-  const maxPrevHigh = Math.max(...prevHighs);
-  if (currClose > maxPrevHigh * 1.005) {
-    const prevBarClose = closes[closes.length - 2]!;
-    const prevBarHigh = highs[highs.length - 2]!;
-    if (prevBarClose < maxPrevHigh && currClose > maxPrevHigh) {
-      return {
-        name: "BREAKOUT",
-        confidence: 80,
-        description: `Пробой уровня сопротивления ${maxPrevHigh.toFixed(2)} — сильный бычий сигнал`,
-      };
+  // guard: Math.max(...[]) = -Infinity → ложный BREAKOUT на новых листингах
+  if (prevHighs.length > 0) {
+    const maxPrevHigh = Math.max(...prevHighs);
+    if (currClose > maxPrevHigh * 1.005) {
+      const prevBarClose = closes[closes.length - 2]!;
+      const prevBarHigh = highs[highs.length - 2]!;
+      if (prevBarClose < maxPrevHigh && currClose > maxPrevHigh) {
+        return {
+          name: "BREAKOUT",
+          confidence: 80,
+          description: `Пробой уровня сопротивления ${maxPrevHigh.toFixed(2)} — сильный бычий сигнал`,
+        };
+      }
     }
   }
 
   const prevLows = lows.slice(-20, -5);
-  const minPrevLow = Math.min(...prevLows);
-  if (currClose < minPrevLow * 0.995) {
-    return {
-      name: "BREAKOUT",
-      confidence: 78,
-      description: `Пробой уровня поддержки ${minPrevLow.toFixed(2)} — медвежий сигнал`,
-    };
+  // guard: Math.min(...[]) = Infinity → ложный SHORT BREAKOUT на новых листингах
+  if (prevLows.length > 0) {
+    const minPrevLow = Math.min(...prevLows);
+    if (currClose < minPrevLow * 0.995) {
+      return {
+        name: "BREAKOUT",
+        confidence: 78,
+        description: `Пробой уровня поддержки ${minPrevLow.toFixed(2)} — медвежий сигнал`,
+      };
+    }
   }
 
   const flag5 = closes.slice(-5);

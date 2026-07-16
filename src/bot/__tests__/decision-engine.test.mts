@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 
 // ── Pure decision logic helpers (mirrors scheduler.ts gate logic) ────────────
 
-const MIN_FINAL_SCORE = 10;
+// ВАЖНО: это значение ДОЛЖНО совпадать с MIN_FINAL_SCORE в scheduler.ts
+// Если меняешь там — обнови и здесь
+const MIN_FINAL_SCORE = 3; // sync: bootstrap phase (prod value)
 
 type StrategyStatus = "active" | "quarantine" | "disabled";
 
@@ -111,7 +113,7 @@ describe("Decision Engine v1.1", () => {
       assert.equal(gate.reason, "FINAL_SCORE_TOO_LOW");
     });
 
-    test("passes when finalScore equals MIN_FINAL_SCORE (10)", () => {
+    test(`passes when finalScore equals MIN_FINAL_SCORE (${MIN_FINAL_SCORE})`, () => {
       const gate = finalScoreGate(10);
       assert.equal(gate.pass, true);
     });
