@@ -114,53 +114,67 @@ export async function runDataCleanup(chatId: number): Promise<CleanupResult> {
     logger.warn({ snapErr }, "Pre-cleanup snapshot failed — continuing without it");
   }
 
-  // Step 6 — Clear strategy performance tables (had phantom-inflated data)
-  await pool.query("DELETE FROM strategy_stats         WHERE 1=1");
-  await pool.query("DELETE FROM strategy_regime_stats  WHERE 1=1");
-  await pool.query("DELETE FROM strategy_loss_reasons  WHERE 1=1");
+  // fix: Steps 6-9 wrapped in a single DB transaction.
+  // Before this fix, a crash between Step 6 (DELETE) and Step 9 (INSERT) would
+  // permanently erase all strategy history with no recovery path.
+  const client = await pool.connect();
+  let statsRebuilt = 0;
+  try {
+    await client.query("BEGIN");
 
-  // Step 7 — Reset strategy weights to neutral (remove quarantine, re-enable all)
-  await pool.query(
-    `UPDATE strategy_weights SET
-       weight                 = 1.0,
-       disabled               = false,
-       disabled_until         = NULL,
-       quarantine             = false,
-       trust_score            = 50,
-       cycles_below_threshold = 0,
-       updated_at             = NOW()`
-  );
+    // Step 6 — Clear strategy performance tables
+    await client.query("DELETE FROM strategy_stats         WHERE 1=1");
+    await client.query("DELETE FROM strategy_regime_stats  WHERE 1=1");
+    await client.query("DELETE FROM strategy_loss_reasons  WHERE 1=1");
 
-  // Step 8 — Clear time/instrument analytics and stale snapshots
-  await pool.query("DELETE FROM time_analytics        WHERE 1=1");
-  await pool.query("DELETE FROM instrument_analytics  WHERE 1=1");
-  await pool.query("DELETE FROM strategy_versions     WHERE 1=1");
-  await pool.query("DELETE FROM learning_reports      WHERE 1=1");
+    // Step 7 — Reset strategy weights to neutral (remove quarantine, re-enable all)
+    await client.query(
+      `UPDATE strategy_weights SET
+         weight                 = 1.0,
+         disabled               = false,
+         disabled_until         = NULL,
+         quarantine             = false,
+         trust_score            = 50,
+         cycles_below_threshold = 0,
+         updated_at             = NOW()`
+    );
 
-  // Step 9 — Rebuild strategy_stats from the now-clean paper_closed_trades.
-  // Without this the learning engine shows 0 trades and can't evaluate strategies.
-  // We aggregate: trades, wins, win_pnl (sum of positive pnl), loss_pnl (abs sum of
-  // negative pnl), total_pnl — exactly the shape the learning engine expects.
-  const rebuildResult = await pool.query(
-    `INSERT INTO strategy_stats (strategy, trades, wins, win_pnl, loss_pnl, total_pnl)
-     SELECT
-       strategy,
-       COUNT(*)::int                                          AS trades,
-       COUNT(*) FILTER (WHERE pnl > 0)::int                  AS wins,
-       COALESCE(SUM(pnl) FILTER (WHERE pnl > 0),  0)::numeric AS win_pnl,
-       COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0)::numeric AS loss_pnl,
-       COALESCE(SUM(pnl), 0)::numeric                         AS total_pnl
-     FROM paper_closed_trades
-     WHERE strategy IS NOT NULL
-     GROUP BY strategy
-     ON CONFLICT (strategy) DO UPDATE SET
-       trades    = EXCLUDED.trades,
-       wins      = EXCLUDED.wins,
-       win_pnl   = EXCLUDED.win_pnl,
-       loss_pnl  = EXCLUDED.loss_pnl,
-       total_pnl = EXCLUDED.total_pnl`
-  );
-  const statsRebuilt = rebuildResult.rowCount ?? 0;
+    // Step 8 — Clear time/instrument analytics and stale snapshots
+    await client.query("DELETE FROM time_analytics        WHERE 1=1");
+    await client.query("DELETE FROM instrument_analytics  WHERE 1=1");
+    await client.query("DELETE FROM strategy_versions     WHERE 1=1");
+    await client.query("DELETE FROM learning_reports      WHERE 1=1");
+
+    // Step 9 — Rebuild strategy_stats from the now-clean paper_closed_trades
+    const rebuildResult = await client.query(
+      `INSERT INTO strategy_stats (strategy, trades, wins, win_pnl, loss_pnl, total_pnl)
+       SELECT
+         strategy,
+         COUNT(*)::int                                            AS trades,
+         COUNT(*) FILTER (WHERE pnl > 0)::int                    AS wins,
+         COALESCE(SUM(pnl) FILTER (WHERE pnl > 0),  0)::numeric  AS win_pnl,
+         COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0)::numeric AS loss_pnl,
+         COALESCE(SUM(pnl), 0)::numeric                           AS total_pnl
+       FROM paper_closed_trades
+       WHERE strategy IS NOT NULL
+       GROUP BY strategy
+       ON CONFLICT (strategy) DO UPDATE SET
+         trades    = EXCLUDED.trades,
+         wins      = EXCLUDED.wins,
+         win_pnl   = EXCLUDED.win_pnl,
+         loss_pnl  = EXCLUDED.loss_pnl,
+         total_pnl = EXCLUDED.total_pnl`
+    );
+    statsRebuilt = rebuildResult.rowCount ?? 0;
+
+    await client.query("COMMIT");
+  } catch (txErr) {
+    await client.query("ROLLBACK").catch(() => {});
+    logger.error({ txErr }, "Data cleanup transaction rolled back — no data was modified");
+    throw txErr;
+  } finally {
+    client.release();
+  }
 
   logger.info(
     { chatId, dupesRemoved, tradesKept, oldBalance, newBalance: newBalanceRounded, statsRebuilt },

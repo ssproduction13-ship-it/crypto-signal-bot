@@ -59,7 +59,10 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
     } else if (prevMacd?.histogram != null && prevMacd.histogram > 0 && lastMacd.histogram <= 0) {
       macdSignal = "sell";
     } else {
-      macdSignal = lastMacd.histogram > 0 ? "buy" : "sell";
+      // fix: histogram > 0 without a fresh crossover is NOT a signal.
+      // Always returning buy/sell here drowned out real crossovers and
+      // caused MACD to signal constantly, inflating false positives.
+      macdSignal = "neutral";
     }
   }
 

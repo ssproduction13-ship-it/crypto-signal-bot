@@ -99,30 +99,41 @@ function analyzeError(entry: JournalEntry): string {
 }
 
 async function updateWeights(entry: JournalEntry, isWin: boolean): Promise<void> {
-  const weights = await loadWeights();
+  // fix: old pattern was loadWeights() → mutate in JS → saveWeights(), which caused
+  // a race condition when multiple trades close simultaneously — the second write
+  // would overwrite the first, losing learning signal. Now uses a single atomic
+  // SQL UPDATE with relative arithmetic so concurrent calls compose correctly.
   const lr = 0.01;
+  const factors = ["trend", "volume", "momentum", "levels", "pattern"] as const;
 
-  const factors: (keyof typeof weights)[] = [
-    "trend", "volume", "momentum", "levels", "pattern"
-  ];
-
+  // Build a single UPDATE that adjusts each column atomically in the DB
+  const setClauses: string[] = [];
   for (const factor of factors) {
     const score = entry.factors[factor] ?? 50;
-    const wasHighScore = score > 60;
-
-    if (isWin && wasHighScore) {
-      weights[factor] = Math.min(0.5, weights[factor] + lr);
-    } else if (!isWin && wasHighScore) {
-      weights[factor] = Math.max(0.05, weights[factor] - lr);
+    if (score <= 60) continue; // only adjust factors that were meaningfully active
+    const delta = isWin ? lr : -lr;
+    if (isWin) {
+      // LEAST/GREATEST keep values in [0.05, 0.5] range
+      setClauses.push(`${factor} = LEAST(0.5, GREATEST(0.05, ${factor} + ${delta}))`);
+    } else {
+      setClauses.push(`${factor} = LEAST(0.5, GREATEST(0.05, ${factor} + ${delta}))`);
     }
   }
 
-  const total = factors.reduce((a, f) => a + weights[f], 0);
-  for (const factor of factors) {
-    weights[factor] = weights[factor] / total;
-  }
+  if (setClauses.length === 0) return; // no active factors → nothing to update
 
-  await saveWeights(weights);
+  // Apply delta, then re-normalise so weights always sum to 1.0
+  await pool.query(`UPDATE factor_weights SET ${setClauses.join(", ")} WHERE id = 1`);
+  // Normalise in a second atomic update
+  await pool.query(`
+    UPDATE factor_weights SET
+      trend    = trend    / (trend + volume + momentum + levels + pattern),
+      volume   = volume   / (trend + volume + momentum + levels + pattern),
+      momentum = momentum / (trend + volume + momentum + levels + pattern),
+      levels   = levels   / (trend + volume + momentum + levels + pattern),
+      pattern  = pattern  / (trend + volume + momentum + levels + pattern)
+    WHERE id = 1
+  `);
 }
 
 export async function getJournalStats(): Promise<string> {

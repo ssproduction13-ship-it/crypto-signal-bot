@@ -70,7 +70,10 @@ export function calcScore(
   const volumes = candles.map((c) => c.volume);
   const volSlice = volumes.slice(-20);
   const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
-  const lastVol = volumes[volumes.length - 1]!;
+  // fix: candles[length-1] is the current *open* (incomplete) candle — its volume
+  // is always low at the start of a period, causing false "below_avg" volumeSignals.
+  // Use the last CLOSED candle (length-2) for an accurate volume comparison.
+  const lastVol = volumes.length >= 2 ? volumes[volumes.length - 2]! : volumes[volumes.length - 1]!;
 
   if (avgVol <= 0) {
     // No volume data — keep neutral score, note it
@@ -181,10 +184,15 @@ export function calcScore(
     )
   );
 
+  // fix: patternScore was absent from trendBias — strong reversal/breakout patterns
+  // (pin bar, engulfing, double top/bottom) had zero influence on direction.
+  // volumeScore added at half-weight: high-volume moves have stronger conviction.
   const trendBias =
-    (trendScore - 50) * weights.trend +
+    (trendScore    - 50) * weights.trend +
     (momentumScore - 50) * weights.momentum +
-    (levelsScore - 50) * weights.levels;
+    (levelsScore   - 50) * weights.levels +
+    (patternScore  - 50) * weights.pattern +
+    (volumeScore   - 50) * weights.volume * 0.5;
 
   const direction: "LONG" | "SHORT" | "NEUTRAL" =
     trendBias > 5 ? "LONG" : trendBias < -5 ? "SHORT" : "NEUTRAL";

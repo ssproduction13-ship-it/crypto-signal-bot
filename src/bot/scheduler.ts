@@ -122,6 +122,15 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
   const lastCorrGuardNotify = new Map<number, number>(); // chatId → timestamp
   const CORR_GUARD_NOTIFY_MS = 60 * 60 * 1000; // 1 hour
 
+  // fix: these Maps grow indefinitely — on 100+ pairs × 30 days the process
+  // accumulates hundreds of MB of stale entries. Clean up old keys hourly.
+  setInterval(() => {
+    const cutoff = Date.now() - 2 * 3600 * 1000; // keep last 2 hours
+    for (const [k, ts] of recentlyProcessed)    if (ts < cutoff) recentlyProcessed.delete(k);
+    for (const [k, ts] of shadowBannedDebounce) if (ts < cutoff) shadowBannedDebounce.delete(k);
+    for (const [k, ts] of lastCorrGuardNotify)  if (ts < cutoff) lastCorrGuardNotify.delete(k);
+  }, 3600 * 1000);
+
   // ── Concurrency guard: prevents checkPositions from running in parallel ──────
   // Without this, setInterval fires a new cycle every 30s regardless of whether
   // the previous one finished. With 18+ open positions (18 API calls + DB ops),

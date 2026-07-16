@@ -29,6 +29,11 @@ export async function checkMTFAlignment(
     symbol: string,
     direction: "LONG" | "SHORT"
   ): Promise<MTFResult> {
+    // fix: cacheKey was used in mtfCache.set() below but never declared → ReferenceError on every call
+    const cacheKey = `mtf_${symbol}_${direction}`;
+    const cached = mtfCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.result;
+
     try {
       const candles4h = await getCandles(symbol, "4h", 60);
 

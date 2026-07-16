@@ -300,11 +300,14 @@ export async function selectBestStrategy(
   for (const sig of signals) {
     const entity = getEntity(sig.strategy, sig.direction as "LONG"|"SHORT");
     const wRow = (wRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
-    // Learning mode: never fully exclude an entity — min weight 0.10 (TZ §2 exploration floor)
+    // Active entities keep floor 0.10 for bootstrap exploration.
+    // fix: quarantine floor lowered 0.10→0.03 — quarantined entities were getting
+    // the same minimum weight as active ones, allowing toxic entities to keep trading
+    // as long as their signal score was high enough to compensate.
     const weight = Math.max(0.10, wRow ? Number(wRow["weight"]) : 1);
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
     const effectiveWeight = isQuarantine
-      ? 0.10  // exploration floor — карантинные сущности скорятся минимальным весом
+      ? 0.03  // reduced: quarantined entities participate minimally, not equally
       : Math.max(0.10, weight);
     // Убрано: continue при карантине — пусть Entity Guard в scheduler решает
 

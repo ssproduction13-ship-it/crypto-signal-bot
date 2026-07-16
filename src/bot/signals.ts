@@ -38,8 +38,11 @@ export async function generateSignal(
     getPrice(symbol),
   ]);
 
-  const weights   = await loadWeights();
-  const settings  = chatId != null ? await loadSettings(chatId) : null;
+  // fix: independent DB calls — run in parallel to save ~200ms latency per signal
+  const [weights, settings] = await Promise.all([
+    loadWeights(),
+    chatId != null ? loadSettings(chatId) : Promise.resolve(null),
+  ]);
   const minScore    = settings?.minScore    ?? 62;
   const riskPercent = settings?.riskPercent ?? 1;
   const accountSize = settings?.accountSize ?? 10000;
