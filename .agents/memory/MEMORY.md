@@ -1,0 +1,1 @@
+- [Audit fixes completed](audit-fixes.md) — 16 bugs fixed across 4 commits; remaining known issues documented

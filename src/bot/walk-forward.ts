@@ -2,6 +2,13 @@
  * Walk-Forward Testing — модуль исключения переобучения.
  * Делит историю сделок на обучающие и тестовые окна,
  * проверяет стратегию только на данных, которых она ещё не видела.
+ *
+ * NOTE on window overlap: pos advances by TEST_SIZE (200) per window, not by
+ * TRAIN_SIZE+TEST_SIZE. This means consecutive training windows share up to
+ * 800 trades. True non-overlapping walk-forward would advance by 1200/step,
+ * but with <1200 trades per strategy (typical for this bot) that yields 0–1
+ * windows and makes the feature useless. The rolling approach is intentional
+ * for small datasets — the test windows themselves never overlap.
  */
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
@@ -148,57 +155,41 @@ export async function runWalkForwardTest(strategy: StrategyName): Promise<WalkFo
     computedAt: new Date().toISOString(),
   };
 
-  await saveWalkForwardResult(result);
+  pool.query(
+    `INSERT INTO walk_forward_results(strategy, windows_count, avg_train_pf, avg_test_pf,
+       avg_train_wr, avg_test_wr, overfit_risk, is_valid, summary, computed_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+     ON CONFLICT(strategy) DO UPDATE SET
+       windows_count=$2, avg_train_pf=$3, avg_test_pf=$4,
+       avg_train_wr=$5, avg_test_wr=$6, overfit_risk=$7,
+       is_valid=$8, summary=$9, computed_at=NOW()`,
+    [strategy, windows.length, avgTrainPF, avgTestPF, avgTrainWR, avgTestWR,
+     overfitRisk, isValid, summary]
+  ).catch(err => logger.warn({ err }, "walk_forward_results save failed"));
+
   return result;
 }
 
-async function saveWalkForwardResult(result: WalkForwardResult): Promise<void> {
-  await pool.query(
-    `INSERT INTO walk_forward_results(strategy, windows_count, avg_train_pf, avg_test_pf,
-      avg_train_wr, avg_test_wr, overfit_risk, is_valid, summary, computed_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [
-      result.strategy, result.windows.length, result.avgTrainPF, result.avgTestPF,
-      result.avgTrainWR, result.avgTestWR, result.overfitRisk, result.isValid,
-      result.summary, result.computedAt,
-    ]
-  ).catch(err => logger.warn({ err }, "walk_forward_results save failed"));
-}
-
-export async function getLatestWalkForwardResults(): Promise<WalkForwardResult[]> {
+export async function getWalkForwardResult(strategy: StrategyName): Promise<WalkForwardResult | null> {
   const { rows } = await pool.query(
-    `SELECT DISTINCT ON (strategy) strategy, windows_count, avg_train_pf, avg_test_pf,
-       avg_train_wr, avg_test_wr, overfit_risk, is_valid, summary, computed_at
+    `SELECT strategy, windows_count, avg_train_pf, avg_test_pf, avg_train_wr, avg_test_wr,
+            overfit_risk, is_valid, summary, computed_at
      FROM walk_forward_results
-     ORDER BY strategy, computed_at DESC`
+     WHERE strategy = $1`,
+    [strategy]
   );
-  return rows.map(r => {
-    const row = r as Record<string, unknown>;
-    return {
-      strategy: row["strategy"] as StrategyName,
-      windows: [],
-      avgTrainPF: Number(row["avg_train_pf"]),
-      avgTestPF: Number(row["avg_test_pf"]),
-      avgTrainWR: Number(row["avg_train_wr"]),
-      avgTestWR: Number(row["avg_test_wr"]),
-      overfitRisk: row["overfit_risk"] as "low" | "medium" | "high",
-      isValid: Boolean(row["is_valid"]),
-      summary: row["summary"] as string,
-      computedAt: row["computed_at"] as string,
-    };
-  });
-}
-
-export function formatWalkForwardReport(results: WalkForwardResult[]): string {
-  if (!results.length) return "📊 *Walk-Forward Testing*\n\nНедостаточно данных (нужно 120+ закрытых сделок).";
-
-  let text = "📊 *Walk-Forward Testing*\n\n";
-  for (const r of results) {
-    const risk = r.overfitRisk === "low" ? "🟢" : r.overfitRisk === "medium" ? "🟡" : "🔴";
-    text += `*${r.strategy}*\n`;
-    text += `Train PF: ${r.avgTrainPF.toFixed(2)} → Test PF: ${r.avgTestPF.toFixed(2)}\n`;
-    text += `Train WR: ${(r.avgTrainWR * 100).toFixed(1)}% → Test WR: ${(r.avgTestWR * 100).toFixed(1)}%\n`;
-    text += `Переобучение: ${risk} ${r.overfitRisk.toUpperCase()} | ${r.isValid ? "✅ OK" : "❌ FAIL"}\n\n`;
-  }
-  return text.trim();
+  if (!rows.length) return null;
+  const r = rows[0] as Record<string, unknown>;
+  return {
+    strategy: r["strategy"] as StrategyName,
+    windows: [],
+    avgTrainPF: Number(r["avg_train_pf"]),
+    avgTestPF: Number(r["avg_test_pf"]),
+    avgTrainWR: Number(r["avg_train_wr"]),
+    avgTestWR: Number(r["avg_test_wr"]),
+    overfitRisk: r["overfit_risk"] as "low" | "medium" | "high",
+    isValid: Boolean(r["is_valid"]),
+    summary: String(r["summary"]),
+    computedAt: String(r["computed_at"]),
+  };
 }
