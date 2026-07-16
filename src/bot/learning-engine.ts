@@ -101,7 +101,10 @@ export async function isStrategyBlockedInRegime(
     if (trades<10) continue; // not enough data in this bucket — try next
     const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 2.0 : 0;
     const wr = wins/trades;
-    if (pf<0.7 && wr<0.38) {
+    // fix: was `&&` (AND) — a strategy with PF=0.1 but WR=0.45 passed the filter
+    // because only one condition was true. Changed to `||` (OR): if EITHER metric
+    // is bad enough the strategy is blocked (a poor PF with decent WR still destroys capital).
+    if (pf<0.7 || wr<0.38) {
       const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
       const ivNote = iv !== "ALL" ? ` [${iv}]` : "";
       return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}"${ivNote} (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};

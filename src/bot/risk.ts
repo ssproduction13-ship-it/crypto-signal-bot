@@ -55,7 +55,11 @@ export function calcRisk(
     Math.abs(tp2 - entryPrice) / Math.abs(stopLoss - entryPrice);
 
   const maxLossAmount = accountSize * (riskPercent / 100);
-  const positionSize = maxLossAmount / Math.abs(entryPrice - stopLoss);
+  // fix: position size was ignoring ~0.2% round-trip commission, causing actual risk
+  // to exceed the declared riskPercent. Commission is now baked into the denominator:
+  // totalLoss = size × (stopDistance + entryPrice × 0.002)
+  const COMMISSION_RT = 0.002; // 0.1% entry + 0.1% exit (KuCoin standard)
+  const positionSize = maxLossAmount / (Math.abs(entryPrice - stopLoss) + entryPrice * COMMISSION_RT);
 
   const isRRViable = rrRatio1 >= 2.0;
 

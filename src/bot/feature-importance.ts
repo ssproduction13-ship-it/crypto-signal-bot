@@ -109,9 +109,11 @@ export async function calcFeatureImportance(): Promise<FactorImportance[]> {
       low.map(t => ({pnl: t.pnl, isWin: t.isWin}))
     );
 
-    // Importance score: weighted combination of WR lift + PF lift, clamped -100..100
+    // fix: pfLift * 20 was far too aggressive — a single lucky trade with a large
+    // win could push pfLift to 5+ and dominate the score (importance = 100) while
+    // wrLift stayed near 0. Now balanced: WR lift (more stable) weighted 2×, PF lift 3×.
     const importanceScore = Math.max(-100, Math.min(100,
-      Math.round(wrLift * 1.5 + pfLift * 20)
+      Math.round(wrLift * 2 + pfLift * 3)
     ));
 
     results.push({
