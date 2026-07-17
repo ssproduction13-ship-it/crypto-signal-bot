@@ -735,20 +735,26 @@ function pfToTargetWeight(pf: number): number {
       newWeight = maxWeightForTrades;
     }
 
-    // Step 6: two-tier soft/hard quarantine caps — track but don't log yet
+    // Step 6: two-tier soft/hard quarantine caps — track but don't log yet.
+    // hardLimitApplied используется в Step 7: при жёстком лимите floor = 0.10,
+    // иначе floor поднял бы вес с 0.15 обратно до 0.20 и лимит не работал бы.
     let limitNote = "";
+    let hardLimitApplied = false;
     if (!newQuarantine && trades >= 10 && pf < 0.40) {
       newWeight = Math.min(newWeight, 0.15);
       limitNote = " [жёсткий лимит]";
+      hardLimitApplied = true;
     } else if (!newQuarantine && trades >= 15 && pf < 0.65) {
       newWeight = Math.min(newWeight, 0.25);
       limitNote = " [мягкий лимит]";
     }
 
-    // Step 7: absolute floor — never below the quarantine/active minimum
+    // Step 7: absolute floor — never below the quarantine/active minimum.
+    // При жёстком лимите используем floor 0.10 (не 0.20), чтобы лимит Step 6
+    // не отменялся флором: иначе cap 0.15 → floor 0.20 → сущность торгует.
     const MIN_ENTITY_WEIGHT = 0.10;
     const preFloor = newWeight;
-    newWeight = Math.max(newWeight, newQuarantine ? MIN_ENTITY_WEIGHT : 0.20);
+    newWeight = Math.max(newWeight, (newQuarantine || hardLimitApplied) ? MIN_ENTITY_WEIGHT : 0.20);
     const floorNote = newWeight > preFloor ? ` [floor ${(newWeight*100).toFixed(0)}%]` : "";
 
     // Single log entry with FINAL weight after all steps
