@@ -25,9 +25,10 @@ import { pool } from "../lib/db.js";
   // Принудительная блокировка убыточных ночных часов 00:00-03:59 UTC.
   // Сужено с исходного 00-06 (05.07.2026) после разбора полной истории:
   // 04:00 и 05:00 UTC исторически прибыльны (PF 1.61 и 1.44), убыточны именно
-  // 00-03 UTC (PF 0.42-0.83 до шока, ещё ниже во время шока 03-05.07). Держать
-  // до накопления новой статистики и явного решения снять ограничение.
-  const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3]);
+  // Данные paper trading (689 сделок, 08-17.07.2026) показали что 00-03 UTC прибыльны:
+  // H0 WR 55% +18, H1 WR 53% +12, H2 WR 75% +23, H3 WR 67% +5.
+  // Принудительная блокировка снята — динамический isTimeRestricted теперь сам решает.
+  const FORCED_BLOCKED_HOURS = new Set<number>();
 
   export async function isTimeRestricted(hour: number, dow: number): Promise<{restricted:boolean;reason:string;sizeMultiplier:number}> {
     if (FORCED_BLOCKED_HOURS.has(hour)) {
