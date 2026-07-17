@@ -88,6 +88,51 @@ import { pool } from "../lib/db.js";
     return {trades,wins,winRate:wins/trades,profitFactor:lossPnl>0?winPnl/lossPnl:winPnl>0?99:0,totalPnl:winPnl-lossPnl};
   }
 
+  // ── Entity Shadow Quarantine ─────────────────────────────────────────────
+  // Когда entity в карантине, сигналы которые были бы отклонены — открываются
+  // как shadow-позиции с тегом entity. Learning-engine проверяет эту статистику
+  // и при хорошем PF/WR выводит entity из карантина без ожидания реальных сделок.
+
+  export async function openEntityShadowPosition(
+    entity: string,
+    symbol: string, direction: "LONG"|"SHORT",
+    entryPrice: number, stopLoss: number, tp1: number, tp2: number,
+    strategy: StrategyName, challengerWeights: FactorWeights, marketRegime: string,
+  ): Promise<void> {
+    const stopDist = Math.abs(entryPrice - stopLoss);
+    if (stopDist <= 0) return;
+    const size = 100 / stopDist;
+    await pool.query(
+      `INSERT INTO shadow_positions(id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,challenger_weights,market_regime,opened_at,is_direction_shadow,entity)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`,
+      [genId(),symbol,direction,entryPrice,size,stopLoss,tp1,tp2,strategy,
+       JSON.stringify(challengerWeights),marketRegime,new Date().toISOString(),false,entity]
+    );
+  }
+
+  export interface EntityShadowStats {
+    trades: number; wins: number; winRate: number; pf: number; totalPnl: number;
+  }
+
+  export async function getEntityShadowStats(entity: string): Promise<EntityShadowStats> {
+    const {rows} = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl, is_win
+       FROM shadow_closed_trades WHERE entity=$1 ORDER BY closed_at DESC LIMIT 60`,
+      [entity]
+    );
+    if (!rows.length) return {trades:0,wins:0,winRate:0,pf:0,totalPnl:0};
+    const r = rows as Record<string,unknown>[];
+    const trades = r.length;
+    const wins = r.filter(x=>Boolean(x["is_win"])).length;
+    const winPnl = r.filter(x=>Boolean(x["is_win"])).reduce((a,x)=>a+Number(x["pnl"]),0);
+    const lossPnl = Math.abs(r.filter(x=>!Boolean(x["is_win"])).reduce((a,x)=>a+Number(x["pnl"]),0));
+    return {
+      trades, wins, winRate: wins/trades,
+      pf: lossPnl > 0 ? winPnl/lossPnl : winPnl > 0 ? 99 : 0,
+      totalPnl: winPnl - lossPnl,
+    };
+  }
+
   export async function compareShadowVsLive(livePF: number, liveWR: number): Promise<string|null> {
     const s = await getShadowStats();
     if (s.trades < 20) return null;

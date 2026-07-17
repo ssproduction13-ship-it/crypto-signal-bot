@@ -498,6 +498,13 @@ const MIGRATIONS = [
   // Required so getShadowStats() uses the same scale as paper_closed_trades PF.
   "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
   "CREATE INDEX IF NOT EXISTS idx_sct_dir_shadow ON shadow_closed_trades(strategy, direction, is_direction_shadow, closed_at)",
+  // ── Shadow Quarantine: entity-level shadow tracking для карантинных стратегий ──
+  // entity = ключ strategy_entity_weights (напр. "VOLUME_IMPULSE_LONG").
+  // Позволяет learning-engine принять решение о выходе из карантина по shadow PF/WR,
+  // а не ждать реальных сделок (которые частично заблокированы карантином).
+  "ALTER TABLE shadow_positions ADD COLUMN IF NOT EXISTS entity TEXT",
+  "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_sct_entity ON shadow_closed_trades(entity, closed_at) WHERE entity IS NOT NULL",
   // ── 8-Entity Architecture: strategy × direction independent weights ─────────
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
   `CREATE TABLE IF NOT EXISTS strategy_entity_weights (

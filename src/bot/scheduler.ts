@@ -22,7 +22,7 @@ import type { TradeSignal } from "./signals.js";
   import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
   import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
-  import { checkShadowPositions, openShadowPosition } from "./shadow-testing.js";
+  import { checkShadowPositions, openEntityShadowPosition, openShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
@@ -503,6 +503,23 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
             `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)}`,
             "Score≥65 | Conf≥40% | FS≥20"
           );
+          // Shadow quarantine: заблокированный сигнал уходит в виртуальную сделку.
+          // Learning-engine отслеживает shadow PF/WR и выводит entity из карантина
+          // автоматически, не дожидаясь накопления реальных сделок (которые частично
+          // блокируются карантином — иначе получается deadlock: не торгует → нет данных → не выходит).
+          const shadowEntityKey = `shadowq:${entityKey}`;
+          if (Date.now() - (shadowBannedDebounce.get(shadowEntityKey) ?? 0) > SHADOW_BANNED_DEBOUNCE_MS) {
+            shadowBannedDebounce.set(shadowEntityKey, Date.now());
+            loadWeights().then(w =>
+              openEntityShadowPosition(
+                entityKey,
+                sub.symbol,
+                (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
+                sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+                strat, w, regime
+              ).catch(() => {})
+            ).catch(() => {});
+          }
         }
       } else if (!gate.rejected) {
         gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");

@@ -1,5 +1,6 @@
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { getEntityShadowStats } from "./shadow-testing.js";
 import type { StrategyName } from "./strategies.js";
 import type { MarketCondition } from "./chaos-filter.js";
 import type { MarketRating } from "./market-rating.js";
@@ -693,15 +694,28 @@ function pfToTargetWeight(pf: number): number {
       newQuarantine = true;
       newWeight = 0.10;
       changes.push(`⚠️ ${entity}: → карантин (PF ${pf.toFixed(2)}, n=${trades})`);
-    // Step 2: quarantine exit — стартовый вес пропорционален реальному PF,
-    // а не фиксированный +0.10. Это даёт быстрый старт восстановления при
-    // действительно хорошем PF, и консервативный — при PF чуть выше 1.0.
+    // Step 2a: quarantine exit по реальным сделкам — стартовый вес пропорционален PF.
     } else if (cur.quarantine && pf >= 1.0 && !isNegativeReturn) {
       newQuarantine = false;
       const pfTarget = pfToTargetWeight(pf);
       // 30% от целевого веса, но не ниже 0.25 и не выше 0.55
       newWeight = Math.min(0.55, Math.max(0.25, pfTarget * 0.30));
       changes.push(`✅ ${entity}: выход из карантина (PF ${pf.toFixed(2)}, старт ${(newWeight*100).toFixed(0)}%)`);
+    // Step 2b: shadow quarantine exit — выход по виртуальной статистике.
+    // Пока entity в карантине, реальные сделки частично блокируются → deadlock:
+    // не торгует → нет данных → не выходит. Shadow-сделки накапливаются параллельно
+    // (scheduler.ts открывает их при отклонении сигнала Entity Guard).
+    // При shadow PF ≥ 1.0, WR ≥ 40%, n ≥ 15 — считаем это достаточным доказательством.
+    } else if (cur.quarantine) {
+      const sh = await getEntityShadowStats(entity).catch(() => null);
+      if (sh && sh.trades >= 15 && sh.pf >= 1.0 && sh.winRate >= 0.40 && sh.totalPnl > 0) {
+        newQuarantine = false;
+        const pfTarget = pfToTargetWeight(sh.pf);
+        // Чуть консервативнее Step 2a: 25% от целевого веса, мин 0.20, макс 0.45
+        newWeight = Math.min(0.45, Math.max(0.20, pfTarget * 0.25));
+        changes.push(`✅ ${entity}: выход из карантина по shadow (PF ${sh.pf.toFixed(2)} WR ${(sh.winRate*100).toFixed(0)}% n=${sh.trades}, старт ${(newWeight*100).toFixed(0)}%)`);
+      }
+      // else: остаётся в карантине, вес не меняется
     // Step 3: fast rollback — sharp, immediate cut when an entity is clearly
     // degrading (PF<0.45, 15+ сделок, отрицательный результат), instead of
     // waiting for the slow blended adjustment in Step 4 to catch up.
