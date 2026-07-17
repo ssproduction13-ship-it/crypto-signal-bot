@@ -664,7 +664,7 @@ function pfToTargetWeight(pf: number): number {
     "BREAKOUT_LONG", "BREAKOUT_SHORT",
   ];
 
-  const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number;trades:number;wins:number;winPnl:number;lossPnl:number;totalPnl:number}> = [];
+  const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number;trades:number;wins:number;winPnl:number;lossPnl:number}> = [];
 
   for (const entity of ENTITIES) {
     const recent = await getRecentEntityStats(entity);
@@ -776,7 +776,7 @@ function pfToTargetWeight(pf: number): number {
       changes.push(`${changeTag} ${entity}: вес ${(cur.weight*100).toFixed(0)}%→${(newWeight*100).toFixed(0)}% (${changeDesc}${limitNote}${floorNote})`);
     }
 
-    entityUpdates.push({ entity, newWeight, newQuarantine, trustScore, pf, trades, wins, winPnl, lossPnl, totalPnl });
+    entityUpdates.push({ entity, newWeight, newQuarantine, trustScore, pf, trades, wins, winPnl, lossPnl });
     void entityDir; // used above for calcTrustScore
   }
 
@@ -799,10 +799,10 @@ function pfToTargetWeight(pf: number): number {
     await pool.query(
       `UPDATE strategy_entity_weights
        SET weight=$2, quarantine=$3, trust_score=$4, updated_at=$5,
-           trades=$6, wins=$7, win_pnl=$8, loss_pnl=$9, total_pnl=$10
+           trades=$6, wins=$7, win_pnl=$8, loss_pnl=$9
        WHERE entity=$1`,
       [upd.entity, upd.newWeight, upd.newQuarantine, upd.trustScore, new Date().toISOString(),
-       upd.trades, upd.wins, upd.winPnl, upd.lossPnl, upd.totalPnl]
+       upd.trades, upd.wins, upd.winPnl, upd.lossPnl]
     );
   }
 
