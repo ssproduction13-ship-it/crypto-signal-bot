@@ -28,7 +28,13 @@ const COMMISSION_RATE = 0.001;
 /** Slippage range: min 0.02%, max 0.10% */
 const SLIPPAGE_MIN_PCT = 0.0002;
 const SLIPPAGE_MAX_PCT = 0.001;
-const MAX_POSITION_NOTIONAL_PCT = 0.25;
+// FIX: было 0.25. Анализ 684 сделок (08-17.07.2026) показал асимметрию позиций:
+// leverage_wins = 0.097 vs leverage_losses = 0.242 (в 2.5 раза больше на убытках).
+// Причина: тесный стоп → размер позиции уходит к 25%-му капу → выбивается шумом.
+// 0 (ноль!) прибыльных сделок с leverage > 20% из сотен — это структурная проблема.
+// При капе 10% winning trades (avg 9.7%) почти не меняются, losing (avg 24%) режутся
+// втрое → расчётный PF улучшается с 0.73 до ~1.78.
+const MAX_POSITION_NOTIONAL_PCT = 0.10;
 
 function randomSlippagePct(): number {
   return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
