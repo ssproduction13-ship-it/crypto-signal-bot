@@ -128,6 +128,8 @@ import { pool } from "../lib/db.js";
 export type InstrumentStatus = "normal" | "watchlist" | "deep_watchlist" | "banned";
 
 function classifyInstrument(stats: { trades: number; pf: number; wr: number }): InstrumentStatus {
+  // Fast-ban: 0% WR at 5+ trades — statistically undeniable, no need to wait for 10.
+  if (stats.wr === 0 && stats.trades >= 5) return "banned";
   if (stats.trades < 10) return "normal";
   // Полный бан: WR < 25% OR PF < 0.5 при 10+ сделках — статистически устойчивый аутсайдер.
   // Разблокируется автоматически при WR ≥ 25% И PF ≥ 0.5 в последних 20 сделках.

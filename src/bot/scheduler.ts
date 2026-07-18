@@ -328,7 +328,11 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const entityKey = `${strat}_${sig.score.direction}`;
       const stratStatus = entityStatuses.find(s => s.entity === entityKey);
       const stratWeight = stratWeights[strat] ?? 1;
-      const minScore = cachedMinScore;
+      // Load user settings early so the score gate uses the user-configured min_score,
+      // not just the adaptive cachedMinScore (which can drift to 45–57 even when the
+      // user has explicitly set min_score = 70 in user_settings).
+      const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
+      const minScore = Math.max(cachedMinScore, settingsEarly?.minScore ?? 0);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 

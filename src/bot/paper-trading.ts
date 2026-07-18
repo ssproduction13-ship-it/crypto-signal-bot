@@ -73,7 +73,7 @@ function buildCloseRecord(
     openedAt: pos.openedAt, closedAt: new Date().toISOString(),
     commission, slippage, pnlEquityPct,
     entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`,
-    marketRegime: pos.marketRegime ?? "unknown",
+    marketRegime: pos.marketRegime ?? "sideways",
   };
   return { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage };
 }
@@ -331,7 +331,8 @@ export async function checkPaperPositions(
       );
 
       if (tp1Hit) {
-        // Atomically claim TP1 processing — if another concurrent cycle beat us, skip
+        // Atomically claim TP1 processing — if another concurrent cycle beat us, skip.
+        // Variant A: TP1 is a FULL close (100%). No partial remainder, no pyramiding.
         const tp1Claimed = await tryMarkTP1(chatId, pos.id);
         if (!tp1Claimed) {
           // Another cycle already processed TP1 for this position — keep it in remaining
@@ -339,102 +340,55 @@ export async function checkPaperPositions(
           continue;
         }
 
-        const partialSize = pos.size * 0.5;
         const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
-          buildCloseRecord(pos, pos.tp1, partialSize, "TP1", equityAtOpen);
+          buildCloseRecord(pos, pos.tp1, pos.size, "TP1", equityAtOpen);
+
+        // Atomic delete+insert — same pattern as SL/TP2 full close
+        const tp1Claimed2 = await closePositionAndInsertTrade(chatId, pos.id, trade);
+        if (!tp1Claimed2) {
+          logger.debug({ posId: pos.id, symbol: pos.symbol }, "TP1 full close: position already claimed by concurrent cycle — skipping");
+          continue;
+        }
 
         account.balance += pnl;
         account.closedTrades.unshift(trade);
-        await insertClosedTrade(chatId, trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
-        // TP1 partial close: accounting only — stats recorded at final close (1 trade per signal)
-        updateTradeResult(pos.id, pnlEquityPct, true, "TP1").catch(() => {});
+        // Full close at TP1: record all stats immediately (same as SL/TP2 path)
+        recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+        recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
+        const tp1Regime = pos.marketRegime ?? "sideways";
+        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
+        recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
+        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
+        recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
+        recordInstrumentRegimeTrade(pos.symbol, pos.direction, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
+        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0).catch(() => {});
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct, pos.id).catch(() => {});
-        recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true).catch(() => {});
-
-        pos.size              = pos.size * 0.5;
-        pos.stopLoss          = pos.entryPrice;
-        pos.breakevenMoved    = true;
-        pos.pendingEntrySize  = undefined;
-        pos.pendingEntryTrigger = undefined;
-
-        // ── Pyramiding ────────────────────────────────────────────────────────
-        const pyramidUnits      = pos.size * 0.5;
-        const pyramidCommission = realisticPrice * pyramidUnits * COMMISSION_RATE;
-        const entityForPyramid = `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`;
-        const { rows: pyramidEntityRows } = await pool.query(
-          "SELECT quarantine, weight FROM strategy_entity_weights WHERE entity=$1",
-          [entityForPyramid]
-        ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
-
-        // Текущий час UTC
-        const pyramidHour = new Date().getUTCHours();
-        const FORCED_BLOCKED_HOURS = new Set([0, 1, 2, 3]);
-
-        // ATR процент от цены
-        const atrPercent = pos.trailAtr != null && realisticPrice > 0
-          ? (pos.trailAtr / realisticPrice) * 100
-          : 0;
-
-        // Мягкий карантин — weight < 0.40
-        const pyramidWeight = pyramidEntityRows.length > 0
-          ? Number((pyramidEntityRows[0] as Record<string,unknown>)["weight"] ?? 1)
-          : 1;
-        const softQuarantine = pyramidWeight < 0.40;
-
-        // ── ТЗ "Условный пирамидинг": quality gate — only pyramid on high-quality
-        // entry signals, and never in choppy/low-information market regimes ────
-        const PYRAMID_MIN_FINAL_SCORE = 15;
-        // Если finalScore не записан (NULL/0) — нет данных, пирамидинг разрешаем
-        const finalScoreOk = (pos.finalScore == null || pos.finalScore === 0)
-          ? true
-          : pos.finalScore >= PYRAMID_MIN_FINAL_SCORE;
-        const PYRAMID_BLOCKED_REGIMES = new Set(["sideways", "low_vol", "chaos"]);
-        const regimeBlocked = PYRAMID_BLOCKED_REGIMES.has(pos.marketRegime ?? "sideways");
-
-        const pyramidAllowed =
-          (pyramidEntityRows.length === 0 || !Boolean((pyramidEntityRows[0] as Record<string,unknown>)["quarantine"])) &&
-          !FORCED_BLOCKED_HOURS.has(pyramidHour) &&   // не в ночные часы
-          atrPercent < 3.0 &&                          // не при высокой волатильности
-          !softQuarantine &&                           // не при слабой сущности
-          finalScoreOk &&                              // не при слабом качестве входного сигнала
-          !regimeBlocked;                              // не в боковике/затишье/хаосе
-
-        let pyramidNote = "";
-        if (account.balance > pyramidCommission * 2 && pyramidAllowed) {
-          account.balance = Math.max(0, account.balance - pyramidCommission); // L3
-          // Update blended entry price to accurately reflect pyramid cost
-          const blendedEntry = (pos.entryPrice * pos.size + realisticPrice * pyramidUnits) / (pos.size + pyramidUnits);
-          pos.entryPrice = blendedEntry;
-          pos.size       += pyramidUnits;
-          addAccountCosts(chatId, pyramidCommission, 0).catch(() => {});
-          pyramidNote = `\n📈 *Пирамидинг*: +${pyramidUnits.toFixed(4)} ед. добавлено по TP1 (риска нет — стоп в BE)\n` +
-                        `Средний вход скорректирован: \`${formatPrice(blendedEntry)}\` | TP2: \`${formatPrice(pos.tp2)}\``;
-        } else {
-          const reasons: string[] = [];
-          if (FORCED_BLOCKED_HOURS.has(pyramidHour)) reasons.push("ночной час");
-          if (atrPercent >= 3.0) reasons.push(`ATR ${atrPercent.toFixed(1)}%`);
-          if (softQuarantine) reasons.push(`вес ${(pyramidWeight * 100).toFixed(0)}%`);
-          if (!finalScoreOk) reasons.push(`FinalScore ${pos.finalScore?.toFixed(1) ?? "?"} < ${PYRAMID_MIN_FINAL_SCORE}`);
-          if (regimeBlocked) reasons.push(`режим ${pos.marketRegime ?? "sideways"}`);
-          if (!pyramidAllowed && reasons.length > 0) {
-            pyramidNote = `\n⛔ Пирамидинг пропущен: ${reasons.join(", ")}`;
-          }
-        }
+        updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TP1").catch(() => {});
 
         const tp1Msg =
-          `🎯 *ЧАСТИЧНОЕ ЗАКРЫТИЕ — ${pos.symbol}*\n` +
-          `${dirLabel} | TP1 зафиксировано 50% | ${stratLabel}\n` +
+          `🎯 *ПРОФИТ TP1 — ${pos.symbol}*\n` +
+          `${dirLabel} | TP1 зафиксировано 100% | ${stratLabel}\n` +
           `Вход: \`${formatPrice(pos.entryPrice)}\` → TP1: \`${formatPrice(realisticPrice)}\`\n` +
-          `P&L (50%): *+${pnl.toFixed(2)}* (+${pnlPct.toFixed(2)}%)\n` +
-          `💸 комиссия -${commission.toFixed(2)} | слипп -${slippage.toFixed(2)}\n` +
-          `📌 Стоп → безубыток` +
-          pyramidNote + `\n` +
+          `P&L: *+${pnl.toFixed(2)}* (+${pnlPct.toFixed(2)}%)\n` +
+          `💼 Депозит: *+${pnlEquityPct.toFixed(3)}%*\n` +
+          `💸 В P&L учтено: комиссия -${commission.toFixed(2)} | слипп -${slippage.toFixed(2)}\n` +
           `💰 Баланс: *${account.balance.toFixed(2)}*`;
         msgs.push(tp1Msg);
         if (sendNotification) await sendNotification(tp1Msg).catch(() => {});
 
-        remaining.push(pos);
+        const riskAlertTp1 = await recordPositionClosed((pnl / (account.balance - pnl + 0.001)) * 100, true, pos.openedAt);
+        if (riskAlertTp1) {
+          msgs.push(riskAlertTp1);
+          if (sendNotification) await sendNotification(riskAlertTp1).catch(() => {});
+        }
+        if (sendNotification) {
+          await checkNewPeak(chatId, account.balance, account.peakBalance ?? account.balance, sendNotification);
+          await checkMilestone(chatId, account.balance, account.initialBalance, sendNotification);
+        }
+        if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
+
+        // Position fully closed — do NOT add to remaining
         continue;
       }
 
