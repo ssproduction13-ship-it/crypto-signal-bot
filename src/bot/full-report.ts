@@ -4,6 +4,7 @@
  */
 import { pool }                               from "../lib/db.js";
 import { logger }                             from "../lib/logger.js";
+import { calcWeightedPF }                     from "../lib/pf-utils.js";
 import { loadPaperAccount }                   from "./storage.js";
 import type { ClosedPaperTrade, PaperPosition } from "./storage.js";
 import { calcReadinessIndex }                 from "./readiness-index.js";
@@ -12,9 +13,11 @@ import { checkLearningHealth, healthLabel }   from "./health-monitor.js";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function calcPF(ts: ClosedPaperTrade[]): number {
-  const gW = ts.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0);
-  const gL = Math.abs(ts.filter(t => t.pnl <= 0).reduce((s, t) => s + t.pnl, 0));
-  return gL > 0 ? gW / gL : gW > 0 ? 999 : 0;
+  // ts приходит отсортированным ASC (oldest first после .sort() в вызывающем коде).
+  // Для time-decay веса нужен DESC (index 0 = newest) — разворачиваем.
+  // Используем COALESCE(pnlEquityPct, pnlPercent) — та же единица, что в learning-engine.
+  const pnls = [...ts].reverse().map(t => t.pnlEquityPct ?? t.pnlPercent ?? 0);
+  return calcWeightedPF(pnls);
 }
 function calcWR(ts: ClosedPaperTrade[]): number {
   return ts.length ? ts.filter(t => t.pnl > 0).length / ts.length : 0;
@@ -115,16 +118,18 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                   sew.weight, sew.quarantine, sew.trust_score,
                   COUNT(pct.pnl)::int AS trades,
                   SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END)::int AS wins,
-                  COALESCE(SUM(CASE WHEN pct.pnl > 0 THEN pct.pnl ELSE 0 END), 0) AS win_pnl,
-                  COALESCE(SUM(CASE WHEN pct.pnl <= 0 THEN ABS(pct.pnl) ELSE 0 END), 0) AS loss_pnl
+                  array_agg(pct.pnl ORDER BY pct.closed_at DESC)
+                    FILTER (WHERE pct.pnl IS NOT NULL) AS pnl_arr
            FROM strategy_entity_weights sew
            LEFT JOIN LATERAL (
-             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl,
+                    closed_at
              FROM paper_closed_trades
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
                AND chat_id   = $1
                AND outcome NOT IN ('TIMEOUT_STALE')
+               AND closed_at::timestamptz >= $2::timestamptz
              ORDER BY closed_at DESC LIMIT 150
            ) pct ON true
            GROUP BY sew.entity, sew.strategy, sew.direction,
@@ -302,6 +307,9 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   // ─────────────────────────────────────────────────────
   //  БЛОК 3: СТРАТЕГИИ (по entity)
   // ─────────────────────────────────────────────────────
+  // Хранит взвешенный PF по entity — переиспользуется в БЛОК 11 (AI анализ)
+  const entityWeightedPFMap: Record<string, number> = {};
+
   parts.push(`*━━━ СТРАТЕГИИ ━━━*`, ``);
   if (!entityRows.length) {
     parts.push(`Нет данных`, ``);
@@ -310,14 +318,19 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
       const entity   = r["entity"] as string;
       const trades   = Number(r["trades"]);
       const wins_e   = Number(r["wins"]);
-      const winPnl   = Number(r["win_pnl"]);
-      const lossPnl  = Number(r["loss_pnl"]);
       const weight   = Number(r["weight"]);
       const quar     = Boolean(r["quarantine"]);
       const trust    = Number(r["trust_score"]);
+      // pnl_arr: array_agg(... ORDER BY closed_at DESC) — index 0 = newest ✓
+      const pnlArr   = Array.isArray(r["pnl_arr"])
+        ? (r["pnl_arr"] as unknown[]).map(Number)
+        : [];
+
+      const weightedPF = calcWeightedPF(pnlArr);
+      entityWeightedPFMap[entity] = weightedPF;
 
       const wr_e = trades > 0 ? (wins_e / trades * 100).toFixed(0) : "—";
-      const pf_e = lossPnl > 0 ? fmtPF(winPnl / lossPnl) : winPnl > 0 ? "∞" : "—";
+      const pf_e = pnlArr.length > 0 ? fmtPF(weightedPF) : "—";
       const st   = quar ? "⚠️ Кар" : weight >= 0.8 ? "✅" : weight >= 0.5 ? "📉" : "🔴";
       const wPct = (weight * 100).toFixed(0) + "%";
       const name = (STRAT_NAMES[r["strategy"] as string] ?? r["strategy"] as string)
@@ -515,21 +528,26 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   //  БЛОК 11: AI АНАЛИЗ + РЕКОМЕНДАЦИИ
   // ─────────────────────────────────────────────────────
 
-  // Per-strategy aggregation
-  const ssMap: Record<string,{strategy:string;trades:number;wins:number;win_pnl:number;loss_pnl:number}> = {};
+  // Per-strategy агрегация на основе взвешенных PF по entity (БЛОК 3)
+  // PF стратегии = среднее взвешенных PF её LONG и SHORT entity (≥5 сделок каждый)
+  const ssMap: Record<string,{strategy:string;trades:number;wins:number;pfSum:number;pfCount:number}> = {};
   for (const r of entityRows) {
-    const strat = r["strategy"] as string;
-    if (!ssMap[strat]) ssMap[strat] = { strategy:strat, trades:0, wins:0, win_pnl:0, loss_pnl:0 };
-    ssMap[strat].trades   += Number(r["trades"]);
-    ssMap[strat].wins     += Number(r["wins"]);
-    ssMap[strat].win_pnl  += Number(r["win_pnl"]);
-    ssMap[strat].loss_pnl += Number(r["loss_pnl"]);
+    const strat  = r["strategy"] as string;
+    const entity = r["entity"]   as string;
+    if (!ssMap[strat]) ssMap[strat] = { strategy:strat, trades:0, wins:0, pfSum:0, pfCount:0 };
+    ssMap[strat].trades += Number(r["trades"]);
+    ssMap[strat].wins   += Number(r["wins"]);
+    const epf = entityWeightedPFMap[entity];
+    if (epf !== undefined && Number(r["trades"]) >= 5) {
+      ssMap[strat].pfSum   += epf;
+      ssMap[strat].pfCount += 1;
+    }
   }
   const ss = Object.values(ssMap);
 
-  const bestStrat  = ss.map(s => ({ s:s.strategy, pf:s.loss_pnl>0?s.win_pnl/s.loss_pnl:s.win_pnl>0?999:0, t:s.trades }))
+  const bestStrat  = ss.map(s => ({ s:s.strategy, pf:s.pfCount>0?s.pfSum/s.pfCount:0, t:s.trades }))
     .filter(x => x.t >= 10).sort((a,b) => b.pf - a.pf)[0];
-  const worstStrat = ss.map(s => ({ s:s.strategy, pf:s.loss_pnl>0?s.win_pnl/s.loss_pnl:s.win_pnl>0?999:0, t:s.trades }))
+  const worstStrat = ss.map(s => ({ s:s.strategy, pf:s.pfCount>0?s.pfSum/s.pfCount:0, t:s.trades }))
     .filter(x => x.t >= 10).sort((a,b) => a.pf - b.pf)[0];
   const bestRegime  = regData.filter(x => x.t >= 5)[0];
   const worstCoins  = coinEnough.filter(c => c.pf < 0.8).sort((a,b) => a.pf - b.pf).slice(0,3);

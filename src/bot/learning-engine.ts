@@ -1,5 +1,6 @@
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { calcWeightedPF } from "../lib/pf-utils.js";
 import { getEntityShadowStats } from "./shadow-testing.js";
 import type { StrategyName } from "./strategies.js";
 import type { MarketCondition } from "./chaos-filter.js";
@@ -595,20 +596,12 @@ function pfToTargetWeight(pf: number): number {
     const winPnl   = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
     const lossPnl  = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0));
     const totalPnl = pnls.reduce((a, b) => a + b, 0);
-    // ── ТЗ "Три фичи ускорения адаптации" Feature 2: weighted-average PF ──────
-    // `rows` is DESC-sorted by closed_at (index 0 = most recent). Recent trades
-    // weigh 3.0 down to 1.0 (oldest) on a linear ramp, so the entity's PF reacts
-    // faster to a recent quality shift without needing a full quarantine cycle.
-    // Only `pf` is weighted — trades/wins/winPnl/lossPnl/totalPnl stay raw so
-    // quarantine trade-count thresholds and WR reporting are unaffected.
-    let weightedWinPnl = 0, weightedLossPnl = 0;
-    for (let i = 0; i < trades; i++) {
-      const w = trades > 1 ? 3.0 - (2.0 * i) / (trades - 1) : 3.0;
-      const p = pnls[i] ?? 0;
-      if (p > 0) weightedWinPnl += p * w;
-      else weightedLossPnl += Math.abs(p) * w;
-    }
-    const pf = weightedLossPnl > 0 ? weightedWinPnl / weightedLossPnl : weightedWinPnl > 0 ? 2.0 : 0;
+    // ── Взвешенный PF — делегируем в общую утилиту pf-utils ─────────────────
+    // `pnls` отсортирован DESC (index 0 = самая новая сделка) — именно то,
+    // что ожидает calcWeightedPF. Вес 3.0→1.0 линейно.
+    // Только `pf` взвешен; trades/wins/winPnl/lossPnl/totalPnl — raw,
+    // чтобы пороги карантина и WR-отчёты не зависели от весов.
+    const pf = calcWeightedPF(pnls);
     return { trades, wins, winPnl, lossPnl, totalPnl, pf };
   }
 

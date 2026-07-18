@@ -5,6 +5,7 @@
  */
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { calcWeightedPF } from "../lib/pf-utils.js";
 
 export interface PeriodStats {
   label: string;
@@ -54,6 +55,7 @@ function maxDD(pnls: number[]): number {
 }
 
 function calcPeriodStats(pnls: number[], label: string): PeriodStats {
+  // pnls — DESC (index 0 = newest) из DB-запроса ORDER BY closed_at DESC
   if (!pnls.length) return { label, trades: 0, winRate: 0, profitFactor: 0, totalReturn: 0, maxDrawdown: 0, avgWin: 0, avgLoss: 0, sharpeRatio: 0 };
   const wins = pnls.filter(v => v > 0);
   const losses = pnls.filter(v => v <= 0);
@@ -63,7 +65,8 @@ function calcPeriodStats(pnls: number[], label: string): PeriodStats {
     label,
     trades: pnls.length,
     winRate: wins.length / pnls.length,
-    profitFactor: gL > 0 ? gW / gL : gW > 0 ? 99 : 0,
+    // Взвешенный PF — единая формула из pf-utils (pnls уже DESC)
+    profitFactor: calcWeightedPF(pnls),
     totalReturn: pnls.reduce((s, v) => s + v, 0),
     maxDrawdown: maxDD(pnls),
     avgWin: wins.length ? gW / wins.length : 0,

@@ -5,6 +5,7 @@
  */
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { calcWeightedPF } from "../lib/pf-utils.js";
 
 export interface ReadinessComponent {
   name: string;
@@ -64,12 +65,14 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
       : `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl FROM paper_closed_trades WHERE outcome IS NOT NULL AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1) ORDER BY closed_at DESC LIMIT ${PF_WINDOW}`,
     chatId != null ? [chatId] : []
   );
+  // pnls — DESC (index 0 = newest) из DB ORDER BY closed_at DESC
   const pnls = (pfRows as Record<string, unknown>[]).map(r => Number(r["pnl"]));
   const wins = pnls.filter(v => v > 0);
   const losses = pnls.filter(v => v <= 0);
   const gW = wins.reduce((s, v) => s + v, 0);
   const gL = Math.abs(losses.reduce((s, v) => s + v, 0));
-  const pf = gL > 0 ? gW / gL : gW > 0 ? 99 : 0;
+  // Взвешенный PF — единая формула из pf-utils (pnls уже DESC)
+  const pf = calcWeightedPF(pnls);
   const wr = pnls.length > 0 ? wins.length / pnls.length : 0;
 
   // Прозрачная подпись: сколько сделок вошло в расчёт
@@ -117,11 +120,11 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   components.push({ name: "Walk-Forward тесты", score: wfScore, maxScore: 15, status: wfScore >= 10 ? "✅" : wfScore >= 5 ? "🟡" : "❌", note: `${wfPassed}/${wfTotal} прошли` });
 
   // 6. No Degradation (max 15) — last 30 vs 100
+  // p30/p100 — срезы DESC-массива pnls, index 0 = newest ✓
   const p30 = pnls.slice(0, 30);
   const p100 = pnls.slice(0, 100);
-  const calcPF = (arr: number[]) => { const gWa = arr.filter(v => v > 0).reduce((s, v) => s + v, 0); const gLa = Math.abs(arr.filter(v => v <= 0).reduce((s, v) => s + v, 0)); return gLa > 0 ? gWa / gLa : gWa > 0 ? 99 : 0; };
-  const pf30 = calcPF(p30);
-  const pf100 = calcPF(p100);
+  const pf30  = calcWeightedPF(p30);
+  const pf100 = calcWeightedPF(p100);
   const degrade = p30.length >= 20 && p100.length >= 50 ? (pf100 - pf30) / pf100 : 0;
   let degScore = 0;
   if (p30.length < 20) { degScore = 7; }

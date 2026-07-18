@@ -1,4 +1,5 @@
 import { pool } from "../lib/db.js";
+import { calcWeightedPF } from "../lib/pf-utils.js";
 import { loadPaperAccount, loadWeights, type ClosedPaperTrade, type PaperPosition } from "./storage.js";
 import { loadStrategyStats, type StrategyStats } from "./strategies.js";
 import { loadABVariants } from "./ab-testing.js";
@@ -124,12 +125,14 @@ async function collectData(chatId: number): Promise<ReportData> {
 // ── Stats calculators ─────────────────────────────────────────────────────────
 
 function calcWindow(trades: ClosedPaperTrade[], label: string): WindowStats | null {
+  // trades — DESC (index 0 = newest) из d.closedTrades ORDER BY closed_at DESC
   if (!trades.length) return null;
   const wins   = trades.filter(t => t.pnl > 0);
   const losses = trades.filter(t => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
+  const gw = wins.reduce((a, t) => a + t.pnl, 0);   // в $ — для display
   const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-  const pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
+  // Взвешенный PF — COALESCE(pnlEquityPct, pnlPercent), trades уже DESC
+  const pf = calcWeightedPF(trades.map(t => t.pnlEquityPct ?? t.pnlPercent ?? 0));
   const aw = wins.length ? wins.reduce((a, t) => a + t.pnlPercent, 0) / wins.length : 0;
   const al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
   const wr = wins.length / trades.length * 100;
@@ -188,12 +191,14 @@ function buildStrategyDetails(
     let gw: number, gl: number, pf: number, aw: number, al: number, wr: number, exp: number, totalPnlVal: number;
 
     if (st.length < 30 && sdsTrades > 0) {
-      // Use accumulated analytics data for bulk stats
+      // Use accumulated analytics data for bulk stats (cold-start / post-reset fallback)
       tradeCount = sdsTrades;
       winCount   = sdsRow ? Number(sdsRow["wins"])      : 0;
       lossCount  = tradeCount - winCount;
       gw         = sdsRow ? Number(sdsRow["win_pnl"])   : 0;
       gl         = sdsRow ? Number(sdsRow["loss_pnl"])  : 0;
+      // Для fallback из strategy_direction_stats нет временного ряда →
+      // используем невзвешенный PF как наилучшее приближение
       pf         = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
       aw         = winCount  > 0 ? gw / winCount  : 0;
       al         = lossCount > 0 ? gl / lossCount : 0;
@@ -203,9 +208,10 @@ function buildStrategyDetails(
     } else {
       const wins   = st.filter(t => t.pnl > 0);
       const losses = st.filter(t => t.pnl <= 0);
-      gw = wins.reduce((a, t) => a + t.pnl, 0);
+      gw = wins.reduce((a, t) => a + t.pnl, 0);   // в $ — для gross display
       gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-      pf = gl > 0 ? gw / gl : gw > 0 ? 999 : 0;
+      // Взвешенный PF: st отфильтрован из DESC closedTrades → index 0 = newest ✓
+      pf = calcWeightedPF(st.map(t => t.pnlEquityPct ?? t.pnlPercent ?? 0));
       aw = wins.length   ? wins.reduce((a, t)   => a + t.pnlPercent, 0) / wins.length   : 0;
       al = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnlPercent, 0) / losses.length) : 0;
       tradeCount = st.length;
@@ -248,10 +254,12 @@ function buildStrategyDetails(
 
     const calcDir = (ts: ClosedPaperTrade[]) => {
       const dW = ts.filter(t => t.pnl > 0);
-      const dL = ts.filter(t => t.pnl <= 0);
-      const gW = dW.reduce((a, t) => a + t.pnl, 0);
-      const gL = Math.abs(dL.reduce((a, t) => a + t.pnl, 0));
-      return { trades: ts.length, wr: ts.length ? dW.length / ts.length * 100 : 0, pf: gL > 0 ? gW / gL : gW > 0 ? 999 : 0 };
+      // ts — подмножество DESC closedTrades → взвешенный PF корректен
+      return {
+        trades: ts.length,
+        wr: ts.length ? dW.length / ts.length * 100 : 0,
+        pf: calcWeightedPF(ts.map(t => t.pnlEquityPct ?? t.pnlPercent ?? 0)),
+      };
     };
     const longT  = spec.direction ? [] : st.filter(t => t.direction === "LONG");
     const shortT = spec.direction ? [] : st.filter(t => t.direction === "SHORT");
