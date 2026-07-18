@@ -34,7 +34,7 @@ const SLIPPAGE_MAX_PCT = 0.001;
 // 0 (ноль!) прибыльных сделок с leverage > 20% из сотен — это структурная проблема.
 // При капе 10% winning trades (avg 9.7%) почти не меняются, losing (avg 24%) режутся
 // втрое → расчётный PF улучшается с 0.73 до ~1.78.
-const MAX_POSITION_NOTIONAL_PCT = 0.10;
+const MAX_POSITION_NOTIONAL_PCT = 0.20;
 
 function randomSlippagePct(): number {
   return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
