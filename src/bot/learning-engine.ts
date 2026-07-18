@@ -671,7 +671,14 @@ function pfToTargetWeight(pf: number): number {
     const entityStrat = entityParts.join("_") as StrategyName;
 
     const cur = entityCurW[entity] ?? { weight: 1.0, cycles: 0, quarantine: false };
-    const trustScore = await calcTrustScore(entityStrat, trades, wins, winPnl, lossPnl, totalPnl, "sideways");
+    // FIX: был hardcode "sideways" — calcTrustScore всегда оценивал regime fit по боковику.
+    // Теперь берём режим с наибольшим числом сделок для этой стратегии из реальных данных.
+    const {rows: domReRows} = await pool.query(
+      `SELECT regime FROM strategy_regime_stats WHERE strategy=$1 AND trades >= 5 ORDER BY trades DESC LIMIT 1`,
+      [entityStrat]
+    ).catch(() => ({ rows: [] as Record<string,unknown>[] }));
+    const entityRegime = ((domReRows[0] as Record<string,unknown> | undefined)?.["regime"] as MarketRegime) ?? "sideways";
+    const trustScore = await calcTrustScore(entityStrat, trades, wins, winPnl, lossPnl, totalPnl, entityRegime);
 
     let newWeight = cur.weight;
     let newQuarantine = cur.quarantine;
@@ -813,7 +820,13 @@ function pfToTargetWeight(pf: number): number {
     const curW = sw ? Number(sw["weight"]) : 1.0;
     const curQ = sw ? Boolean(sw["quarantine"]) : false;
     const curC = sw ? Number(sw["cycles_below_threshold"]) : 0;
-    const trustScore = await calcTrustScore(strat, sT, sW, sWP, sLP, sTP, "sideways");
+    // FIX: был hardcode "sideways" — аналогично entity-блоку выше.
+    const {rows: domSwRows} = await pool.query(
+      `SELECT regime FROM strategy_regime_stats WHERE strategy=$1 AND trades >= 5 ORDER BY trades DESC LIMIT 1`,
+      [strat]
+    ).catch(() => ({ rows: [] as Record<string,unknown>[] }));
+    const dominantRegime = ((domSwRows[0] as Record<string,unknown> | undefined)?.["regime"] as MarketRegime) ?? "sideways";
+    const trustScore = await calcTrustScore(strat, sT, sW, sWP, sLP, sTP, dominantRegime);
     const isNeg = sTP < 0;
     let newW = curW;
     let newQ = curQ;
