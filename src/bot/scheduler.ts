@@ -455,8 +455,10 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.1) {
-        gate.fail("Strategy PF", `PF стратегии критически низкий`, stratStatus.profitFactor.toFixed(2), "0.75");
+      // Порог 0.75: стратегия с PF < 0.75 на 20+ сделках системно убыточна и должна блокироваться.
+      // FIX: было < 0.1 (порог не работал), message при этом показывал "0.75" — несоответствие устранено.
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.75) {
+        gate.fail("Strategy PF", `PF стратегии ниже минимального порога`, stratStatus.profitFactor.toFixed(2), "0.75");
       } else {
         if (!gate.rejected) gate.pass("Strategy PF", (stratStatus?.trades ?? 0) >= 5 ? stratStatus!.profitFactor.toFixed(2) : "мало данных");
       }

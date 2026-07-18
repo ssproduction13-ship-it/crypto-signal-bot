@@ -153,7 +153,9 @@ export async function openPaperPosition(
       `Стоп: ${formatPrice(stopLoss)}\n` +
       `TP1: ${formatPrice(tp1)} | TP2: ${formatPrice(tp2)}\n` +
       `Размер: ${size.toFixed(4)} ед. | Объём: $${notional.toFixed(2)}\n` +
-      `Риск: $${(size * stopDist).toFixed(2)} (${rp}% депозита)${rawNotional > maxNotional ? ` ⚠️ обрезано с $${rawNotional.toFixed(0)}` : ""}\n` +
+      // FIX: когда ATR задан, позиция открывается на 60% от расчётного размера (40% ждёт отката).
+      // Показываем реальный первоначальный риск, а не полный rp%.
+      `Риск: ${(size * stopDist).toFixed(2)} (${pendingEntrySize != null ? `${(rp * 0.6).toFixed(1)}% нач., до ${rp}% при откате` : `${rp}%`})${rawNotional > maxNotional ? ` ⚠️ обрезано с ${rawNotional.toFixed(0)}` : ""}\n` +
       (pendingEntrySize != null && pendingEntryTrigger != null
         ? `📥 Вход частями: ещё ${pendingEntrySize.toFixed(4)} ед. при откате до \`${formatPrice(pendingEntryTrigger)}\`\n`
         : "") +

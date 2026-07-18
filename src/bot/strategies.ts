@@ -117,8 +117,12 @@ function evalVolumeImpulse(ind: IndicatorResult, candles: Candle[]): StrategySig
   else if (volRatio > 1.5) { score += 25; reasons.push(`Высокий объём: ${(volRatio * 100).toFixed(0)}%`); }
   else { return { strategy: "VOLUME_IMPULSE", direction: "NEUTRAL", score: 0, reasons: ["Объём в норме — нет импульса"], confidence: 0 }; }
 
-  if (ind.macdSignal === "buy")  { score += 20; longVotes++;  reasons.push("MACD бычье пересечение"); }
-  if (ind.macdSignal === "sell") { score += 20; shortVotes++; reasons.push("MACD медвежье пересечение"); }
+  // FIX: MACD теперь только голосует за направление, но НЕ добавляет к score немедленно.
+  // Бонус/штраф применяется ПОСЛЕ определения direction: +20 если совпадает, -10 если противоречит.
+  // Старый код давал +20 к quality score даже когда MACD противоречил импульсу.
+  const macdDir = ind.macdSignal === "buy" ? "buy" : ind.macdSignal === "sell" ? "sell" : null;
+  if (macdDir === "buy")  longVotes++;
+  if (macdDir === "sell") shortVotes++;
 
   const price = candles[candles.length - 1]!.close;
   const prevClose = candles[candles.length - 2]?.close ?? price;
@@ -134,6 +138,13 @@ function evalVolumeImpulse(ind: IndicatorResult, candles: Candle[]): StrategySig
 
   const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
   const direction = longVotes > shortVotes ? "LONG" : shortVotes > longVotes ? "SHORT" : "NEUTRAL";
+
+  // MACD score: +20 если подтверждает финальное направление, -10 если противоречит
+  if (macdDir === "buy"  && direction === "LONG")  { score += 20; reasons.push("MACD бычье — подтверждает LONG"); }
+  else if (macdDir === "sell" && direction === "SHORT") { score += 20; reasons.push("MACD медвежье — подтверждает SHORT"); }
+  else if (macdDir === "buy"  && direction === "SHORT") { score -= 10; reasons.push("⚠️ MACD бычье — противоречит SHORT"); }
+  else if (macdDir === "sell" && direction === "LONG")  { score -= 10; reasons.push("⚠️ MACD медвежье — противоречит LONG"); }
+
   return { strategy: "VOLUME_IMPULSE", direction, score: clamp(score), reasons, confidence: clamp(score * 0.88) };
 }
 
@@ -150,7 +161,12 @@ function evalMeanReversion(ind: IndicatorResult): StrategySignal {
     else if (ind.rsi < 35) { score += 20; direction = "LONG";  longVotes++;     reasons.push(`RSI ${ind.rsi.toFixed(1)} — перепродан`); }
     else if (ind.rsi > 75) { score += 35; direction = "SHORT"; shortVotes += 2; reasons.push(`RSI ${ind.rsi.toFixed(1)} — экстремальная перекупленность`); }
     else if (ind.rsi > 65) { score += 20; direction = "SHORT"; shortVotes++;    reasons.push(`RSI ${ind.rsi.toFixed(1)} — перекуплен`); }
-    else { return { strategy: "MEAN_REVERSION", direction: "NEUTRAL", score: 0, reasons: ["RSI нейтральный — нет экстремума"], confidence: 0 }; }
+    else {
+      // FIX: раньше был ранний return со score=0, игнорировавший BB и StochRSI.
+      // RSI нейтральный (35–65) — само по себе слабо, но BB + Stoch могут дать валидный разворот.
+      // Без RSI-бонуса score не превысит 30+20+15=65, и только при ДВУХ подтверждениях пройдёт порог 45.
+      reasons.push(`RSI ${ind.rsi.toFixed(1)} — нейтральный (BB/Stoch решают)`);
+    }
   }
 
   if (ind.bbSignal === "buy")  { score += 20; longVotes++;  reasons.push("BB: цена у нижней полосы — отскок"); }
