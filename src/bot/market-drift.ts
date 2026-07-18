@@ -38,12 +38,13 @@ function calcMetrics(trades: number[], label: string): DriftMetrics {
   const wr = wins.length / trades.length;
   const avgPnl = trades.reduce((s, v) => s + v, 0) / trades.length;
 
-  // FIX High: reverse for chronological order — DB returns newest-first, drawdown needs oldest-first
-  let peak = 0, equity = 0, maxDD = 0;
+  // FIX: geometric MDD (compound) — additive equity += r was incorrect for %-based returns.
+  // Consistent with auto-cooldown.ts: track equity as a multiplier starting from 1.0.
+  let eqPeak = 1.0, eqCur = 1.0, maxDD = 0;
   for (const r of [...trades].reverse()) {
-    equity += r;
-    if (equity > peak) peak = equity;
-    const dd = peak > 0.01 ? Math.min(100, Math.max(0, (peak - equity) / peak * 100)) : 0;
+    eqCur *= (1 + r / 100);
+    if (eqCur > eqPeak) eqPeak = eqCur;
+    const dd = eqPeak > 0 ? Math.min(100, Math.max(0, (eqPeak - eqCur) / eqPeak * 100)) : 0;
     if (dd > maxDD) maxDD = dd;
   }
 

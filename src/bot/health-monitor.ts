@@ -43,12 +43,14 @@ function sharpe(returns: number[]): number {
 }
 
 function maxDD(pnls: number[]): number {
-  let peak = 0, equity = 0, dd = 0;
-  // FIX High: reverse for chronological order — DB returns newest-first, drawdown needs oldest-first
+  // FIX: geometric MDD (compound) — additive equity += r was incorrect for %-based returns.
+  // Consistent with auto-cooldown.ts: track equity as a multiplier starting from 1.0.
+  // DB returns newest-first; reverse for chronological order.
+  let eqPeak = 1.0, eqCur = 1.0, dd = 0;
   for (const r of [...pnls].reverse()) {
-    equity += r;
-    if (equity > peak) peak = equity;
-    const cur = peak > 0 ? (peak - equity) / peak * 100 : 0;
+    eqCur *= (1 + r / 100);
+    if (eqCur > eqPeak) eqPeak = eqCur;
+    const cur = eqPeak > 0 ? (eqPeak - eqCur) / eqPeak * 100 : 0;
     if (cur > dd) dd = cur;
   }
   return dd;

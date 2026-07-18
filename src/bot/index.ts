@@ -194,6 +194,13 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not set");
     const bot = new Telegraf(token);
 
+    // FIX: ignore messages from groups and channels — bot is personal,
+    // any non-private update could let a stranger trigger account actions.
+    bot.use(async (ctx, next) => {
+      if (ctx.chat && ctx.chat.type !== 'private') return;
+      return next();
+    });
+
     bot.start(async (ctx) => {
       const name = ctx.from?.first_name ?? "трейдер";
       await ctx.reply(

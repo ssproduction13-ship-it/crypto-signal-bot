@@ -30,10 +30,22 @@ import { pool } from "../lib/db.js";
 
   export async function checkShadowPositions(): Promise<void> {
     const {rows} = await pool.query("SELECT * FROM shadow_positions");
-    for (const r of rows as Record<string,unknown>[]) {
+    if (!rows.length) return;
+    // FIX: fetch all prices in parallel — sequential await getPrice() per position
+    // caused rate-limit delays proportional to shadow position count.
+    const positions = rows as Record<string,unknown>[];
+    const uniqueSymbols = [...new Set(positions.map(r => r["symbol"] as string))];
+    const priceMap = new Map<string, number>();
+    await Promise.allSettled(
+      uniqueSymbols.map(sym =>
+        getPrice(sym).then(p => priceMap.set(sym, p)).catch(err => logger.debug({ err, sym }, "shadow price fetch failed"))
+      )
+    );
+    for (const r of positions) {
       try {
         const pos = r as Record<string,unknown>;
-        const price = await getPrice(pos["symbol"] as string);
+        const price = priceMap.get(pos["symbol"] as string);
+        if (price == null) continue; // price fetch failed for this symbol — skip
         const dir = pos["direction"] as "LONG"|"SHORT";
         const entry = Number(pos["entry_price"]);
         const sl = Number(pos["stop_loss"]);

@@ -50,9 +50,6 @@ async function blockRootCause(): Promise<string> {
   const overallRecent = calcMetrics(recent.map(r => num(r["pnl_percent"])));
   const overallPrior = calcMetrics(prior.map(r => num(r["pnl_percent"])));
 
-  type Bucket = { key: string; label: string };
-  function bucketsFor(dim: (r: Row) => string): Record<string, Bucket> { return {}; }
-
   function groupBy(rowsIn: Row[], keyFn: (r: Row) => string) {
     const map = new Map<string, number[]>();
     for (const r of rowsIn) {
