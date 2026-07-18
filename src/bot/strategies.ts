@@ -63,7 +63,10 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
   const volumes = candles.map(c => c.volume);
   const volSlice = volumes.slice(-20);
   const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
-  const lastVol = volumes[volumes.length - 1]!;
+  // fix: same as scoring.ts — candles[length-1] is the current open (incomplete) candle.
+  // Its volume is always low at period start → false low-volume rejection in BREAKOUT.
+  // Use last CLOSED candle (length-2) for accurate volume confirmation.
+  const lastVol = volumes.length >= 2 ? volumes[volumes.length - 2]! : volumes[volumes.length - 1]!;
   const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
 
   if (pattern.name === "BREAKOUT") {
@@ -110,7 +113,9 @@ function evalVolumeImpulse(ind: IndicatorResult, candles: Candle[]): StrategySig
   const volumes = candles.map(c => c.volume);
   const volSlice2 = volumes.slice(-20);
   const avgVol = volSlice2.length > 0 ? volSlice2.reduce((a, b) => a + b, 0) / volSlice2.length : 0;
-  const lastVol = volumes[volumes.length - 1]!;
+  // fix: same as scoring.ts — use last CLOSED candle (length-2), not current open (length-1).
+  // VOLUME_IMPULSE score depends entirely on volume spikes — incomplete candle distorts signal.
+  const lastVol = volumes.length >= 2 ? volumes[volumes.length - 2]! : volumes[volumes.length - 1]!;
   const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
 
   if (volRatio > 2.5)      { score += 40; reasons.push(`🔥 Аномальный объём: ${(volRatio * 100).toFixed(0)}%`); }

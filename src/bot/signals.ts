@@ -69,7 +69,7 @@ export async function generateSignal(
   } else if (score.direction === "NEUTRAL") {
     filtered = true; filterReason = "⚪ Нет чёткого направления рынка";
   } else if (!risk.isRRViable) {
-    filtered = true; filterReason = `⚠️ R/R ${risk.rrRatio1.toFixed(1)} — ниже мин. 1:1.5`;
+    filtered = true; filterReason = `⚠️ R/R ${risk.rrRatio1.toFixed(1)} — ниже мин. 1:2.0`;
   }
 
   if (!filtered && score.direction !== "NEUTRAL" && chatId != null) {
