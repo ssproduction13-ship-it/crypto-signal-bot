@@ -180,8 +180,13 @@ export async function updateAllInstrumentStatuses(): Promise<
       const lossPnl   = Number(row["loss_pnl"]);
 
       // Последние 20 сделок — чтобы монета могла выйти из watchlist после улучшения
+      // fix: use pnl_percent (per-trade quality) not pnl_equity_pct (per-equity impact).
+      // pnl_equity_pct is skewed by position-sizing multipliers (cooldown/MTF/corr-guard),
+      // so a trade entered at 30% size has 70% less equity impact even if the trade quality
+      // is identical. This distorts PF downward for instruments that happen to be traded
+      // at reduced size, causing false bans. pnl_percent measures raw trade quality only.
       const { rows: recentRows } = await pool.query(
-        `SELECT COALESCE(pnl_equity_pct, pnl) AS pnl FROM paper_closed_trades
+        `SELECT pnl_percent AS pnl FROM paper_closed_trades
           WHERE symbol=$1
             AND closed_at::timestamptz >= (SELECT COALESCE(reset_at,'1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
           ORDER BY closed_at DESC LIMIT 20`,
