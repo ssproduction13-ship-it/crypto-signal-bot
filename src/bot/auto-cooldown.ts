@@ -78,7 +78,8 @@ export async function evaluateCooldown(chatId?: number): Promise<CooldownState> 
     reasons.push(`PF слабый: ${recentPF.toFixed(2)}`);
   }
 
-  const params2 = chatId != null ? [chatId, level] : [level];
+  // fix: params2 была объявлена но никогда не использовалась — удалена. pool.query
+  // получает параметры напрямую через inline-выражение (поведение не изменилось).
   const query2 = chatId != null
     ? `SELECT active_since FROM cooldown_state WHERE chat_id = $1 ORDER BY checked_at DESC LIMIT 1`
     : `SELECT active_since FROM cooldown_state ORDER BY checked_at DESC LIMIT 1`;

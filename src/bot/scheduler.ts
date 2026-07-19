@@ -289,6 +289,13 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
 
+      // fix: при NEUTRAL direction каст "NEUTRAL" as "LONG"|"SHORT" давал неверный entity-ключ
+      // (например "TREND_NEUTRAL") → веса стратегий и карантины не находились в БД.
+      // Для NEUTRAL используем "LONG" как заглушку — сигнал всё равно отклонит гейт "Направление",
+      // но entity lookups в selectBestStrategy теперь работают корректно.
+      const effectiveDirection: "LONG" | "SHORT" =
+        sig.score.direction !== "NEUTRAL" ? sig.score.direction : "LONG";
+
       const strategySignals: StrategySignalInput[] = [];
       if (sig.strategies?.length) {
         for (const s of sig.strategies) {
@@ -296,7 +303,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
             strategy: s.strategy,
             score: s.score ?? sig.score.total,
             confidence: s.confidence ?? sig.confidence.score,
-            direction: sig.score.direction as "LONG"|"SHORT",
+            direction: effectiveDirection,
           });
         }
       } else if (sig.bestStrategy?.strategy) {
@@ -304,7 +311,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
           strategy: sig.bestStrategy.strategy,
           score: sig.score.total,
           confidence: sig.confidence.score,
-          direction: sig.score.direction as "LONG"|"SHORT",
+          direction: effectiveDirection,
         });
       }
       const selectionResult: StrategySelectionResult | null = strategySignals.length > 0

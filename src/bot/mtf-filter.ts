@@ -66,14 +66,18 @@ export async function checkMTFAlignment(
 
       if (isCounterTrend) {
         // Не блокируем — снижаем размер вдвое для управления риском
-        return {
+        // fix: counter-trend result теперь тоже кэшируется — без кэша каждый вызов
+        // делал свежий API-запрос к KuCoin (60 пар × 5 мин = до 60 req/5min → rate-limit)
+        const counterResult: MTFResult = {
           allowed: true, trend4h, sizeMultiplier: 0.5,
           reason: `4H ${trend4h === "DOWN" ? "нисходящий" : "восходящий"} — контртренд, размер ×0.5 (MACD: ${macd})`,
           ema20_4h: ema20, ema50_4h: ema50,
         };
+        mtfCache.set(cacheKey, { result: counterResult, expiresAt: Date.now() + MTF_CACHE_TTL_MS });
+        return counterResult;
       }
 
-      const finalResult = {
+      const finalResult: MTFResult = {
         allowed: true, trend4h, sizeMultiplier: 1.0,
         reason: `4H ${trend4h} подтверждает ${direction} — полный размер`,
         ema20_4h: ema20, ema50_4h: ema50,
