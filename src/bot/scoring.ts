@@ -194,8 +194,11 @@ export function calcScore(
     (patternScore  - 50) * weights.pattern +
     (volumeScore   - 50) * weights.volume * 0.5;
 
+  // Neutral zone narrowed ±5 → ±3: sideways markets cluster near 0, ±5 was blocking
+  // ~50% of signals as NEUTRAL. ±3 still requires meaningful directional conviction
+  // (e.g. trendScore=60 + momentumScore=55 needed) while letting marginal trends through.
   const direction: "LONG" | "SHORT" | "NEUTRAL" =
-    trendBias > 5 ? "LONG" : trendBias < -5 ? "SHORT" : "NEUTRAL";
+    trendBias > 3 ? "LONG" : trendBias < -3 ? "SHORT" : "NEUTRAL";
 
   return {
     trendScore,
