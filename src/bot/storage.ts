@@ -83,7 +83,7 @@ import { pool } from "../lib/db.js";
 
   const DEF_W: FactorWeights = {trend:0.30,volume:0.25,momentum:0.20,levels:0.15,pattern:0.10};
   // FIX: riskPercent 1% → 2%. С 1% и 10 перемноженными множителями размер позиции был < $20 на $10k депозите.
-const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accountSize:10000,autoPaperTrade:true};
+const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accountSize:10000,autoPaperTrade:true};
   const DEF_G: GeminiWeights = {minConfidence:45,blockOnConflict:true,highRiskMultiplier:0.5,conflictAccuracy:0,confidenceAccuracy:0,tradesAnalyzed:0};
 
   function toJE(r: Record<string,unknown>): JournalEntry {
@@ -163,6 +163,9 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
     await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
     await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mae_r NUMERIC`);
     await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
+    // One-time fix: lower min_score that drifted above 65 — such values block all trades
+    // Safe: WHERE min_score > 65 won't match after the first run (value becomes 58)
+    await pool.query(`UPDATE user_settings SET min_score = 58 WHERE min_score > 65`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS gemini_weights (
         id TEXT PRIMARY KEY DEFAULT 'global',

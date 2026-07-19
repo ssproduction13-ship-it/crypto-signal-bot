@@ -332,7 +332,10 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
       // not just the adaptive cachedMinScore (which can drift to 45–57 even when the
       // user has explicitly set min_score = 70 in user_settings).
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
-      const minScore = Math.max(cachedMinScore, settingsEarly?.minScore ?? 0);
+      // Cap user setting at 65 — prevents misconfigured values (e.g. 68-70) from
+      // blocking all trades when the adaptive ceiling is only 57.
+      const userMinCapped = Math.min(settingsEarly?.minScore ?? 0, 65);
+      const minScore = Math.max(cachedMinScore, userMinCapped);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
@@ -459,26 +462,27 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
-      // Порог 0.75: стратегия с PF < 0.75 на 20+ сделках системно убыточна и должна блокироваться.
-      // FIX: было < 0.1 (порог не работал), message при этом показывал "0.75" — несоответствие устранено.
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.75) {
-        gate.fail("Strategy PF", `PF стратегии ниже минимального порога`, stratStatus.profitFactor.toFixed(2), "0.75");
+      // Порог 0.60: стратегия с PF < 0.60 на 20+ сделках системно убыточна и должна блокироваться.
+      // Снижено с 0.75 → 0.60: порог 0.75 был слишком агрессивным и блокировал стратегии
+      // в зоне восстановления (PF 0.60–0.75 = убыточно, но не критично).
+      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.60) {
+        gate.fail("Strategy PF", `PF стратегии ниже минимального порога`, stratStatus.profitFactor.toFixed(2), "0.60");
       } else {
         if (!gate.rejected) gate.pass("Strategy PF", (stratStatus?.trades ?? 0) >= 5 ? stratStatus!.profitFactor.toFixed(2) : "мало данных");
       }
 
-      // Явный фильтр TREND+sideways на уровне входа (не постфактум-адаптация).
-      // Данные: TREND имеет 52 убытка с причиной sideways_market — системная проблема.
-      // В боковике следует использовать REVERSAL или PULLBACK, а не TREND.
-      if (!gate.rejected && strat === "TREND" && (regime === "sideways" || regime === "low_vol")) {
+      // Мягкий фильтр TREND+sideways: полный блок заменён на скор-зависимый порог.
+      // Данные: 52 убытка в sideways, но полный блок лишал бота сделок на сутки+.
+      // Компромисс: в sideways/low_vol пропускаем TREND только при score ≥ 63.
+      if (!gate.rejected && strat === "TREND" && (regime === "sideways" || regime === "low_vol") && sig.score.total < 63) {
         gate.fail(
           "TREND Sideways Filter",
-          `TREND запрещён в режиме ${regime} — высокая вероятность убытка`,
-          `strategy=${strat}, regime=${regime}`,
-          "Используйте REVERSAL или PULLBACK в боковике"
+          `TREND в ${regime} со слабым сигналом — высокий риск`,
+          `score=${sig.score.total}`,
+          "нужен score ≥ 63 в боковике"
         );
       } else if (!gate.rejected) {
-        gate.skip("TREND Sideways Filter", strat !== "TREND" ? `${strat} — фильтр не применяется` : `regime=${regime} — тренд есть, OK`);
+        gate.skip("TREND Sideways Filter", strat !== "TREND" ? `${strat} — фильтр не применяется` : `score=${sig.score.total} ≥ 63 или режим ${regime} — OK`);
       }
 
       const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime, sub.interval).catch(() => ({ blocked: false, reason: '' }));
