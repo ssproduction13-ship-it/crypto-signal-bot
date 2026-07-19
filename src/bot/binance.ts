@@ -82,3 +82,31 @@ export async function validateSymbol(symbol: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Fetch the current perpetual funding rate from KuCoin Futures.
+ * Returns the raw decimal rate (e.g. 0.001 = 0.1%) or null on any error.
+ * BTC special-case: BTCUSDT → XBTUSDTM; others → {BASE}USDTM.
+ */
+export async function getFundingRate(symbol: string): Promise<number | null> {
+  try {
+    const s = symbol.toUpperCase();
+    let futuresSymbol: string;
+    if (s === "BTCUSDT") {
+      futuresSymbol = "XBTUSDTM";
+    } else if (s.endsWith("USDT")) {
+      futuresSymbol = s.slice(0, -4) + "USDTM";
+    } else {
+      futuresSymbol = s + "M";
+    }
+    const res = await axios.get(
+      `https://api-futures.kucoin.com/api/v1/funding-rate/${futuresSymbol}/current`,
+      { timeout: 5000 },
+    );
+    const rate = res.data?.data?.value;
+    if (rate == null) return null;
+    return parseFloat(rate);
+  } catch {
+    return null;
+  }
+}

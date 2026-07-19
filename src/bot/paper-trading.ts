@@ -74,8 +74,55 @@ function buildCloseRecord(
     commission, slippage, pnlEquityPct,
     entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`,
     marketRegime: pos.marketRegime ?? "sideways",
+    maeR: pos.maeR,
+    mfeR: pos.mfeR,
   };
   return { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage };
+}
+
+/**
+ * Kelly Criterion sizing multiplier.
+ * Queries closed trades for the given entity (strategy_direction), computes half-Kelly,
+ * and normalises to a multiplier where baseline half-Kelly 0.15 = 1.0×.
+ * Returns 1.0 (no adjustment) when fewer than 30 closed trades exist for the entity.
+ * Capped to [0.25, 1.5] to prevent extreme position sizes.
+ */
+async function getKellyMultiplier(entity: string): Promise<number> {
+  try {
+    const { rows } = await pool.query<{
+      wins: string; losses: string; avg_win: string; avg_loss: string;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE pnl > 0)            AS wins,
+         COUNT(*) FILTER (WHERE pnl <= 0)           AS losses,
+         AVG(pnl_percent) FILTER (WHERE pnl > 0)    AS avg_win,
+         AVG(ABS(pnl_percent)) FILTER (WHERE pnl <= 0) AS avg_loss
+       FROM paper_closed_trades
+       WHERE entity = $1`,
+      [entity],
+    );
+    const r = rows[0];
+    if (!r) return 1.0;
+    const wins   = Number(r.wins   ?? 0);
+    const losses = Number(r.losses ?? 0);
+    const total  = wins + losses;
+    if (total < 30) return 1.0; // insufficient data — no adjustment
+    const winRate = wins / total;
+    const avgWin  = Number(r.avg_win  ?? 0);
+    const avgLoss = Number(r.avg_loss ?? 0);
+    if (avgLoss <= 0 || avgWin <= 0) return 1.0;
+    const winLossRatio = avgWin / avgLoss;
+    // Full Kelly: f = W - (1-W)/R
+    const fullKelly = winRate - (1 - winRate) / winLossRatio;
+    const halfKelly = fullKelly / 2;
+    if (halfKelly <= 0) return 0.25; // negative edge — reduce to floor
+    // Baseline: half-Kelly of 0.15 maps to 1.0× multiplier
+    const BASELINE = 0.15;
+    const mult = halfKelly / BASELINE;
+    return Math.max(0.25, Math.min(1.5, mult));
+  } catch {
+    return 1.0; // fail-safe: never block a trade due to Kelly error
+  }
 }
 
 export async function openPaperPosition(
@@ -90,7 +137,13 @@ export async function openPaperPosition(
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
-  const rp = riskPercent ?? settings.riskPercent;
+  const baseRp   = riskPercent ?? settings.riskPercent;
+  const entity   = `${strategy}_${direction}`;
+  const kellyMult = await getKellyMultiplier(entity);
+  const rp = +(baseRp * kellyMult).toFixed(2);
+  if (kellyMult !== 1.0) {
+    logger.info({ entity, kellyMult, baseRp, rp }, "Kelly criterion adjusted risk %");
+  }
   const maxLoss  = account.balance * (rp / 100);
   const stopDist = Math.abs(entryPrice - stopLoss);
   let size       = stopDist > 0 ? maxLoss / stopDist : 0;
@@ -222,6 +275,19 @@ export async function checkPaperPositions(
               if (sendNotification) await sendNotification(timeoutMsg).catch(() => {});
               continue;
             }
+          }
+        }
+
+        // ── MAE/MFE tracking (R-multiples) ───────────────────────────────────────────────────────────
+        {
+          const stopDist = Math.abs(pos.entryPrice - pos.stopLoss);
+          if (stopDist > 0) {
+            const pnlSign    = pos.direction === "LONG" ? 1 : -1;
+            const move       = pnlSign * (price - pos.entryPrice);
+            const adverseR   = Math.max(0, -move) / stopDist;
+            const favorableR = Math.max(0, move)  / stopDist;
+            pos.maeR = Math.max(pos.maeR ?? 0, adverseR);
+            pos.mfeR = Math.max(pos.mfeR ?? 0, favorableR);
           }
         }
 
@@ -503,6 +569,84 @@ export async function checkPaperPositions(
   account.positions = remaining;
   await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
   return msgs;
+}
+
+/**
+ * MAE/MFE post-trade analysis report.
+ * Only meaningful after trades with tracking data exist (forward-looking).
+ * Requires ≥5 tracked trades to show a report.
+ */
+export async function getMaeMfeReport(chatId: number): Promise<string> {
+  const { rows } = await pool.query<{
+    outcome: string; mae_r: string | null; mfe_r: string | null;
+  }>(
+    `SELECT outcome, mae_r, mfe_r FROM paper_closed_trades
+     WHERE chat_id=$1 AND mae_r IS NOT NULL AND mfe_r IS NOT NULL
+     ORDER BY closed_at DESC`,
+    [chatId],
+  );
+
+  if (rows.length < 5) {
+    return (
+      "📊 *MAE/MFE анализ*\n\n" +
+      "Недостаточно данных (нужно минимум 5 сделок с трекингом).\n" +
+      "Трекинг запущен — результаты появятся после закрытия новых сделок."
+    );
+  }
+
+  const toN = (v: string | null): number => v != null ? Number(v) : 0;
+  const avg = (arr: number[]): number =>
+    arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+
+  const wins   = rows.filter(r => r.outcome === "TP1" || r.outcome === "TP2");
+  const losses = rows.filter(r => r.outcome === "SL");
+
+  const winMae  = avg(wins.map(r => toN(r.mae_r)));
+  const winMfe  = avg(wins.map(r => toN(r.mfe_r)));
+  const lossMae = avg(losses.map(r => toN(r.mae_r)));
+  const lossMfe = avg(losses.map(r => toN(r.mfe_r)));
+
+  // Noise-stops: SL trades where MAE < 0.5R (stopped by noise before real move)
+  const noiseStops    = losses.filter(r => toN(r.mae_r) < 0.5).length;
+  const noiseStopPct  = losses.length ? (noiseStops / losses.length * 100).toFixed(1) : "0";
+
+  // Could-have-won: SL trades where MFE > 1R (price went in our favour but reversed)
+  const couldWin    = losses.filter(r => toN(r.mfe_r) > 1.0).length;
+  const couldWinPct = losses.length ? (couldWin / losses.length * 100).toFixed(1) : "0";
+
+  // MAE histogram buckets
+  const b0 = rows.filter(r => toN(r.mae_r) < 0.5).length;
+  const b1 = rows.filter(r => toN(r.mae_r) >= 0.5 && toN(r.mae_r) < 1.0).length;
+  const b2 = rows.filter(r => toN(r.mae_r) >= 1.0).length;
+
+  let verdict: string;
+  if (winMae < 0.3 && lossMae > 0.8) {
+    verdict = "✅ Стоп оправдан — победы не доходят до стопа, убытки проходят за него";
+  } else if (Number(noiseStopPct) > 40) {
+    verdict = "⚠️ Много шумовых стопов — рассмотрите расширение стопа или частичный вход";
+  } else if (Number(couldWinPct) > 30) {
+    verdict = "🔍 Много 'почти-побед' — цена уходила в плюс, но разворачивалась к стопу";
+  } else {
+    verdict = "📊 Паттерны в норме — продолжайте мониторинг";
+  }
+
+  return [
+    `📊 *MAE/MFE Анализ* (${rows.length} сд. с трекингом)`,
+    "",
+    `🏆 *Победы* (${wins.length}):`,
+    `  MAE avg: ${winMae.toFixed(2)}R | MFE avg: ${winMfe.toFixed(2)}R`,
+    "",
+    `❌ *Убытки* (${losses.length}):`,
+    `  MAE avg: ${lossMae.toFixed(2)}R | MFE avg: ${lossMfe.toFixed(2)}R`,
+    "",
+    `🔴 Шумовые стопы (MAE < 0.5R): ${noiseStops} (${noiseStopPct}% убытков)`,
+    `🟡 Могли выиграть (MFE > 1R): ${couldWin} (${couldWinPct}% убытков)`,
+    "",
+    `📈 *MAE гистограмма:*`,
+    `  0–0.5R: ${b0} сд. | 0.5–1R: ${b1} сд. | >1R: ${b2} сд.`,
+    "",
+    verdict,
+  ].join("\n");
 }
 
 export async function getPaperStats(chatId: number): Promise<string> {

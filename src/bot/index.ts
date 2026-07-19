@@ -5,7 +5,7 @@ import { Telegraf, Markup } from "telegraf";
     subscribe, unsubscribe, unsubscribeAll,
     listSubscriptions, startScheduler,
   } from "./scheduler.js";
-  import { checkPaperPositions } from "./paper-trading.js";
+  import { checkPaperPositions, getMaeMfeReport } from "./paper-trading.js";
   import {
     loadSettings, saveSettings, loadPaperAccount, loadWeights,
   } from "./storage.js";
@@ -1055,6 +1055,18 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     bot.action("sub_add",   async (ctx) => { await ctx.answerCbQuery(); await ctx.reply("Выбери монету:", pairsMenu("subpair","menu_subs")); });
     bot.action("unsub_all", async (ctx) => { await ctx.answerCbQuery(); unsubscribeAll(ctx.chat!.id); await ctx.reply("✅ Все подписки удалены.", mainMenu()); });
     bot.action("risk_resume", async (ctx) => { await ctx.answerCbQuery(); await resumeTrading(); await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode:"Markdown", ...mainMenu() }); });
+
+    // ── /maemfe ────────────────────────────────────────────────────────────
+    bot.command("maemfe", async (ctx) => {
+      const chatId = ctx.chat.id;
+      try {
+        const report = await getMaeMfeReport(chatId);
+        await ctx.reply(report, { parse_mode: "Markdown" });
+      } catch (err) {
+        logger.error({ err }, "/maemfe failed");
+        await ctx.reply("❌ Ошибка получения MAE/MFE отчёта").catch(() => {});
+      }
+    });
 
     // ── /resetpaper ────────────────────────────────────────────────────────
     bot.command("resetpaper", async (ctx) => {

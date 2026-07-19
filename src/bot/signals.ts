@@ -1,4 +1,4 @@
-import { getCandles, getPrice } from "./binance.js";
+import { getCandles, getPrice, getFundingRate } from "./binance.js";
 import { calcIndicators } from "./indicators.js";
 import { calcLevels } from "./levels.js";
 import { detectPattern } from "./patterns.js";
@@ -28,14 +28,17 @@ export interface TradeSignal {
   bestStrategy: StrategySignal | null;
   confidence: ConfidenceResult;
   marketRating: MarketRating;
+  /** KuCoin perpetual funding rate at signal time (raw decimal, e.g. 0.001 = 0.1%) */
+  fundingRate?: number | null;
 }
 
 export async function generateSignal(
   symbol: string, interval: Interval = "1h", chatId?: number
 ): Promise<TradeSignal> {
-  const [candles, price] = await Promise.all([
+  const [candles, price, fundingRate] = await Promise.all([
     getCandles(symbol, interval, 500),
     getPrice(symbol),
+    getFundingRate(symbol),
   ]);
 
   // fix: independent DB calls — run in parallel to save ~200ms latency per signal
@@ -70,6 +73,12 @@ export async function generateSignal(
     filtered = true; filterReason = "⚪ Нет чёткого направления рынка";
   } else if (!risk.isRRViable) {
     filtered = true; filterReason = `⚠️ R/R ${risk.rrRatio1.toFixed(1)} — ниже мин. 1:2.0`;
+  } else if (fundingRate != null && Math.abs(fundingRate) >= 0.0015) {
+    filtered = true;
+    filterReason = `💰 Фандинг ${(fundingRate * 100).toFixed(4)}% — экстремальная перегруженность рынка`;
+  }
+  if (!filtered && fundingRate != null && Math.abs(fundingRate) >= 0.0005) {
+    logger.warn({ symbol, fundingRate }, "Funding rate elevated — signal passes but crowding risk noted");
   }
 
   if (!filtered && score.direction !== "NEUTRAL" && chatId != null) {
@@ -104,7 +113,7 @@ export async function generateSignal(
   return {
     symbol: symbol.toUpperCase(), price, interval, score, risk, market, levels, pattern,
     timestamp: new Date(), filtered, filterReason, llmAnalysis,
-    strategies, bestStrategy, confidence, marketRating,
+    strategies, bestStrategy, confidence, marketRating, fundingRate,
   };
 }
 

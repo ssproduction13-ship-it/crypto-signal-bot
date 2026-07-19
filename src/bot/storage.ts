@@ -30,6 +30,10 @@ import { pool } from "../lib/db.js";
     riskPercent?: number;
     /** FinalScore (Decision Engine) at the moment the position was opened — used by the pyramiding quality gate */
     finalScore?: number;
+    /** Running max adverse excursion in R-multiples (updated each tick, stored on close) */
+    maeR?: number;
+    /** Running max favorable excursion in R-multiples (updated each tick, stored on close) */
+    mfeR?: number;
   }
   export interface ClosedPaperTrade {
     id: string; symbol: string; direction: "LONG"|"SHORT";
@@ -48,6 +52,10 @@ import { pool } from "../lib/db.js";
     entity?: string;
     /** Market regime at trade open time — required for regime-based analytics */
     marketRegime?: string;
+    /** Max Adverse Excursion in R-multiples — how far price went against the trade */
+    maeR?: number;
+    /** Max Favorable Excursion in R-multiples — how far price went in favour of the trade */
+    mfeR?: number;
   }
   export interface PaperAccount {
     balance: number; initialBalance: number; peakBalance: number;
@@ -115,6 +123,8 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
       marketRegime:(r["market_regime"] as string|null)??undefined,
       interval:(r["interval"] as string|null)??undefined,
       finalScore:r["final_score"]!=null?Number(r["final_score"]):undefined,
+      maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
+      mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
     };
   }
   function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
@@ -133,6 +143,9 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
       slippage:r["slippage"]!=null?Number(r["slippage"]):undefined,
       pnlEquityPct:r["pnl_equity_pct"]!=null?Number(r["pnl_equity_pct"]):undefined,
       entity:(r["entity"] as string|null)??undefined,
+      marketRegime:(r["market_regime"] as string|null)??undefined,
+      maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
+      mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
     };
   }
 
@@ -146,6 +159,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
     await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence INTEGER`);
     await pool.query(`ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_size    NUMERIC`);
     await pool.query(`ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_trigger NUMERIC`);
+    await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS mae_r NUMERIC`);
+    await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
+    await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mae_r NUMERIC`);
+    await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS gemini_weights (
         id TEXT PRIMARY KEY DEFAULT 'global',
@@ -451,21 +468,22 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
   }
   export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8 WHERE chat_id=$9 AND id=$10`,
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8,mae_r=$9,mfe_r=$10 WHERE chat_id=$11 AND id=$12`,
       [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, pos.size,
-       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.entryPrice, chatId, pos.id]
+       pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.entryPrice,
+       pos.maeR??null, pos.mfeR??null, chatId, pos.id]
     );
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
       [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
        t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
        t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
        t.commission??0,t.slippage??0,t.pnlEquityPct??null,
        t.entity??`${t.strategy??'TREND'}_${t.direction}`,
-       t.marketRegime??null]
+       t.marketRegime??null, t.maeR??null, t.mfeR??null]
     );
   }
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
@@ -521,14 +539,14 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:62,riskPercent:2,accoun
         return false; // Another cycle already claimed this position
       }
       await client.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
         [trade.id,chatId,trade.symbol,trade.direction,trade.entryPrice,trade.closePrice,
          trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
          trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
          trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null,
          trade.entity??`${trade.strategy??'TREND'}_${trade.direction}`,
-         trade.marketRegime??null]
+         trade.marketRegime??null, trade.maeR??null, trade.mfeR??null]
       );
       await client.query('COMMIT');
       return true;
