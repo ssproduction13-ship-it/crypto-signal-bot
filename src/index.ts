@@ -4,6 +4,7 @@ import app from "./app.js";
   import { setupGeminiProvider } from "./bot/gemini-provider.js";
   import { initDb } from "./lib/db.js";
   import { syncPositionsCount } from "./bot/risk-manager.js";
+  import { migrateGeminiColumns } from "./bot/storage.js";
 
   // ── Month-long unattended operation: a single uncaught error/rejection in any
   // of the many cron jobs, WS handlers, or Telegram callbacks must NEVER take
@@ -32,6 +33,7 @@ import app from "./app.js";
 
   initDb()
     .then(() => syncPositionsCount())  // Resync counter with actual DB positions on every start
+    .then(() => migrateGeminiColumns()) // Add new columns idempotently (IF NOT EXISTS)
     .then(() => {
       app.listen(port, (err?: Error) => {
         if (err) {
