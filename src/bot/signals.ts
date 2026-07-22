@@ -1,5 +1,5 @@
 import { getCandles, getPrice, getFundingRate } from "./binance.js";
-import { calcIndicators } from "./indicators.js";
+import { calcIndicators, type IndicatorResult } from "./indicators.js";
 import { calcLevels } from "./levels.js";
 import { detectPattern } from "./patterns.js";
 import { calcScore, type ScoreBreakdown } from "./scoring.js";
@@ -30,6 +30,8 @@ export interface TradeSignal {
   marketRating: MarketRating;
   /** KuCoin perpetual funding rate at signal time (raw decimal, e.g. 0.001 = 0.1%) */
   fundingRate?: number | null;
+  /** Raw indicator snapshot at signal time — stored in trade_features for ML */
+  ind: IndicatorResult;
 }
 
 export async function generateSignal(
@@ -113,7 +115,7 @@ export async function generateSignal(
   return {
     symbol: symbol.toUpperCase(), price, interval, score, risk, market, levels, pattern,
     timestamp: new Date(), filtered, filterReason, llmAnalysis,
-    strategies, bestStrategy, confidence, marketRating, fundingRate,
+    strategies, bestStrategy, confidence, marketRating, fundingRate, ind,
   };
 }
 
