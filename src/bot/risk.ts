@@ -36,14 +36,16 @@ export function calcRisk(
   let tp1: number;
   let tp2: number;
 
+  // fix: widened stop 1.3→2.0 ATR to reduce noise-triggered exits (position size auto-shrinks ~35%)
+  // TP1 3→4 ATR keeps R/R=2.0 (minimum threshold); TP2 5→7 ATR = 3.5R target
   if (direction === "LONG") {
-    stopLoss = entryPrice - atr * 1.3;
-    tp1 = entryPrice + atr * 3.0;
-    tp2 = entryPrice + atr * 5.0;
+    stopLoss = entryPrice - atr * 2.0;
+    tp1 = entryPrice + atr * 4.0;
+    tp2 = entryPrice + atr * 7.0;
   } else {
-    stopLoss = entryPrice + atr * 1.3;
-    tp1 = entryPrice - atr * 3.0;
-    tp2 = entryPrice - atr * 5.0;
+    stopLoss = entryPrice + atr * 2.0;
+    tp1 = entryPrice - atr * 4.0;
+    tp2 = entryPrice - atr * 7.0;
   }
 
   const stopDistancePct =
