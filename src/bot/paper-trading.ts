@@ -72,7 +72,7 @@ function buildCloseRecord(
     strategy: pos.strategy ?? "UNKNOWN",
     openedAt: pos.openedAt, closedAt: new Date().toISOString(),
     commission, slippage, pnlEquityPct,
-    entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}`,
+    entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}_${pos.marketRegime ?? "unknown"}`,
     marketRegime: pos.marketRegime ?? "sideways",
     maeR: pos.maeR,
     mfeR: pos.mfeR,
@@ -138,7 +138,7 @@ export async function openPaperPosition(
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
   const baseRp   = riskPercent ?? settings.riskPercent;
-  const entity   = `${strategy}_${direction}`;
+  const entity   = `${strategy}_${direction}_${marketRegime}`;
   const kellyMult = await getKellyMultiplier(entity);
   const rp = +(baseRp * kellyMult).toFixed(2);
   if (kellyMult !== 1.0) {
