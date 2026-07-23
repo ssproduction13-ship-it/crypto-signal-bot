@@ -575,7 +575,14 @@ const MIGRATIONS = [
   // ── ТЗ "Условный пирамидинг": store the FinalScore at position open so the
   // pyramiding quality gate can re-check signal quality without re-deriving it ─
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS final_score DOUBLE PRECISION",
-];
+    // v3.0: missing tables (also applied via SQL migration 2026-07-23, idempotent on re-boot)
+    "CREATE TABLE IF NOT EXISTS learning_reports (id SERIAL PRIMARY KEY, version_label TEXT, created_at TEXT NOT NULL DEFAULT '', trade_count_at_report INTEGER NOT NULL DEFAULT 0, summary TEXT, report_json JSONB)",
+    "CREATE TABLE IF NOT EXISTS entity_cooldown (entity TEXT PRIMARY KEY, cooldown_until TIMESTAMPTZ, reason TEXT, consecutive_losses INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "CREATE TABLE IF NOT EXISTS chaos_filter_state (id INTEGER PRIMARY KEY DEFAULT 1, is_chaos BOOLEAN NOT NULL DEFAULT false, atr_percent DOUBLE PRECISION, reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "ALTER TABLE decision_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    "ALTER TABLE walk_forward_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    `INSERT INTO strategy_entity_weights (entity,strategy,direction,weight,quarantine,trust_score,trades,wins,win_pnl,loss_pnl,cycles_below_threshold,updated_at) SELECT q.entity,q.strategy,q.direction,1.0,false,0,0,0,0.0,0.0,0,NOW() FROM (SELECT e.b||'_'||r.g AS entity,CASE WHEN e.b IN('TREND_LONG','TREND_SHORT')THEN'TREND' WHEN e.b IN('VOLUME_IMPULSE_LONG','VOLUME_IMPULSE_SHORT')THEN'VOLUME_IMPULSE' WHEN e.b IN('MEAN_REVERSION_LONG','MEAN_REVERSION_SHORT')THEN'MEAN_REVERSION' WHEN e.b IN('BREAKOUT_LONG','BREAKOUT_SHORT')THEN'BREAKOUT'END AS strategy,CASE WHEN e.b LIKE'%_LONG'THEN'LONG'ELSE'SHORT'END AS direction FROM(VALUES('TREND_LONG'),('TREND_SHORT'),('VOLUME_IMPULSE_LONG'),('VOLUME_IMPULSE_SHORT'),('MEAN_REVERSION_LONG'),('MEAN_REVERSION_SHORT'),('BREAKOUT_LONG'),('BREAKOUT_SHORT'))AS e(b) CROSS JOIN(VALUES('trend_up'),('trend_down'),('sideways'),('high_vol'),('low_vol'),('unknown'))AS r(g))q WHERE NOT EXISTS(SELECT 1 FROM strategy_entity_weights WHERE entity=q.entity)`,
+    ];
 
 
 
