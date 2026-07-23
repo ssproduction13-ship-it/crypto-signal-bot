@@ -7,7 +7,7 @@ import { getPrice } from "./binance.js";
 import { getRecentDecisionLog, getDecisionStats, type DecisionTrace } from "./decision-trace.js";
 import { logger } from "../lib/logger.js";
 
-const BOT_VERSION = "2.0.0";
+const BOT_VERSION = "3.0.0";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
