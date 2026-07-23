@@ -565,20 +565,23 @@ function pfToTargetWeight(pf: number): number {
   async function getRecentEntityStats(entity: StrategyEntity): Promise<{
     trades: number; wins: number; winPnl: number; lossPnl: number; totalPnl: number; pf: number;
   }> {
-    const parts = entity.split("_");
-    const direction = parts.pop() as string;
-    const strategy = parts.join("_");
-    const { rows } = await pool.query(
-      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
-       FROM paper_closed_trades
-       WHERE strategy=$1
-         AND direction=$2
-         AND outcome NOT IN ('TIMEOUT_STALE')
-         AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
-       ORDER BY closed_at DESC
-       LIMIT $3`,
-      [strategy, direction, ADAPTATION_WINDOW]
-    );
+    // v3.0 fix: parseEntity correctly handles 48-entity keys (e.g. TREND_LONG_sideways).
+      // Old split/pop: parts.pop()→"sideways" as direction, parts.join("_")→"TREND_LONG"
+      // as strategy → 0 rows returned → trades<10 → all entities skipped → weights
+      // frozen at 1.0 forever. Now also filters by market_regime for regime-specific stats.
+      const { strategy, direction, regime } = parseEntity(entity);
+      const { rows } = await pool.query(
+        `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+         FROM paper_closed_trades
+         WHERE strategy=$1
+           AND direction=$2
+           AND market_regime=$3
+           AND outcome NOT IN ('TIMEOUT_STALE')
+           AND closed_at::timestamptz >= (SELECT COALESCE(reset_at, '1970-01-01'::timestamptz) FROM paper_accounts LIMIT 1)
+         ORDER BY closed_at DESC
+         LIMIT $4`,
+        [strategy, direction, regime, ADAPTATION_WINDOW]
+      );
     // Fall back to strategy_direction_stats when live trades table has less history
     // (handles DB resets where paper_closed_trades was wiped but analytics tables are preserved)
     const { rows: sdsRows } = await pool.query(
