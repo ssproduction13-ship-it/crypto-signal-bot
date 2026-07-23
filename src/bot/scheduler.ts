@@ -332,7 +332,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         getAllEntityStatuses(regime).catch(() => []),
         loadStrategyWeights().catch(() => ({} as Record<string,number>)),
       ]);
-      const entityKey = `${strat}_${sig.score.direction}`;
+      const entityKey = `${strat}_${sig.score.direction}_${regime}`;
       const stratStatus = entityStatuses.find(s => s.entity === entityKey);
       const stratWeight = stratWeights[strat] ?? 1;
       // Load user settings early so the score gate uses the user-configured min_score,
@@ -350,6 +350,21 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
         gate.fail("Рынок: хаос", "Хаотичный рынок", `ATR ${sig.market.atrPercent?.toFixed(1)}%`);
       } else {
         gate.pass("Рынок: хаос", "OK");
+      }
+
+      // v3.0: Funding rate directional crowding gate
+      // Positive funding → longs pay shorts (market crowded LONG) → block new LONG
+      // Negative funding → shorts pay longs (market crowded SHORT) → block new SHORT
+      if (!gate.rejected && sig.fundingRate != null) {
+        const fr = sig.fundingRate;
+        const frPct = (fr * 100).toFixed(4);
+        if (sig.score.direction === "LONG" && fr > 0.001) {
+          gate.fail("Funding Rate", `Перегрев: фандинг +${frPct}% → LONG заблокирован`, "лонги переплачивают шортам");
+        } else if (sig.score.direction === "SHORT" && fr < -0.001) {
+          gate.fail("Funding Rate", `Перегрев: фандинг ${frPct}% → SHORT заблокирован`, "шорты переплачивают лонгам");
+        } else {
+          gate.pass("Funding Rate", `${frPct}% — нейтрально`);
+        }
       }
 
       if (!gate.rejected && sig.score.direction === "NEUTRAL") {
