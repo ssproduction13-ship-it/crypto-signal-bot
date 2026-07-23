@@ -6,17 +6,32 @@ import type { StrategyName } from "./strategies.js";
 import type { MarketCondition } from "./chaos-filter.js";
 import type { MarketRating } from "./market-rating.js";
 
-export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol";
+export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol"|"unknown";
 export type StrategyStatus = "active"|"quarantine"|"disabled";
 
-export type StrategyEntity =
-  | "TREND_LONG" | "TREND_SHORT"
-  | "VOLUME_IMPULSE_LONG" | "VOLUME_IMPULSE_SHORT"
-  | "MEAN_REVERSION_LONG" | "MEAN_REVERSION_SHORT"
-  | "BREAKOUT_LONG" | "BREAKOUT_SHORT";
+// v3.0: 48-entity architecture — strategy × direction × regime
+// TREND_LONG in trend_up vs TREND_LONG in low_vol → separate PF, weight, quarantine
+export type StrategyEntity = string; // e.g. "TREND_LONG_trend_up"
+export const BASE_ENTITIES = [
+  "TREND_LONG","TREND_SHORT",
+  "VOLUME_IMPULSE_LONG","VOLUME_IMPULSE_SHORT",
+  "MEAN_REVERSION_LONG","MEAN_REVERSION_SHORT",
+  "BREAKOUT_LONG","BREAKOUT_SHORT",
+] as const;
+export const ALL_REGIMES: MarketRegime[] = ["trend_up","trend_down","sideways","high_vol","low_vol","unknown"];
+export const ALL_ENTITIES_48: StrategyEntity[] = [...BASE_ENTITIES].flatMap(e => ALL_REGIMES.map(r => `${e}_${r}`));
 
-export function getEntity(strategy: StrategyName, direction: "LONG"|"SHORT"): StrategyEntity {
-  return `${strategy}_${direction}` as StrategyEntity;
+/** Parse regime-aware entity key back into its three components */
+export function parseEntity(entity: string): { strategy: StrategyName; direction: "LONG"|"SHORT"; regime: MarketRegime } {
+  const li = entity.indexOf("_LONG_"), si = entity.indexOf("_SHORT_");
+  if (li !== -1) return { strategy: entity.slice(0,li) as StrategyName, direction: "LONG",  regime: entity.slice(li+6)  as MarketRegime };
+  if (si !== -1) return { strategy: entity.slice(0,si) as StrategyName, direction: "SHORT", regime: entity.slice(si+7) as MarketRegime };
+  const parts = entity.split("_"); const dir = parts.pop()! as "LONG"|"SHORT";
+  return { strategy: parts.join("_") as StrategyName, direction: dir, regime: "unknown" };
+}
+
+export function getEntity(strategy: StrategyName, direction: "LONG"|"SHORT", regime: MarketRegime = "unknown"): StrategyEntity {
+  return `${strategy}_${direction}_${regime}`;
 }
 
 export interface EntityTrustResult {
@@ -303,7 +318,7 @@ export async function selectBestStrategy(
   const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number;finalScore:number}> = [];
 
   for (const sig of signals) {
-    const entity = getEntity(sig.strategy, sig.direction as "LONG"|"SHORT");
+    const entity = getEntity(sig.strategy, sig.direction as "LONG"|"SHORT", regime);
     const wRow = (wRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
     // Active entities keep floor 0.10 for bootstrap exploration.
     // fix: quarantine floor lowered 0.10→0.03 — quarantined entities were getting
@@ -412,16 +427,11 @@ export async function getAllStrategyStatuses(
   return results;
 }
 
-// ── Get all entity statuses (8-entity architecture) ──────────────────────────
+// ── Get entity statuses for current regime (v3.0: 8 of 48, regime-filtered) ──
 export async function getAllEntityStatuses(
   regime: MarketRegime = "sideways"
 ): Promise<EntityTrustResult[]> {
-  const ENTITIES: StrategyEntity[] = [
-    "TREND_LONG", "TREND_SHORT",
-    "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
-    "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
-    "BREAKOUT_LONG", "BREAKOUT_SHORT",
-  ];
+  const ENTITIES: StrategyEntity[] = [...BASE_ENTITIES].map(e => `${e}_${regime}`);
   const {rows:ewRows} = await pool.query(
     "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
   );
@@ -431,14 +441,11 @@ export async function getAllEntityStatuses(
     const wRow = (ewRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
     const weight = wRow ? Number(wRow["weight"]) : 1.0;
     const isQuarantine = wRow ? Boolean(wRow["quarantine"]) : false;
-    const entityParts = entity.split("_");
-    const entityDir = entityParts.pop() as string;
-    const entityStrat = entityParts.join("_") as StrategyName;
+    const { strategy: entityStrat } = parseEntity(entity);
     const trustScore = await calcTrustScore(entityStrat, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
     const wr = recent.trades > 0 ? recent.wins / recent.trades : 0;
     const status: StrategyStatus = isQuarantine ? "quarantine" : "active";
     results.push({ entity, trustScore, status, weight, trades: recent.trades, winRate: wr, profitFactor: recent.pf });
-    void entityDir;
   }
   return results;
 }
@@ -650,12 +657,8 @@ function pfToTargetWeight(pf: number): number {
       quarantine: Boolean(r["quarantine"]),
     };
 
-  const ENTITIES: StrategyEntity[] = [
-    "TREND_LONG", "TREND_SHORT",
-    "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
-    "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
-    "BREAKOUT_LONG", "BREAKOUT_SHORT",
-  ];
+  // v3.0: 48 entities — every strategy×direction×regime adapts independently
+  const ENTITIES: StrategyEntity[] = ALL_ENTITIES_48;
 
   const entityUpdates: Array<{entity:string;newWeight:number;newQuarantine:boolean;trustScore:number;pf:number;trades:number;wins:number;winPnl:number;lossPnl:number}> = [];
 
@@ -666,18 +669,10 @@ function pfToTargetWeight(pf: number): number {
 
     if (trades < 10) continue;
 
-    const entityParts = entity.split("_");
-    const entityDir = entityParts.pop() as string;
-    const entityStrat = entityParts.join("_") as StrategyName;
+    // v3.0: regime is embedded in the entity key — no DB lookup needed
+    const { strategy: entityStrat, regime: entityRegime } = parseEntity(entity);
 
     const cur = entityCurW[entity] ?? { weight: 1.0, cycles: 0, quarantine: false };
-    // FIX: был hardcode "sideways" — calcTrustScore всегда оценивал regime fit по боковику.
-    // Теперь берём режим с наибольшим числом сделок для этой стратегии из реальных данных.
-    const {rows: domReRows} = await pool.query(
-      `SELECT regime FROM strategy_regime_stats WHERE strategy=$1 AND trades >= 5 ORDER BY trades DESC LIMIT 1`,
-      [entityStrat]
-    ).catch(() => ({ rows: [] as Record<string,unknown>[] }));
-    const entityRegime = ((domReRows[0] as Record<string,unknown> | undefined)?.["regime"] as MarketRegime) ?? "sideways";
     const trustScore = await calcTrustScore(entityStrat, trades, wins, winPnl, lossPnl, totalPnl, entityRegime);
 
     let newWeight = cur.weight;
@@ -777,7 +772,6 @@ function pfToTargetWeight(pf: number): number {
     }
 
     entityUpdates.push({ entity, newWeight, newQuarantine, trustScore, pf, trades, wins, winPnl, lossPnl });
-    void entityDir; // used above for calcTrustScore
   }
 
   // ── Защита от полной остановки торговли ──────────────────────────────────
