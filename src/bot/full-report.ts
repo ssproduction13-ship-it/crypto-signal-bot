@@ -79,6 +79,7 @@ const REGIME_NAMES: Record<string, string> = {
   sideways:   "↔️ Sideways",
   high_vol:   "⚡ High Vol",
   low_vol:    "😴 Low Vol",
+  unknown:    "❔ Unknown",
 };
 const STRAT_NAMES: Record<string, string> = {
   TREND:           "Тренд",
@@ -110,31 +111,57 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
                        SUM(CASE WHEN pnl<=0 THEN ABS(pnl) ELSE 0 END) loss_pnl, SUM(pnl) total_pnl
                 FROM paper_closed_trades WHERE chat_id=$1 GROUP BY symbol`, [chatId]),
     pool.query("SELECT COUNT(*) cnt, MAX(changed_at) last FROM strategy_history"),
-    pool.query("SELECT strategy FROM strategy_weights WHERE quarantine=true"),
+    pool.query(`SELECT entity
+                FROM strategy_entity_weights
+                WHERE quarantine=true
+                  AND entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'`),
     pool.query("SELECT version_label,profit_factor,created_at FROM strategy_versions ORDER BY created_at DESC LIMIT 2"),
     pool.query(`SELECT strategy, MAX(changed_at) last_adapt FROM strategy_history GROUP BY strategy`),
     pool.query("SELECT MIN(opened_at) first FROM paper_closed_trades WHERE chat_id=$1", [chatId]),
-    pool.query(`SELECT sew.entity, sew.strategy, sew.direction,
-                  sew.weight, sew.quarantine, sew.trust_score,
+    pool.query(`SELECT e.entity, e.strategy, e.direction, e.regime,
+                  COALESCE(sew.weight, 1.0) AS weight,
+                  COALESCE(sew.quarantine, false) AS quarantine,
+                  COALESCE(sew.trust_score, 0) AS trust_score,
                   COUNT(pct.pnl)::int AS trades,
-                  SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END)::int AS wins,
+                  COALESCE(SUM(CASE WHEN pct.pnl > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
                   array_agg(pct.pnl ORDER BY pct.closed_at DESC)
                     FILTER (WHERE pct.pnl IS NOT NULL) AS pnl_arr
-           FROM strategy_entity_weights sew
+           FROM (
+             SELECT b.strategy || '_' || b.direction || '_' || r.regime AS entity,
+                    b.strategy, b.direction, r.regime
+             FROM (VALUES
+               ('TREND','LONG'),('TREND','SHORT'),
+               ('BREAKOUT','LONG'),('BREAKOUT','SHORT'),
+               ('VOLUME_IMPULSE','LONG'),('VOLUME_IMPULSE','SHORT'),
+               ('MEAN_REVERSION','LONG'),('MEAN_REVERSION','SHORT')
+             ) AS b(strategy,direction)
+             CROSS JOIN (VALUES
+               ('trend_up'),('trend_down'),('sideways'),
+               ('high_vol'),('low_vol'),('unknown')
+             ) AS r(regime)
+           ) e
+           LEFT JOIN strategy_entity_weights sew ON sew.entity=e.entity
            LEFT JOIN LATERAL (
              SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl,
                     closed_at
              FROM paper_closed_trades
-             WHERE strategy  = sew.strategy
-               AND direction = sew.direction
-               AND chat_id   = $1
+             WHERE strategy = e.strategy
+               AND direction = e.direction
+               AND chat_id = $1
                AND outcome NOT IN ('TIMEOUT_STALE')
+               AND (
+                 CASE
+                   WHEN entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'
+                     THEN entity
+                   ELSE strategy || '_' || direction || '_' || COALESCE(market_regime, 'unknown')
+                 END
+               ) = e.entity
                AND closed_at::timestamptz >= $2::timestamptz
              ORDER BY closed_at DESC LIMIT 150
            ) pct ON true
-           GROUP BY sew.entity, sew.strategy, sew.direction,
+           GROUP BY e.entity, e.strategy, e.direction, e.regime,
                     sew.weight, sew.quarantine, sew.trust_score
-           ORDER BY sew.strategy, sew.direction`, [chatId, account.resetAt || '1970-01-01']),
+           ORDER BY e.strategy, e.direction, e.regime`, [chatId, account.resetAt || '1970-01-01']),
   ]).catch(err => { logger.warn({err}, "full-report DB query error"); throw err; });
 
   // ── Базовые вычисления ────────────────────────────────────────────────────
@@ -228,7 +255,12 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   // Entity weights
   const entityRows = entityWeightRows.rows as Record<string,unknown>[];
   const vRows      = versionRows.rows as Record<string,unknown>[];
-  const quarStrats = (quarRows.rows as Record<string,unknown>[]).map(r => r["strategy"] as string);
+  const quarantineEntities = (quarRows.rows as Record<string,unknown>[]).map(r => r["entity"] as string);
+  const currentRegime = account.positions.slice().reverse().find(p => p.marketRegime)?.marketRegime
+    ?? allTrades.slice().reverse().find(t => t.marketRegime)?.marketRegime
+    ?? "unknown";
+  const currentEntityRows = entityRows.filter(r => r["regime"] === currentRegime);
+  const currentEntitiesWithData = currentEntityRows.filter(r => Number(r["trades"]) > 0).length;
   const adaptCount = Number((adaptRows.rows[0] as Record<string,unknown>)?.["cnt"] ?? 0);
   const learningProg = Math.min(100, Math.round(allTrades.length / 200 * 100));
   const learningMode = allTrades.length < 100 ? "🌱 Начальное" : allTrades.length < 200 ? "🔥 Активное" : "✅ Зрелое";
@@ -311,10 +343,25 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   const entityWeightedPFMap: Record<string, number> = {};
 
   parts.push(`*━━━ СТРАТЕГИИ ━━━*`, ``);
+  // Calculate PF for every entity before rendering only the current regime.
+  // The AI leaderboard must not depend on which eight rows are visible above.
+  for (const r of entityRows) {
+    const entity = r["entity"] as string;
+    const pnlArr = Array.isArray(r["pnl_arr"])
+      ? (r["pnl_arr"] as unknown[]).map(Number)
+      : [];
+    entityWeightedPFMap[entity] = calcWeightedPF(pnlArr);
+  }
+
   if (!entityRows.length) {
     parts.push(`Нет данных`, ``);
   } else {
-    for (const r of entityRows) {
+    const displayRows = currentEntityRows.length ? currentEntityRows : entityRows.slice(0, 8);
+    parts.push(
+      `Текущий режим: *${REGIME_NAMES[currentRegime] ?? currentRegime}*`,
+      `Сущностей: *${displayRows.length}* · с данными: *${currentEntitiesWithData}*`,
+    );
+    for (const r of displayRows) {
       const entity   = r["entity"] as string;
       const trades   = Number(r["trades"]);
       const wins_e   = Number(r["wins"]);
@@ -326,8 +373,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
         ? (r["pnl_arr"] as unknown[]).map(Number)
         : [];
 
-      const weightedPF = calcWeightedPF(pnlArr);
-      entityWeightedPFMap[entity] = weightedPF;
+      const weightedPF = entityWeightedPFMap[entity] ?? calcWeightedPF(pnlArr);
 
       const wr_e = trades > 0 ? (wins_e / trades * 100).toFixed(0) : "—";
       const pf_e = pnlArr.length > 0 ? fmtPF(weightedPF) : "—";
@@ -341,7 +387,11 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
         `  WR ${wr_e}%  PF ${pf_e}  n=${trades}`,
       );
     }
-    parts.push(``);
+    parts.push(
+      ``,
+      `Полный список: 48 сущностей (8 × 6 режимов) — см. подробный отчёт стратегий.`,
+      ``,
+    );
   }
 
   // ─────────────────────────────────────────────────────
@@ -449,7 +499,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     `Режим:          ${learningMode}`,
     `Прогресс:       ${learningProg}%  (${allTrades.length}/200 сделок)`,
     `Адаптаций:      ${adaptCount}`,
-    ...(quarStrats.length ? [`В карантине:    ${quarStrats.join(", ")}`] : [`Карантин:       нет`]),
+    ...(quarantineEntities.length ? [`В карантине:    ${quarantineEntities.join(", ")}`] : [`Карантин:       нет`]),
     ...(Math.abs(pfImprove) > 0.001 && vRows.length >= 2
       ? [`PF тренд:       ${pfImprove >= 0 ? "+" : ""}${pfImprove.toFixed(3)} vs ${vRows[1]!["version_label"]}`]
       : []),
@@ -528,27 +578,20 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
   //  БЛОК 11: AI АНАЛИЗ + РЕКОМЕНДАЦИИ
   // ─────────────────────────────────────────────────────
 
-  // Per-strategy агрегация на основе взвешенных PF по entity (БЛОК 3)
-  // PF стратегии = среднее взвешенных PF её LONG и SHORT entity (≥5 сделок каждый)
-  const ssMap: Record<string,{strategy:string;trades:number;wins:number;pfSum:number;pfCount:number}> = {};
-  for (const r of entityRows) {
-    const strat  = r["strategy"] as string;
-    const entity = r["entity"]   as string;
-    if (!ssMap[strat]) ssMap[strat] = { strategy:strat, trades:0, wins:0, pfSum:0, pfCount:0 };
-    ssMap[strat].trades += Number(r["trades"]);
-    ssMap[strat].wins   += Number(r["wins"]);
-    const epf = entityWeightedPFMap[entity];
-    if (epf !== undefined && Number(r["trades"]) >= 5) {
-      ssMap[strat].pfSum   += epf;
-      ssMap[strat].pfCount += 1;
-    }
-  }
-  const ss = Object.values(ssMap);
-
-  const bestStrat  = ss.map(s => ({ s:s.strategy, pf:s.pfCount>0?s.pfSum/s.pfCount:0, t:s.trades }))
-    .filter(x => x.t >= 10).sort((a,b) => b.pf - a.pf)[0];
-  const worstStrat = ss.map(s => ({ s:s.strategy, pf:s.pfCount>0?s.pfSum/s.pfCount:0, t:s.trades }))
-    .filter(x => x.t >= 10).sort((a,b) => a.pf - b.pf)[0];
+  // Entity-aware leaderboard. Do not average rows by base strategy: direction
+  // and market regime are part of the v3.0 identity.
+  const entityLeaders = entityRows
+    .filter(r => Number(r["trades"]) >= 5 && entityWeightedPFMap[r["entity"] as string] !== undefined)
+    .map(r => ({
+      entity: r["entity"] as string,
+      regime: r["regime"] as string,
+      pf: entityWeightedPFMap[r["entity"] as string]!,
+      trades: Number(r["trades"]),
+      wins: Number(r["wins"]),
+    }))
+    .sort((a, b) => b.pf - a.pf);
+  const bestEntity = entityLeaders[0];
+  const worstEntity = entityLeaders[entityLeaders.length - 1];
   const bestRegime  = regData.filter(x => x.t >= 5)[0];
   const worstCoins  = coinEnough.filter(c => c.pf < 0.8).sort((a,b) => a.pf - b.pf).slice(0,3);
 
@@ -561,8 +604,8 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     : "🚀 Отличный PF — выше 1.50!";
 
   const recs: string[] = [];
-  if (pfAll < 1.0 && bestStrat)       recs.push(`Фокус на стратегию ${bestStrat.s} (PF ${fmtPF(bestStrat.pf)})`);
-  if (worstStrat && worstStrat.pf < 0.8) recs.push(`Карантин ${worstStrat.s} (PF ${fmtPF(worstStrat.pf)}) — ждать 30 сделок`);
+  if (pfAll < 1.0 && bestEntity)       recs.push(`Фокус на сущность ${bestEntity.entity} (PF ${fmtPF(bestEntity.pf)})`);
+  if (worstEntity && worstEntity.pf < 0.8) recs.push(`Карантин ${worstEntity.entity} (PF ${fmtPF(worstEntity.pf)}) — ждать 30 сделок`);
   if (currentDDpct > 15)              recs.push(`Снизить размер позиций — DD ${currentDDpct.toFixed(1)}%`);
   if (allTrades.length < 200)         recs.push(`Накопить ещё ${200-allTrades.length} сделок для надёжного обучения`);
   if (overfitRisk > 0.25)            recs.push(`Переобучение: PF(30)=${fmtPF(pf30)} < PF(all)=${fmtPF(pfAll)}`);
@@ -573,9 +616,9 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
     ``,
     verdict,
     ``,
-    ...(bestStrat  ? [`🏆 Лучшая:    *${bestStrat.s}*  PF ${fmtPF(bestStrat.pf)}`] : []),
-    ...(worstStrat && worstStrat !== bestStrat && worstStrat.pf < 1.0
-      ? [`📉 Слабая:    *${worstStrat.s}*  PF ${fmtPF(worstStrat.pf)}`] : []),
+    ...(bestEntity  ? [`🏆 Лучшая entity: *${bestEntity.entity}*  PF ${fmtPF(bestEntity.pf)} · n=${bestEntity.trades}`] : []),
+    ...(worstEntity && worstEntity !== bestEntity && worstEntity.pf < 1.0
+      ? [`📉 Слабая entity:  *${worstEntity.entity}*  PF ${fmtPF(worstEntity.pf)} · n=${worstEntity.trades}`] : []),
     ...(bestRegime  ? [`🌍 Режим:     *${REGIME_NAMES[bestRegime.regime]??bestRegime.regime}*  PF ${fmtPF(bestRegime.pf)}`] : []),
     ...(worstCoins.length ? [`⚠️ Убыточны:  ${worstCoins.map(c=>c.sym).join(", ")}`] : []),
     overfitRisk > 0.3

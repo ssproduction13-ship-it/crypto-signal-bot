@@ -60,6 +60,39 @@ interface ReportData {
   learningReports: Array<Record<string, unknown>>;
   strategyHistory: Array<Record<string, unknown>>;
   strategyWeights: Array<Record<string, unknown>>;
+  strategyEntityWeights: Array<Record<string, unknown>>;
+}
+
+// v3.0 report model: strategy × direction × market regime.
+// Keep the report independent from the legacy 8-row seed that may still exist
+// in strategy_entity_weights after a database upgrade.
+const REPORT_BASE_ENTITIES = [
+  "TREND_LONG", "TREND_SHORT",
+  "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
+  "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
+  "BREAKOUT_LONG", "BREAKOUT_SHORT",
+] as const;
+const REPORT_REGIMES = ["trend_up", "trend_down", "sideways", "high_vol", "low_vol", "unknown"] as const;
+const REPORT_ENTITIES = REPORT_BASE_ENTITIES.flatMap(base =>
+  REPORT_REGIMES.map(regime => `${base}_${regime}`)
+);
+
+function reportEntityForTrade(t: ClosedPaperTrade): string {
+  const base = t.strategy as string;
+  const direction = t.direction;
+  const stored = t.entity as string | undefined;
+  if (stored && /_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/.test(stored)) {
+    return stored;
+  }
+  return `${base}_${direction}_${t.marketRegime ?? "unknown"}`;
+}
+
+function parseReportEntity(entity: string): { baseStrategy: string; direction: string | null; regime: string | null } {
+  const match = entity.match(/^(.+)_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/);
+  if (match) return { baseStrategy: match[1]!, direction: match[2]!, regime: match[3]! };
+  const legacy = entity.match(/^(.+)_(LONG|SHORT)$/);
+  if (legacy) return { baseStrategy: legacy[1]!, direction: legacy[2]!, regime: null };
+  return { baseStrategy: entity, direction: null, regime: null };
 }
 
 // ── Data collection ───────────────────────────────────────────────────────────
@@ -87,7 +120,28 @@ async function collectData(chatId: number): Promise<ReportData> {
       .catch((err) => { logger.error({ err }, "report-generator: time_analytics query failed"); return { rows: [] }; }),
     pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC")
       .catch((err) => { logger.error({ err }, "report-generator: instrument_analytics query failed"); return { rows: [] }; }),
-    pool.query("SELECT entity, strategy, direction, weight, quarantine, trust_score FROM strategy_entity_weights ORDER BY strategy, direction")
+    pool.query(`SELECT e.entity, e.strategy, e.direction, e.regime,
+                       COALESCE(sew.weight, 1.0) AS weight,
+                       COALESCE(sew.quarantine, false) AS quarantine,
+                       COALESCE(sew.trust_score, 0) AS trust_score,
+                       COALESCE(sew.trades, 0) AS trades,
+                       COALESCE(sew.wins, 0) AS wins
+                FROM (
+                  SELECT b.strategy || '_' || b.direction || '_' || r.regime AS entity,
+                         b.strategy, b.direction, r.regime
+                  FROM (VALUES
+                    ('TREND','LONG'),('TREND','SHORT'),
+                    ('BREAKOUT','LONG'),('BREAKOUT','SHORT'),
+                    ('VOLUME_IMPULSE','LONG'),('VOLUME_IMPULSE','SHORT'),
+                    ('MEAN_REVERSION','LONG'),('MEAN_REVERSION','SHORT')
+                  ) AS b(strategy,direction)
+                  CROSS JOIN (VALUES
+                    ('trend_up'),('trend_down'),('sideways'),
+                    ('high_vol'),('low_vol'),('unknown')
+                  ) AS r(regime)
+                ) e
+                LEFT JOIN strategy_entity_weights sew ON sew.entity=e.entity
+                ORDER BY e.strategy, e.direction, e.regime`)
       .catch((err) => { logger.error({ err }, "report-generator: strategy_entity_weights query failed"); return { rows: [] }; }),
     pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats")
       .catch((err) => { logger.error({ err }, "report-generator: strategy_direction_stats query failed"); return { rows: [] }; }),
@@ -119,6 +173,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     learningReports: lrRes.rows as Array<Record<string, unknown>>,
     strategyHistory: shRes.rows as Array<Record<string, unknown>>,
     strategyWeights,
+    strategyEntityWeights: ewRes.rows as Array<Record<string, unknown>>,
   };
 }
 
@@ -157,34 +212,42 @@ function buildStrategyDetails(
 ): StrategyDetail[] {
   const now = Date.now();
 
-  type EntrySpec = { name: string; baseStrategy: string; direction: string | null };
-  let specs: EntrySpec[];
-
-  if (entityRows.length > 0) {
-    specs = entityRows.map(r => ({
-      name:         r["entity"]    as string,
-      baseStrategy: r["strategy"]  as string,
-      direction:    r["direction"] as string,
-    }));
-  } else {
-    const stratSet = new Set<string>();
-    for (const s of stats)   if ((s.strategy as string) !== "UNKNOWN") stratSet.add(s.strategy as string);
-    for (const w of weights) if (w["strategy"] && w["strategy"] !== "UNKNOWN") stratSet.add(w["strategy"] as string);
-    for (const t of trades)  if (t.strategy && (t.strategy as string) !== "UNKNOWN") stratSet.add(t.strategy as string);
-    for (const base of ["TREND","BREAKOUT","VOLUME_IMPULSE","MEAN_REVERSION"]) stratSet.add(base);
-    specs = [...stratSet].sort().map(s => ({ name: s, baseStrategy: s, direction: null }));
+  type EntrySpec = { name: string; baseStrategy: string; direction: string | null; regime: string | null };
+  const entityNames = new Set<string>(REPORT_ENTITIES);
+  for (const row of entityRows) {
+    if (row["entity"]) entityNames.add(String(row["entity"]));
   }
+  for (const trade of trades) {
+    if (trade.strategy && trade.strategy !== "UNKNOWN") entityNames.add(reportEntityForTrade(trade));
+  }
+  // Only use legacy strategy stats/weights when the entity query itself is
+  // unavailable. Otherwise they would re-introduce four base-strategy rows
+  // alongside the v3.0 entities.
+  if (entityRows.length === 0) {
+    for (const s of stats) {
+      if (s.strategy && s.strategy !== "UNKNOWN") entityNames.add(String(s.strategy));
+    }
+    for (const w of weights) {
+      if (w["strategy"] && w["strategy"] !== "UNKNOWN") entityNames.add(String(w["strategy"]));
+    }
+  }
+  const specs: EntrySpec[] = [...entityNames].sort().map(name => {
+    const parsed = parseReportEntity(name);
+    return { name, baseStrategy: parsed.baseStrategy, direction: parsed.direction, regime: parsed.regime };
+  });
 
   return specs.map(spec => {
-    const st = spec.direction
-      ? trades.filter(t => t.strategy === spec.baseStrategy && t.direction === spec.direction)
-      : trades.filter(t => t.strategy === spec.name);
+    const st = spec.regime
+      ? trades.filter(t => reportEntityForTrade(t) === spec.name)
+      : spec.direction
+        ? trades.filter(t => t.strategy === spec.baseStrategy && t.direction === spec.direction)
+        : trades.filter(t => t.strategy === spec.name);
 
     // Find accumulated stats from strategy_direction_stats
     // Fall back to them when live paper_closed_trades has less history (post-reset state)
-    const sdsRow = spec.direction
+    const sdsRow = !spec.regime && spec.direction
       ? sdsRows.find(r => r["strategy"] === spec.baseStrategy && r["direction"] === spec.direction)
-      : sdsRows.find(r => r["strategy"] === spec.name);
+      : !spec.regime ? sdsRows.find(r => r["strategy"] === spec.name) : undefined;
     const sdsTrades = sdsRow ? Number(sdsRow["trades"]) : 0;
 
     let tradeCount: number, winCount: number, lossCount: number;
@@ -239,7 +302,7 @@ function buildStrategyDetails(
     const ss = stats.find(s => (s.strategy as string) === spec.baseStrategy);
 
     let weight = 1, quarantine = false, trustScore = 0, disabledUntil: string | null = null;
-    if (entityRows.length > 0) {
+    if (spec.regime) {
       const eRow = entityRows.find(r => r["entity"] === spec.name);
       weight     = eRow ? Number(eRow["weight"])      : 1;
       quarantine = eRow ? Boolean(eRow["quarantine"]) : false;
@@ -521,23 +584,27 @@ function buildDecisionLogSection(log: DecisionTrace[], stats: Awaited<ReturnType
 // ── Learning journal (пункт 7) ────────────────────────────────────────────────
 
 function buildLearningJournal(learningReports: Array<Record<string, unknown>>, stratHistory: Array<Record<string, unknown>>, stratWeights: Array<Record<string, unknown>>): string {
-  const quarantined = stratWeights.filter(w => w["quarantine"]);
-  const disabled    = stratWeights.filter(w => w["disabled"] && !w["quarantine"]);
+  const currentEntityWeights = stratWeights.filter(w => String(w["entity"] ?? "").match(/_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/));
+  const quarantined = currentEntityWeights.filter(w => w["quarantine"]);
+  const disabled    = currentEntityWeights.filter(w => w["disabled"] && !w["quarantine"]);
 
   const statusHtml = `
     <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-      ${stratWeights.map(w => `
+      ${currentEntityWeights.filter(w => Number(w["trades"] ?? 0) > 0 || w["quarantine"]).slice(0, 12).map(w => `
         <div class="kpi">
-          <div class="label">${esc(String(w["strategy"] ?? ""))}</div>
+          <div class="label">${esc(String(w["entity"] ?? ""))}</div>
           <div class="value" style="font-size:16px">${(Number(w["weight"]) * 100).toFixed(0)}%</div>
           <div class="sub">Trust: ${Number(w["trust_score"]).toFixed(0)} ${w["quarantine"] ? "🔴 Карантин" : w["disabled"] ? "⛔ Отключена" : "✅ Активна"}</div>
         </div>`).join("")}
     </div>`;
 
+  const quarantineHtml = quarantined.length
+    ? `<div class="section-title" style="margin-top:12px">Карантинные сущности</div><div class="empty">${quarantined.map(w => esc(String(w["entity"]))).join(" · ")}</div>`
+    : "";
   const historyHtml = stratHistory.length ? `
-    <div class="section-title" style="margin-top:12px">История изменений весов</div>
+    <div class="section-title" style="margin-top:12px">История изменений весов (агрегат по базовым стратегиям)</div>
     <table>
-      <tr><th>Время</th><th>Стратегия</th><th>Вес</th><th>PF</th><th>Trust</th><th>Причина</th></tr>
+      <tr><th>Время</th><th>Базовая стратегия</th><th>Вес</th><th>PF</th><th>Trust</th><th>Причина</th></tr>
       ${stratHistory.slice(0, 15).map(h => {
         const pw = Number(h["prev_weight"]), nw = Number(h["new_weight"]);
         const pp = Number(h["prev_pf"]), np = Number(h["new_pf"]);
@@ -568,7 +635,7 @@ function buildLearningJournal(learningReports: Array<Record<string, unknown>>, s
       </div>`;
     }).join("")}` : '<div class="section-title" style="margin-top:16px">Циклы адаптации</div><div class="empty">Циклов адаптации пока не было</div>';
 
-  return statusHtml + historyHtml + reportsHtml;
+  return statusHtml + quarantineHtml + historyHtml + reportsHtml;
 }
 
 // ── AI Summary (пункт 8) ──────────────────────────────────────────────────────
@@ -596,11 +663,14 @@ function buildAISummary(d: ReportData, allStats: WindowStats | null, last30w: Wi
     items.push(`<li>${pfDelta >= 0 ? "✅" : "⚠️"} Посл. 30 vs Пред. 30: PF ${fmt(prev30w.pf)} → <strong>${fmt(last30w.pf)}</strong> (${ps(pfDelta)}${fmt(pfDelta)})</li>`);
   }
 
-  // Leader strategy
-  const byPF = [...d.strategyDetails].filter(s => s.trades >= 5).sort((a, b) => b.profitFactor - a.profitFactor);
+  // Leader entity. This is deliberately not aggregated by the four base
+  // strategies: regime and direction are part of the v3.0 identity.
+  const byPF = [...d.strategyDetails]
+    .filter(s => s.trades >= 5 && /_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/.test(s.strategy))
+    .sort((a, b) => b.profitFactor - a.profitFactor);
   if (byPF.length > 0) {
     const lead = byPF[0]!;
-    items.push(`<li>🏆 Лидер стратегия: <span class="highlight">${lead.strategy}</span> — PF ${lead.profitFactor >= 999 ? "∞" : fmt(lead.profitFactor)}, WR ${fmt(lead.winRate)}%, ${lead.trades} сделок</li>`);
+    items.push(`<li>🏆 Лидер сущность: <span class="highlight">${lead.strategy}</span> — PF ${lead.profitFactor >= 999 ? "∞" : fmt(lead.profitFactor)}, WR ${fmt(lead.winRate)}%, ${lead.trades} сделок</li>`);
   }
   if (byPF.length > 1) {
     const worst = byPF[byPF.length - 1]!;
@@ -658,6 +728,13 @@ function buildHtml(d: ReportData): string {
   const readColor= readiness.total >= 70 ? "#16a34a" : readiness.total >= 50 ? "#d97706" : "#dc2626";
   const totalRet = ((d.balance - d.initialBalance) / d.initialBalance) * 100;
   const dd       = d.peakBalance > 0 ? ((d.peakBalance - d.balance) / d.peakBalance) * 100 : 0;
+  const currentRegime = d.positions.slice().reverse().find(p => p.marketRegime)?.marketRegime
+    ?? d.closedTrades.slice().reverse().find(t => t.marketRegime)?.marketRegime
+    ?? "unknown";
+  const currentRegimeDetails = d.strategyDetails.filter(s =>
+    s.strategy.endsWith(`_${currentRegime}`)
+  );
+  const currentRegimeWithData = currentRegimeDetails.filter(s => s.trades > 0).length;
 
   // Risk metrics for KPI cards
   const _pnlPcts = [...d.closedTrades].reverse().map(t => t.pnlPercent);
@@ -908,12 +985,18 @@ tr:hover td{background:#263348}
 </details>
 
 <!-- STRATEGIES (пункт 3) -->
-<details open>
-  <summary>🏆 Стратегии — расширенная статистика</summary>
+<details>
+  <summary>🏆 Стратегии — 48 сущностей (направление × режим)</summary>
   <div class="section-body">
+    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
+      <div class="kpi"><div class="label">Текущий режим</div><div class="value" style="font-size:18px">${esc(currentRegime)}</div></div>
+      <div class="kpi"><div class="label">Сущностей в режиме</div><div class="value">8</div></div>
+      <div class="kpi"><div class="label">С данными</div><div class="value">${currentRegimeWithData}</div></div>
+    </div>
+    <div class="empty" style="margin-bottom:12px">Полный список v3.0: 8 комбинаций стратегии и направления × 6 рыночных режимов. Сводка лидера учитывает только сущности с минимум 5 сделками.</div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>Стратегия</th><th>Всего</th><th>Посл.30</th><th>WR</th><th>PF</th><th>Exp.</th><th>Avg W/L</th><th>TP1</th><th>TP2</th><th>SL</th><th>Avg Dur</th><th>Max DD</th><th>Вес</th><th>Trust</th><th>Статус</th></tr>
+      <tr><th>Сущность (направление · режим)</th><th>Всего</th><th>Посл.30</th><th>WR</th><th>PF</th><th>Exp.</th><th>Avg W/L</th><th>TP1</th><th>TP2</th><th>SL</th><th>Avg Dur</th><th>Max DD</th><th>Вес</th><th>Trust</th><th>Статус</th></tr>
       ${d.strategyDetails.map(s => `<tr>
         <td><strong>${s.strategy}</strong></td>
         <td>${s.trades}</td>
@@ -1040,7 +1123,7 @@ tr:hover td{background:#263348}
 <details>
   <summary>🧠 Журнал обучения AI</summary>
   <div class="section-body">
-    ${buildLearningJournal(d.learningReports, d.strategyHistory, d.strategyWeights)}
+    ${buildLearningJournal(d.learningReports, d.strategyHistory, d.strategyEntityWeights)}
   </div>
 </details>
 
@@ -1193,8 +1276,10 @@ export async function generateDailyReport(chatId: number): Promise<ReportResult>
     if (cur > maxDDpct) maxDDpct = cur;
   }
 
-  // Best / worst strategy (by PF, min 5 trades)
-  const stratsWithTrades = data.strategyDetails.filter(s => s.trades >= 5);
+  // Best / worst entity (by PF, min 5 trades)
+  const stratsWithTrades = data.strategyDetails.filter(s =>
+    s.trades >= 5 && /_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/.test(s.strategy)
+  );
   const bestStrat  = [...stratsWithTrades].sort((a,b) => b.profitFactor - a.profitFactor)[0];
   const worstStrat = [...stratsWithTrades].sort((a,b) => a.profitFactor - b.profitFactor)[0];
 

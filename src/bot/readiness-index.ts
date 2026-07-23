@@ -106,6 +106,9 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   components.push({ name: "Макс. просадка", score: ddScore, maxScore: 15, status: ddScore >= 10 ? "✅" : ddScore >= 5 ? "🟡" : "❌", note: `DD = ${maxDd.toFixed(1)}%` });
 
   // 5. Walk-Forward Tests (max 15)
+  // This is intentionally a system-level aggregate. Walk-forward rows are
+  // still stored by base strategy, so do not present this score as one of the
+  // 48 direction × regime entities in the reports.
   const { rows: wfRows } = await pool.query(
     `SELECT DISTINCT ON (strategy) strategy, is_valid, overfit_risk FROM walk_forward_results ORDER BY strategy, computed_at DESC`
   );
@@ -117,7 +120,7 @@ export async function calcReadinessIndex(chatId?: number): Promise<ReadinessResu
   else if (wfPassed === wfTotal) { wfScore = 15; }
   else if (wfPassed >= Math.ceil(wfTotal / 2)) { wfScore = 10; }
   else { wfScore = 5; recommendations.push("Большинство стратегий не прошли Walk-Forward"); }
-  components.push({ name: "Walk-Forward тесты", score: wfScore, maxScore: 15, status: wfScore >= 10 ? "✅" : wfScore >= 5 ? "🟡" : "❌", note: `${wfPassed}/${wfTotal} прошли` });
+  components.push({ name: "Walk-Forward тесты (агрегат по базовым стратегиям)", score: wfScore, maxScore: 15, status: wfScore >= 10 ? "✅" : wfScore >= 5 ? "🟡" : "❌", note: `${wfPassed}/${wfTotal} прошли` });
 
   // 6. No Degradation (max 15) — last 30 vs 100
   // p30/p100 — срезы DESC-массива pnls, index 0 = newest ✓
