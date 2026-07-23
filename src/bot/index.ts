@@ -288,29 +288,30 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
               }
             }));
 
-        // Strategy row (8 entities)
-        const entityIcons: Record<string, string> = {
-          "TREND_LONG": "📈", "TREND_SHORT": "📉",
-          "VOLUME_IMPULSE_LONG": "⚡↑", "VOLUME_IMPULSE_SHORT": "⚡↓",
-          "MEAN_REVERSION_LONG": "↩️↑", "MEAN_REVERSION_SHORT": "↩️↓",
-          "BREAKOUT_LONG": "🚀↑", "BREAKOUT_SHORT": "🚀↓",
-        };
+        // Keep the dashboard compact. Detailed per-entity statistics live in
+        // the dedicated "Стратегии" screen; the dashboard only summarizes the
+        // current regime's 8 entities (4 strategy families × LONG/SHORT).
         const sortedStrats = (entityStatuses as any[])
           .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
-        const best = sortedStrats[0];
-        const stratLines: string[] = sortedStrats.length > 0
-          ? sortedStrats.flatMap((s: any) => {
-              const icon   = entityIcons[s.entity] ?? "▪️";
-              const status = s.status === "active" ? "✅" : s.status === "quarantine" ? "⚠️" : "🔴";
-              // Escape underscores: Telegram legacy Markdown treats _ as italic delimiter.
-              // Entity names like MEAN_REVERSION_LONG break the parser inside *bold* or _italic_.
-              const eName = (s.entity as string).replace(/_/g, "\\_");
-              if (s.trades < 3) return [`${status}${icon} ${eName} — _нет данных (${s.trades} сд.)_`];
-              const wr  = (s.winRate * 100).toFixed(0);
-              const pf  = s.profitFactor >= 99 ? "∞" : s.profitFactor.toFixed(2);
-              const tr  = s.trustScore ?? 0;
-              return [`${status}${icon} *${eName}*  Trust ${tr}/100 · WR ${wr}% · PF ${pf}`];
-            })
+        const best = sortedStrats.find((s: any) => s.trades > 0);
+        const familyNames = new Set(
+          sortedStrats.map((s: any) => String(s.entity)
+            .replace(/_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/, "")
+            .replace(/_(LONG|SHORT)$/, ""))
+        );
+        const withData = sortedStrats.filter((s: any) => s.trades > 0).length;
+        const quarantined = sortedStrats.filter((s: any) => s.status === "quarantine").length;
+        const disabled = sortedStrats.filter((s: any) => s.status === "disabled").length;
+        const noData = Math.max(0, sortedStrats.length - withData);
+        const strategySummaryLines: string[] = sortedStrats.length > 0
+          ? [
+              `${familyNames.size} семейства · ${sortedStrats.length} сущностей текущего режима`,
+              `✅ Активны: ${sortedStrats.length - quarantined - disabled} · ⚠️ Карантин: ${quarantined} · ⚪ Без данных: ${noData}`,
+              best
+                ? `🏆 Лидер: ${String(best.entity).replace(/_/g, " ")} · Trust ${best.trustScore ?? 0}/100`
+                : "🏆 Лидер: накапливаю данные для сравнения",
+              "_Подробные WR/PF по каждой сущности — в разделе «Стратегии»_",
+            ]
           : ["_нет данных о стратегиях_"];
         const trendIcon = health?.trend === "improving" ? "📈" : health?.trend === "degrading" ? "📉" : "➡️";
         const trendText = health?.trend === "improving" ? "Улучшается"
@@ -355,7 +356,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           `WR ${wr.toFixed(1)}%  ·  PF ${pf >= 999 ? "∞" : pf.toFixed(2)}`,
           "",
           `*Стратегии*  ${trendIcon} ${trendText} · ${riBar} готовность ${ri}/100`,
-          ...stratLines,
+          ...strategySummaryLines,
           "",
           `💬 _${analysisText}_`,
         ].join("\n");
@@ -370,8 +371,9 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
           await ctx.reply(text, {
             parse_mode: "Markdown",
             ...Markup.inlineKeyboard([
-              [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-               Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+              [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
+               Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
+              [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
               [Markup.button.callback("◀️ Меню",         "menu_main")],
             ]),
           });
@@ -414,8 +416,9 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         await ctx.reply(text, {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
+             Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
+            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]),
         });
@@ -519,8 +522,9 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         await ctx.reply(text, {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
+             Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
+            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]),
         });
