@@ -202,12 +202,12 @@ CREATE TABLE IF NOT EXISTS notification_state (
 
 const MIGRATIONS = [
   // FIX Critical#2: subscriptions PK must include interval (allows multi-interval per symbol)
-  `DO $ BEGIN
+  `DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='subscriptions_pkey') THEN
       ALTER TABLE subscriptions DROP CONSTRAINT subscriptions_pkey;
     END IF;
     ALTER TABLE subscriptions ADD PRIMARY KEY (chat_id, symbol, interval);
-  EXCEPTION WHEN others THEN NULL; END $`,
+  EXCEPTION WHEN others THEN NULL; END $$`,
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS breakeven_moved BOOLEAN NOT NULL DEFAULT false",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trail_atr DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'TREND'",
