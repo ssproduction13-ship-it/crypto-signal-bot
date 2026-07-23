@@ -10,9 +10,9 @@ import assert from "node:assert/strict";
 
 // ── Pure decision logic helpers (mirrors scheduler.ts gate logic) ────────────
 
-// ВАЖНО: это значение ДОЛЖНО совпадать с MIN_FINAL_SCORE в scheduler.ts
-// Если меняешь там — обнови и здесь
-const MIN_FINAL_SCORE = 3; // sync: bootstrap phase (prod value)
+// ВАЖНО: это значение ДОЛЖНО совпадать с MIN_FINAL_SCORE в scheduler.ts.
+// Production v3.0 uses the mature-entity threshold after bootstrap.
+const MIN_FINAL_SCORE = 10;
 
 type StrategyStatus = "active" | "quarantine" | "disabled";
 
