@@ -41,6 +41,7 @@ import { checkMTFAlignment } from "./mtf-filter.js";
 import { checkCorrelationRisk } from "./correlation-risk.js";
 import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 import { saveStatsSnapshot } from "./stats-snapshot.js";
+import { pruneOldData } from "./data-cleanup.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 10; // restored from bootstrap value of 3 — 715 trades accumulated, entities mature
@@ -1412,6 +1413,19 @@ cron.schedule("0 9 * * 1", async () => {
       try {
         await checkNewListings(async (id, msg) => { await safeSend(id, msg); });
       } catch (err) { logger.warn({ err }, "Listings check error"); }
+    });
+
+    // Daily data retention: prune large log tables at 02:00 UTC
+    cron.schedule("0 2 * * *", async () => {
+      try {
+        const result = await pruneOldData();
+        const total = Object.values(result).reduce((a, b) => a + b, 0);
+        if (total > 0) {
+          logger.info(result, "Daily pruneOldData completed");
+        }
+      } catch (err) {
+        logger.error({ err }, "Daily pruneOldData failed");
+      }
     });
 
     logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");

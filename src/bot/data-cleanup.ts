@@ -183,3 +183,65 @@ export async function runDataCleanup(chatId: number): Promise<CleanupResult> {
 
   return { dupesRemoved, tradesKept, oldBalance, newBalance: newBalanceRounded, initialBalance, statsRebuilt };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PruneResult {
+  decisionLogDeleted: number;
+  snapshotsDeleted: number;
+  tradeFeaturesDeleted: number;
+  shadowTradesDeleted: number;
+  missedTradesDeleted: number;
+}
+
+/**
+ * Routine data retention — keeps large log tables within safe size limits.
+ * Safe to call repeatedly (idempotent). Should be run at least daily.
+ */
+export async function pruneOldData(): Promise<PruneResult> {
+  const [dl, ss, tf, st, mt] = await Promise.all([
+    // decision_log — keep last 5000 rows
+    pool.query(
+      `DELETE FROM decision_log
+       WHERE id NOT IN (SELECT id FROM decision_log ORDER BY id DESC LIMIT 5000)`
+    ).catch(() => ({ rowCount: 0 })),
+    // stats_snapshots — keep last 30 rows
+    pool.query(
+      `DELETE FROM stats_snapshots
+       WHERE id NOT IN (SELECT id FROM stats_snapshots ORDER BY id DESC LIMIT 30)`
+    ).catch(() => ({ rowCount: 0 })),
+    // trade_features — keep last 8000 rows
+    pool.query(
+      `DELETE FROM trade_features
+       WHERE position_id NOT IN (
+         SELECT position_id FROM trade_features ORDER BY saved_at DESC LIMIT 8000
+       )`
+    ).catch(() => ({ rowCount: 0 })),
+    // shadow_closed_trades — keep last 5000 rows
+    pool.query(
+      `DELETE FROM shadow_closed_trades
+       WHERE id NOT IN (SELECT id FROM shadow_closed_trades ORDER BY id DESC LIMIT 5000)`
+    ).catch(() => ({ rowCount: 0 })),
+    // missed_trades — keep last 2000 rows
+    pool.query(
+      `DELETE FROM missed_trades
+       WHERE id NOT IN (
+         SELECT id FROM missed_trades ORDER BY timestamp DESC LIMIT 2000
+       )`
+    ).catch(() => ({ rowCount: 0 })),
+  ]);
+
+  const result: PruneResult = {
+    decisionLogDeleted:   dl.rowCount ?? 0,
+    snapshotsDeleted:     ss.rowCount ?? 0,
+    tradeFeaturesDeleted: tf.rowCount ?? 0,
+    shadowTradesDeleted:  st.rowCount ?? 0,
+    missedTradesDeleted:  mt.rowCount ?? 0,
+  };
+
+  const totalDeleted = Object.values(result).reduce((a, b) => a + b, 0);
+  if (totalDeleted > 0) {
+    logger.info(result, "pruneOldData: old rows deleted");
+  }
+  return result;
+}

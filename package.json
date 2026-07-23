@@ -8,7 +8,8 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test \"src/bot/__tests__/**/*.test.mts\""
+    "test": "node --experimental-strip-types --test \"src/bot/__tests__/**/*.test.mts\"",
+    "emergency-cleanup": "DATABASE_URL=$DATABASE_URL npx ts-node --esm scripts/emergency-cleanup.ts"
   },
   "dependencies": {
     "@google/genai": "^2.9.0",

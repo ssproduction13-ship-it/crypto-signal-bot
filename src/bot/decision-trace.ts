@@ -55,6 +55,9 @@ export function makeTrace(
   };
 }
 
+/** Maximum rows to keep in decision_log — oldest are deleted after each insert. */
+const MAX_DECISION_LOG_ROWS = 5000;
+
 export async function saveDecisionTrace(trace: DecisionTrace): Promise<void> {
   await pool.query(
     `INSERT INTO decision_log(symbol, strategy, direction, regime, timestamp, steps, verdict, reject_reason, trade_id, score, confidence)
@@ -66,6 +69,16 @@ export async function saveDecisionTrace(trace: DecisionTrace): Promise<void> {
       trace.score ?? null, trace.confidence ?? null,
     ]
   ).catch(err => logger.warn({ err }, "decision_log save failed"));
+
+  // Auto-prune: keep only the most recent MAX_DECISION_LOG_ROWS rows
+  // Run async (fire-and-forget) so it never delays signal processing
+  pool.query(
+    `DELETE FROM decision_log
+     WHERE id NOT IN (
+       SELECT id FROM decision_log ORDER BY id DESC LIMIT $1
+     )`,
+    [MAX_DECISION_LOG_ROWS]
+  ).catch(err => logger.warn({ err }, "decision_log auto-prune failed"));
 }
 
 export async function getRecentDecisionLog(limit = 50): Promise<DecisionTrace[]> {

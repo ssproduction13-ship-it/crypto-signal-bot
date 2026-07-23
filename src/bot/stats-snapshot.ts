@@ -2,11 +2,11 @@
  * stats-snapshot.ts
  *
  * Periodic JSON snapshots of all analytics tables.
- * Snapshots are saved to `stats_snapshots` in PostgreSQL and accumulate
- * indefinitely — they are never deleted automatically.
+ * Snapshots are saved to `stats_snapshots` in PostgreSQL.
+ * Auto-pruned to keep only the last MAX_SNAPSHOTS rows.
  *
  * API:
- *   saveStatsSnapshot(type)       — write a new snapshot row
+ *   saveStatsSnapshot(type)       — write a new snapshot row (auto-prunes old)
  *   restoreFromSnapshot(id?)      — upsert analytics tables from latest (or id) snapshot
  *   listSnapshots(limit?)         — return metadata for recent snapshots
  */
@@ -15,6 +15,9 @@ import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Maximum number of snapshots to keep — oldest are deleted automatically. */
+const MAX_SNAPSHOTS = 30;
 
 export type SnapshotType = "daily" | "pre-cleanup" | "manual";
 
@@ -32,6 +35,7 @@ export interface SnapshotMeta {
 
 /**
  * Read all four analytics tables and persist them as a single JSONB row.
+ * Automatically deletes oldest snapshots if count exceeds MAX_SNAPSHOTS.
  * Returns the new snapshot id.
  */
 export async function saveStatsSnapshot(type: SnapshotType = "manual"): Promise<number> {
@@ -70,6 +74,23 @@ export async function saveStatsSnapshot(type: SnapshotType = "manual"): Promise<
     { id, type, instruments: ia.rows.length, timeRows: ta.rows.length },
     "Stats snapshot saved"
   );
+
+  // Auto-prune: keep only the last MAX_SNAPSHOTS rows
+  try {
+    const pruneResult = await pool.query(
+      `DELETE FROM stats_snapshots
+       WHERE id NOT IN (
+         SELECT id FROM stats_snapshots ORDER BY id DESC LIMIT $1
+       )`,
+      [MAX_SNAPSHOTS]
+    );
+    if ((pruneResult.rowCount ?? 0) > 0) {
+      logger.info({ deleted: pruneResult.rowCount, kept: MAX_SNAPSHOTS }, "stats_snapshots auto-pruned");
+    }
+  } catch (pruneErr) {
+    logger.warn({ pruneErr }, "stats_snapshots auto-prune failed — snapshot saved but old rows not deleted");
+  }
+
   return id;
 }
 
@@ -131,17 +152,17 @@ export async function restoreFromSnapshot(snapshotId?: number): Promise<Snapshot
     for (const row of d.time_analytics) {
       await client.query(
         `INSERT INTO time_analytics
-           (hour_of_day, day_of_week, trades, wins, win_pnl, loss_pnl, total_pnl)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (hour_of_day, day_of_week) DO UPDATE SET
+           (hour_utc, trades, wins, win_pnl, loss_pnl, total_pnl)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (hour_utc) DO UPDATE SET
            trades    = EXCLUDED.trades,
            wins      = EXCLUDED.wins,
            win_pnl   = EXCLUDED.win_pnl,
            loss_pnl  = EXCLUDED.loss_pnl,
            total_pnl = EXCLUDED.total_pnl`,
         [
-          row["hour_of_day"], row["day_of_week"], row["trades"],
-          row["wins"], row["win_pnl"], row["loss_pnl"], row["total_pnl"],
+          row["hour_utc"], row["trades"], row["wins"],
+          row["win_pnl"], row["loss_pnl"], row["total_pnl"],
         ]
       );
     }
@@ -150,17 +171,17 @@ export async function restoreFromSnapshot(snapshotId?: number): Promise<Snapshot
     for (const row of d.strategy_stats) {
       await client.query(
         `INSERT INTO strategy_stats
-           (strategy, trades, wins, total_pnl, win_pnl, loss_pnl)
+           (strategy, trades, wins, win_pnl, loss_pnl, total_pnl)
          VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (strategy) DO UPDATE SET
            trades    = EXCLUDED.trades,
            wins      = EXCLUDED.wins,
-           total_pnl = EXCLUDED.total_pnl,
            win_pnl   = EXCLUDED.win_pnl,
-           loss_pnl  = EXCLUDED.loss_pnl`,
+           loss_pnl  = EXCLUDED.loss_pnl,
+           total_pnl = EXCLUDED.total_pnl`,
         [
           row["strategy"], row["trades"], row["wins"],
-          row["total_pnl"], row["win_pnl"], row["loss_pnl"],
+          row["win_pnl"], row["loss_pnl"], row["total_pnl"],
         ]
       );
     }
