@@ -157,7 +157,42 @@ export async function checkDegradation(): Promise<string | null> {
   return null;
 }
 
-export function formatABReport(variants: ABVariant[]): string {
+// Round-robin rotation: cycle through all variants so each one gets tested.
+    // Without this, only variant 1 ever receives trades and the A/B test is meaningless.
+    // Rotation happens every ROTATION_PERIOD trades on the active variant.
+    // Stops rotating once a champion has been crowned (champion stays active permanently).
+    const ROTATION_PERIOD = 25;
+
+    export async function maybeRotateABVariant(): Promise<string | null> {
+    const variants = await loadABVariants();
+    // Champion is established — stop rotating, champion stays active
+    if (variants.some(v => v.isChampion)) return null;
+
+    const active = variants.find(v => v.isActive);
+    if (!active) return null;
+
+    // Not enough trades yet on this variant slot
+    if (active.trades < ROTATION_PERIOD) return null;
+
+    // Find next variant in id order (wrapping around: 1→2→3→1...)
+    const sorted = [...variants].sort((a, b) => a.id - b.id);
+    const activeIdx = sorted.findIndex(v => v.id === active.id);
+    const next = sorted[(activeIdx + 1) % sorted.length]!;
+
+    await pool.query("UPDATE ab_variants SET is_active=false WHERE id=$1", [active.id]);
+    await pool.query("UPDATE ab_variants SET is_active=true WHERE id=$1", [next.id]);
+    await saveWeights(next.weights);
+    logger.info({ from: active.id, to: next.id, fromTrades: active.trades }, "A/B variant rotated");
+
+    return (
+      `🔄 *A/B ротация*\n\n` +
+      `Завершён тест: ${active.name} (${active.trades} сд, WR ${active.winRate.toFixed(1)}%)\n` +
+      `Следующий вариант: ${next.name}\n\n` +
+      `Каждые ${ROTATION_PERIOD} сделок варианты чередуются — так все 3 получают равные данные.`
+    );
+    }
+
+    export function formatABReport(variants: ABVariant[]): string {
   const lines = variants.map(v => {
     const champ = v.isChampion ? " 👑" : "";
     const active = v.isActive ? " ▶️" : "";
