@@ -120,6 +120,7 @@ function evalVolumeImpulse(ind: IndicatorResult, candles: Candle[]): StrategySig
 
   if (volRatio > 2.5)      { score += 40; reasons.push(`🔥 Аномальный объём: ${(volRatio * 100).toFixed(0)}%`); }
   else if (volRatio > 1.5) { score += 25; reasons.push(`Высокий объём: ${(volRatio * 100).toFixed(0)}%`); }
+  else if (volRatio > 1.2) { score += 15; reasons.push(`Умеренный объём: ${(volRatio * 100).toFixed(0)}% — возможен импульс`); }
   else { return { strategy: "VOLUME_IMPULSE", direction: "NEUTRAL", score: 0, reasons: ["Объём в норме — нет импульса"], confidence: 0 }; }
 
   // FIX: MACD теперь только голосует за направление, но НЕ добавляет к score немедленно.
