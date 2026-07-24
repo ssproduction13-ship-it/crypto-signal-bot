@@ -37,7 +37,7 @@ export function calcRisk(
   let tp2: number;
 
   // fix: widened stop 1.3→2.0 ATR to reduce noise-triggered exits (position size auto-shrinks ~35%)
-  // TP1 3→4 ATR keeps R/R=2.0 (minimum threshold); TP2 5→7 ATR = 3.5R target
+  // TP1 3→4 ATR keeps R/R=1.5 (minimum threshold); TP2 5→7 ATR = 3.5R target
   if (direction === "LONG") {
     stopLoss = entryPrice - atr * 2.0;
     tp1 = entryPrice + atr * 4.0;
@@ -63,7 +63,7 @@ export function calcRisk(
   const COMMISSION_RT = 0.002; // 0.1% entry + 0.1% exit (KuCoin standard)
   const positionSize = maxLossAmount / (Math.abs(entryPrice - stopLoss) + entryPrice * COMMISSION_RT);
 
-  const isRRViable = rrRatio1 >= 2.0;
+  const isRRViable = rrRatio1 >= 1.5;
 
   return {
     entryPrice,
