@@ -6,7 +6,7 @@ import type { TradeSignal } from "./signals.js";
   import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
-  import { evaluateABVariants, checkDegradation } from "./ab-testing.js";
+  import { evaluateABVariants, checkDegradation , maybeRotateABVariant , maybeRotateABVariant } from "./ab-testing.js";
   import { pool, resetAllData } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
@@ -1070,7 +1070,9 @@ import { pruneOldData } from "./data-cleanup.js";
   // ── AB evaluator (every 6 hours) ─────────────────────────────────────────────
   async function runABEvaluation(): Promise<void> {
     try {
-      const championMsg = await evaluateABVariants();
+      const rotationMsg = await maybeRotateABVariant();
+        if (rotationMsg) for (const chatId of chatIds) await safeSend(chatId, rotationMsg);
+              const championMsg = await evaluateABVariants();
       if (championMsg) for (const chatId of chatIds) await safeSend(chatId, championMsg);
       const degradationMsg = await checkDegradation();
       if (degradationMsg) for (const chatId of chatIds) await safeSend(chatId, degradationMsg);
