@@ -418,6 +418,10 @@ const MIGRATIONS = [
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS commission DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS slippage   DOUBLE PRECISION NOT NULL DEFAULT 0",
   "ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
+  "ALTER TABLE paper_positions        ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION",
+  "ALTER TABLE paper_positions        ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT '1h'",
   // ── Partial entry (pending_entry) columns ────────────────────────────────
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_size    DOUBLE PRECISION",

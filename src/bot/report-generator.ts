@@ -108,8 +108,10 @@ async function collectData(chatId: number): Promise<ReportData> {
   ]);
 
   const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes, sdsRes] = await Promise.all([
-    pool.query("SELECT * FROM risk_state WHERE id=1"),
-    pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200"),
+    pool.query("SELECT * FROM risk_state WHERE id=1")
+      .catch((err) => { logger.error({ err }, "report-generator: risk_state query failed"); return { rows: [] }; }),
+    pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200")
+      .catch((err) => { logger.error({ err }, "report-generator: missed_trades query failed"); return { rows: [] }; }),
     pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5")
       .catch((err) => { logger.error({ err }, "report-generator: learning_reports query failed"); return { rows: [] }; }),
     pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30")

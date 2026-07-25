@@ -84,7 +84,7 @@ export async function saveDecisionTrace(trace: DecisionTrace): Promise<void> {
 export async function getRecentDecisionLog(limit = 50): Promise<DecisionTrace[]> {
   const { rows } = await pool.query(
     `SELECT * FROM decision_log ORDER BY timestamp DESC LIMIT $1`, [limit]
-  );
+  ).catch((err) => { logger.warn({ err }, "getRecentDecisionLog failed"); return { rows: [] as Record<string, unknown>[] }; });
   return (rows as Record<string, unknown>[]).map(r => ({
     symbol:       String(r["symbol"]),
     strategy:     String(r["strategy"]),
