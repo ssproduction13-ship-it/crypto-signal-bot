@@ -1288,7 +1288,9 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     const msg = await ctx.reply("⏳ Генерирую HTML-отчёт...", { parse_mode: "Markdown" });
     try {
       const { html, filename, summary } = await generateDailyReport(chatId);
-      await ctx.reply(summary, { parse_mode: "Markdown" });
+      await ctx.reply(summary, { parse_mode: "Markdown" }).catch(() =>
+        ctx.reply(summary)  // fallback: plain text if Markdown parse fails
+      );
       await ctx.telegram.sendDocument(chatId, { source: html, filename }, { caption: "📄 Полный HTML-отчёт" });
     } catch (err) {
       logger.error({ err, chatId }, "/report command failed");

@@ -1341,8 +1341,8 @@ export async function generateDailyReport(chatId: number): Promise<ReportResult>
     ...(bestStrat && worstStrat && bestStrat.strategy !== worstStrat.strategy ? [
       ``,
       `*Стратегии:*`,
-      `├ 🟢 ${bestStrat.strategy}: PF ${bestStrat.profitFactor >= 999 ? "∞" : bestStrat.profitFactor.toFixed(2)} · WR ${bestStrat.winRate.toFixed(0)}%`,
-      `└ 🔴 ${worstStrat.strategy}: PF ${worstStrat.profitFactor.toFixed(2)} · WR ${worstStrat.winRate.toFixed(0)}%`,
+      `├ 🟢 \`${bestStrat.strategy}\`: PF ${bestStrat.profitFactor >= 999 ? "∞" : bestStrat.profitFactor.toFixed(2)} · WR ${bestStrat.winRate.toFixed(0)}%`,
+      `└ 🔴 \`${worstStrat.strategy}\`: PF ${worstStrat.profitFactor.toFixed(2)} · WR ${worstStrat.winRate.toFixed(0)}%`,
     ] : []),
     ``,
     `*Статус:*  ❤️ ${healthStr}  ·  🎯 ${readiness.total}/100`,
