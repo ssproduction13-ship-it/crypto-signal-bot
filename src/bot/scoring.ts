@@ -165,10 +165,15 @@ export function calcScore(
   factorScores["levels"] = levelsScore;
   if (levelsReasons.length) reasons.push(...levelsReasons.map((r) => `🎯 ${r}`));
 
+  // BUG-01 fix: patternRaw now uses pattern.bias to determine sign of the boost.
+  // Previously: boost was always ADDED regardless of bearish patterns (e.g. DOUBLE_TOP),
+  // so every pattern pushed trendBias toward LONG.
+  // Now: bullish → +boost, bearish → -boost, neutral → 0 (no directional impact).
   let patternRaw = 50;
   if (pattern.name !== "NONE") {
     const boost = pattern.confidence > 75 ? 40 : 25;
-    patternRaw += boost;
+    const dir = pattern.bias === "bullish" ? 1 : pattern.bias === "bearish" ? -1 : 0;
+    patternRaw += dir * boost;
     reasons.push(`🔷 ${pattern.description}`);
   }
   const patternScore = clamp(patternRaw);
@@ -187,6 +192,8 @@ export function calcScore(
   // fix: patternScore was absent from trendBias — strong reversal/breakout patterns
   // (pin bar, engulfing, double top/bottom) had zero influence on direction.
   // volumeScore added at half-weight: high-volume moves have stronger conviction.
+  // BUG-01: with patternScore now correctly below 50 for bearish patterns,
+  // (patternScore - 50) * weights.pattern correctly pushes trendBias negative.
   const trendBias =
     (trendScore    - 50) * weights.trend +
     (momentumScore - 50) * weights.momentum +

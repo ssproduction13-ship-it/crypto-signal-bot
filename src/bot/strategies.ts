@@ -73,11 +73,15 @@ function evalBreakout(ind: IndicatorResult, levels: SupportResistance, pattern: 
     // Pattern already confirmed the breakout — add its score and direction
     score += 30;
     reasons.push(pattern.description);
-    if (pattern.description.toLowerCase().includes("бычий") || pattern.description.toLowerCase().includes("сопротивления")) {
+    // BUG-01 fix: use pattern.bias instead of parsing Russian description text.
+    // Text parsing was fragile (typos, translation changes) and only matched "бычий"/"сопротивления".
+    // pattern.bias is set explicitly in patterns.ts for each detected breakout direction.
+    if (pattern.bias === "bullish") {
       direction = "LONG";
-    } else {
+    } else if (pattern.bias === "bearish") {
       direction = "SHORT";
     }
+    // neutral bias → direction stays NEUTRAL (pattern fired but direction unclear)
     // fix: skip level checks when pattern already fired — same price event, prevents double-counting
     // (was: pattern +30 AND level +20 for the same breakout = score 90 before volume check)
   } else {

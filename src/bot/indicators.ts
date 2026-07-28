@@ -28,6 +28,21 @@ export interface IndicatorResult {
   atrPercent: number | null;
 }
 
+/**
+ * BUG-02 fix: returns the closed candles only (drops the last, currently-open candle).
+ *
+ * All indicators used for signal generation MUST run on closed candles.
+ * The current (last) candle is still forming — its OHLCV values change every tick,
+ * causing RSI, MACD, EMA, BB, StochRSI, ADX to "flicker" until bar close.
+ * This helper is the single source of truth for that slice.
+ *
+ * Usage: every place that builds indicator inputs from a candle array must call
+ * getClosedCandles() before passing the array to calcIndicators or any indicator lib.
+ */
+export function getClosedCandles(candles: Candle[]): Candle[] {
+  return candles.slice(0, -1);
+}
+
 export function calcIndicators(candles: Candle[]): IndicatorResult {
   if (!candles.length) {
     return {
@@ -38,10 +53,20 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
       volumeSignal: "below_avg", atr: null, atrPercent: null,
     };
   }
-  const closes = candles.map((c) => c.close);
-  const highs = candles.map((c) => c.high);
-  const lows = candles.map((c) => c.low);
-  const volumes = candles.map((c) => c.volume);
+
+  // BUG-02 fix: drop the current open (incomplete) candle before computing any indicator.
+  // Volume was already fixed at the call-site in scoring.ts / strategies.ts (using length-2),
+  // but RSI, MACD, BB, EMA cross, StochRSI, ADX still used the full array including the
+  // live candle, causing values to flicker mid-bar.
+  // We apply the slice here — inside calcIndicators — so ALL indicators share one fix point
+  // rather than scattering slices across every caller.
+  const closed = candles.length > 1 ? candles.slice(0, -1) : candles;
+
+  const closes  = closed.map((c) => c.close);
+  const highs   = closed.map((c) => c.high);
+  const lows    = closed.map((c) => c.low);
+  const volumes = closed.map((c) => c.volume);
+  // currentClose is now the last *closed* bar's close — stable, not flickering
   const currentClose = closes[closes.length - 1]!;
 
   const rsiValues = RSI.calculate({ values: closes, period: 14 });
@@ -89,12 +114,12 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
     }
   }
 
-  const ema20Values = EMA.calculate({ values: closes, period: 20 });
-  const ema50Values = EMA.calculate({ values: closes, period: 50 });
+  const ema20Values  = EMA.calculate({ values: closes, period: 20 });
+  const ema50Values  = EMA.calculate({ values: closes, period: 50 });
   const ema200Values = EMA.calculate({ values: closes, period: 200 });
-  const ema20 = ema20Values.length ? ema20Values[ema20Values.length - 1]! : null;
-  const ema50 = ema50Values.length ? ema50Values[ema50Values.length - 1]! : null;
-  // L2: require at least 200 candles for a meaningful EMA-200.
+  const ema20  = ema20Values.length  ? ema20Values[ema20Values.length - 1]!   : null;
+  const ema50  = ema50Values.length  ? ema50Values[ema50Values.length - 1]!   : null;
+  // L2: require at least 200 closed candles for a meaningful EMA-200.
   // With fewer bars the library still computes a value but it's unreliable —
   // silently using it would distort the trend score. Returning null makes the
   // absence explicit and scoring.ts already handles ema200 == null correctly.
@@ -116,7 +141,7 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
     dPeriod: 3,
   });
   const lastStoch = stochValues.length ? stochValues[stochValues.length - 1]! : null;
-  const stochRsi = lastStoch?.k != null ? lastStoch.k : null;
+  const stochRsi  = lastStoch?.k != null ? lastStoch.k : null;
   let stochSignal: "buy" | "sell" | "neutral" = "neutral";
   if (stochRsi != null) {
     if (stochRsi < 20) stochSignal = "buy";
@@ -124,8 +149,8 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   }
 
   const adxValues = ADX.calculate({ close: closes, high: highs, low: lows, period: 14 });
-  const lastAdx = adxValues.length ? adxValues[adxValues.length - 1]! : null;
-  const adxValue = lastAdx?.adx != null ? lastAdx.adx : null;
+  const lastAdx   = adxValues.length ? adxValues[adxValues.length - 1]! : null;
+  const adxValue  = lastAdx?.adx != null ? lastAdx.adx : null;
   let trendStrength: "strong" | "moderate" | "weak" = "weak";
   if (adxValue != null) {
     if (adxValue > 25) trendStrength = "strong";
@@ -133,12 +158,15 @@ export function calcIndicators(candles: Candle[]): IndicatorResult {
   }
 
   const atrValues = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
-  const atr = atrValues.length ? atrValues[atrValues.length - 1]! : null;
+  const atr       = atrValues.length ? atrValues[atrValues.length - 1]! : null;
   const atrPercent = atr != null ? (atr / currentClose) * 100 : null;
 
+  // BUG-02 fix: volumeSignal now compares against closed volumes (via `volumes` slice above).
+  // Previously `volumes[volumes.length - 1]` pointed to the live candle, whose volume
+  // starts near zero every bar → near-constant "below_avg" false signal.
   const volSlice20 = volumes.slice(-20);
-  const avgVolume = volSlice20.length > 0 ? volSlice20.reduce((a, b) => a + b, 0) / volSlice20.length : 0;
-  const lastVolume = volumes[volumes.length - 1]!;
+  const avgVolume  = volSlice20.length > 0 ? volSlice20.reduce((a, b) => a + b, 0) / volSlice20.length : 0;
+  const lastVolume = volumes[volumes.length - 1]!; // last *closed* candle volume
   // avgVolume > 0 guard prevents Infinity/NaN on zero-volume (illiquid or new-listing) candles
   const volumeSignal: "above_avg" | "below_avg" = avgVolume > 0 && lastVolume > avgVolume ? "above_avg" : "below_avg";
 

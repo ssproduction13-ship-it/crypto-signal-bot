@@ -10,10 +10,18 @@ export type PatternName =
   | "TRIANGLE"
   | "NONE";
 
+// BUG-01 fix: explicit directional bias field so scoring/strategies never parse text.
+// "bullish" → positive contribution to LONG score
+// "bearish" → negative contribution (pushes toward SHORT)
+// "neutral" → no directional bias (e.g. CONSOLIDATION/TRIANGLE before the breakout)
+export type PatternBias = "bullish" | "bearish" | "neutral";
+
 export interface PatternResult {
   name: PatternName;
   confidence: number;
   description: string;
+  /** Directional bias of the pattern. Used by scoring.ts and strategies.ts. */
+  bias: PatternBias;
 }
 
 function stdDev(values: number[]): number {
@@ -44,6 +52,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
       name: "CONSOLIDATION",
       confidence: 75,
       description: "Консолидация — цена в узком диапазоне, ожидается пробой",
+      // BUG-01: neutral — direction unknown until the actual breakout fires
+      bias: "neutral",
     };
   }
 
@@ -62,6 +72,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
         name: "TRIANGLE",
         confidence: 70,
         description: "Треугольник — сжатие диапазона, скоро пробой",
+        // BUG-01: neutral — symmetrical triangle, direction unresolved
+        bias: "neutral",
       };
     }
   }
@@ -71,6 +83,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
       name: "DOUBLE_TOP",
       confidence: 72,
       description: "Двойная вершина — медвежий разворотный паттерн",
+      // BUG-01: classic bearish reversal
+      bias: "bearish",
     };
   }
 
@@ -79,6 +93,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
       name: "DOUBLE_BOTTOM",
       confidence: 72,
       description: "Двойное дно — бычий разворотный паттерн",
+      // BUG-01: classic bullish reversal
+      bias: "bullish",
     };
   }
 
@@ -94,6 +110,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
           name: "BREAKOUT",
           confidence: 80,
           description: `Пробой уровня сопротивления ${maxPrevHigh.toFixed(2)} — сильный бычий сигнал`,
+          // BUG-01: upside breakout is bullish
+          bias: "bullish",
         };
       }
     }
@@ -108,6 +126,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
         name: "BREAKOUT",
         confidence: 78,
         description: `Пробой уровня поддержки ${minPrevLow.toFixed(2)} — медвежий сигнал`,
+        // BUG-01: downside breakout is bearish
+        bias: "bearish",
       };
     }
   }
@@ -123,6 +143,8 @@ export function detectPattern(candles: Candle[]): PatternResult {
       name: "FLAG",
       confidence: 68,
       description: `Флаг — коррекция против тренда, возможное продолжение ${trendDir > 0 ? "роста" : "падения"}`,
+      // BUG-01: flag continues in the direction of the prior trend
+      bias: trendDir > 0 ? "bullish" : "bearish",
     };
   }
 
@@ -130,5 +152,6 @@ export function detectPattern(candles: Candle[]): PatternResult {
     name: "NONE",
     confidence: 0,
     description: "Чёткий паттерн не определён",
+    bias: "neutral",
   };
 }

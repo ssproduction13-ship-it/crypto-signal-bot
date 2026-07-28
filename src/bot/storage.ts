@@ -34,6 +34,12 @@ import { pool } from "../lib/db.js";
     maeR?: number;
     /** Running max favorable excursion in R-multiples (updated each tick, stored on close) */
     mfeR?: number;
+    /**
+     * BUG-03: ISO timestamp of the last funding-rate charge applied to this position.
+     * Initialised to openedAt on first load; updated after each charge in checkPaperPositions.
+     * Stored in-memory only (no DB column needed for paper trading).
+     */
+    lastFundingChargeAt?: string;
   }
   export interface ClosedPaperTrade {
     id: string; symbol: string; direction: "LONG"|"SHORT";

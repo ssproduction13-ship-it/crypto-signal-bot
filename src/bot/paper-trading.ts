@@ -1,4 +1,4 @@
-import { getPrice } from "./binance.js";
+import { getPrice, getFundingRate } from "./binance.js";
 import {
   loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
   tryClaimPosition, tryMarkTP1, updateJournalClose, closePositionAndInsertTrade,
@@ -38,6 +38,31 @@ const MAX_POSITION_NOTIONAL_PCT = 0.20;
 
 function randomSlippagePct(): number {
   return SLIPPAGE_MIN_PCT + Math.random() * (SLIPPAGE_MAX_PCT - SLIPPAGE_MIN_PCT);
+}
+
+// ── BUG-03: Funding rate accrual helpers ────────────────────────────────────
+/**
+ * KuCoin perpetual funding is charged every 8 hours at 00:00, 08:00, 16:00 UTC.
+ * Returns the number of funding boundaries that fall strictly between `fromMs` and `toMs`.
+ */
+function countFundingBoundaries(fromMs: number, toMs: number): number {
+  if (toMs <= fromMs) return 0;
+  const INTERVAL_MS = 8 * 3_600_000; // 8 hours
+  // Funding windows start from Unix epoch (00:00 UTC on 1970-01-01)
+  // Boundaries are at multiples of 8h from epoch
+  const firstBoundary = Math.ceil(fromMs / INTERVAL_MS) * INTERVAL_MS;
+  if (firstBoundary >= toMs) return 0;
+  return Math.floor((toMs - firstBoundary) / INTERVAL_MS) + 1;
+}
+
+/**
+ * Returns the ISO timestamp of the latest funding boundary at or before `atMs`,
+ * to store as `lastFundingChargeAt` after processing charges.
+ */
+function latestFundingBoundaryBefore(atMs: number): string {
+  const INTERVAL_MS = 8 * 3_600_000;
+  const boundary = Math.floor(atMs / INTERVAL_MS) * INTERVAL_MS;
+  return new Date(boundary).toISOString();
 }
 
 function buildCloseRecord(
@@ -288,6 +313,49 @@ export async function checkPaperPositions(
             const favorableR = Math.max(0, move)  / stopDist;
             pos.maeR = Math.max(pos.maeR ?? 0, adverseR);
             pos.mfeR = Math.max(pos.mfeR ?? 0, favorableR);
+          }
+        }
+
+        // ── BUG-03: Funding rate accrual ─────────────────────────────────────────────────────────────
+        // KuCoin perpetual funding fires every 8 hours (00:00, 08:00, 16:00 UTC).
+        // Each charge = positionNotional * fundingRate, sign depends on direction:
+        //   LONG  + positive rate → cost   (longs pay shorts)
+        //   LONG  + negative rate → income (shorts pay longs)
+        //   SHORT + positive rate → income
+        //   SHORT + negative rate → cost
+        {
+          const chargeFromMs = new Date(pos.lastFundingChargeAt ?? pos.openedAt).getTime();
+          const nowMs = Date.now();
+          const pendingCharges = countFundingBoundaries(chargeFromMs, nowMs);
+
+          if (pendingCharges > 0) {
+            try {
+              const fundingRate = await getFundingRate(pos.symbol);
+              if (fundingRate != null) {
+                const notional = pos.entryPrice * pos.size;
+                // Positive fundingRate → longs pay; negative → longs receive
+                const signedRate = pos.direction === "LONG" ? fundingRate : -fundingRate;
+                const totalFunding = notional * signedRate * pendingCharges;
+                // totalFunding > 0 → cost to us; < 0 → income to us
+                account.balance = Math.max(0, account.balance - totalFunding);
+                pos.lastFundingChargeAt = latestFundingBoundaryBefore(nowMs);
+                if (Math.abs(totalFunding) > 0.001) {
+                  logger.info(
+                    { symbol: pos.symbol, direction: pos.direction, fundingRate, pendingCharges, totalFunding: totalFunding.toFixed(4) },
+                    "BUG-03: Funding charge applied to paper position"
+                  );
+                }
+                // Record funding cost in account costs (treated as a commission-like cost)
+                if (totalFunding > 0) {
+                  addAccountCosts(chatId, totalFunding, 0).catch(() => {});
+                }
+              } else {
+                // API unavailable — mark boundary so we don't retry the same charge next tick
+                pos.lastFundingChargeAt = latestFundingBoundaryBefore(nowMs);
+              }
+            } catch {
+              // Silently skip funding on API error; will retry next cycle
+            }
           }
         }
 

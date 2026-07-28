@@ -6,7 +6,7 @@ import type { TradeSignal } from "./signals.js";
   import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
-  import { evaluateABVariants, checkDegradation , maybeRotateABVariant , maybeRotateABVariant } from "./ab-testing.js";
+  import { evaluateABVariants, checkDegradation , maybeRotateABVariant } from "./ab-testing.js";
   import { pool, resetAllData } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
