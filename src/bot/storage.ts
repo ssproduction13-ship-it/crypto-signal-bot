@@ -452,6 +452,26 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       [chatId, balance, initialBalance, peak]
     );
   }
+
+  /**
+   * Atomically apply a balance delta to paper_accounts.
+   * Uses a SQL-level UPDATE so concurrent callers (openPaperPosition racing with
+   * checkPaperPositions) each see the CURRENT DB value, not a stale in-memory copy.
+   * This eliminates the read-modify-write race that caused balance to revert to a
+   * higher value after a losing trade was closed.
+   *
+   * peak_balance is updated in the same statement so it is always consistent.
+   * The floor at 0 matches the in-memory Math.max(0, ...) guard.
+   */
+  export async function addBalance(chatId: number, delta: number): Promise<void> {
+    await pool.query(
+      `UPDATE paper_accounts
+       SET balance      = GREATEST(0, balance + $1::numeric),
+           peak_balance = GREATEST(peak_balance, GREATEST(0, balance + $1::numeric))
+       WHERE chat_id = $2`,
+      [delta, chatId]
+    );
+  }
   export async function addAccountCosts(chatId: number, commission: number, slippage: number): Promise<void> {
     await pool.query(
       `UPDATE paper_accounts SET

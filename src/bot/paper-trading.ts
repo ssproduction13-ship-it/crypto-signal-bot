@@ -1,6 +1,6 @@
 import { getPrice, getFundingRate } from "./binance.js";
 import {
-  loadPaperAccount, saveBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
+  loadPaperAccount, saveBalance, addBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
   tryClaimPosition, tryMarkTP1, updateJournalClose, closePositionAndInsertTrade,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
@@ -212,7 +212,8 @@ export async function openPaperPosition(
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);
-  await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
+  // FIX balance-race: atomic delta update so concurrent checkPaperPositions can't overwrite
+  await addBalance(chatId, -openCommission);
   await recordPositionOpened();
 
   const stratNames: Record<string, string> = {
@@ -277,6 +278,7 @@ export async function checkPaperPositions(
             if (claimed) {
               const trade = _toTrade; const pnl = _toPnl;
               account.balance += pnl;
+              await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
               account.closedTrades.unshift(trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
@@ -338,6 +340,7 @@ export async function checkPaperPositions(
                 const totalFunding = notional * signedRate * pendingCharges;
                 // totalFunding > 0 → cost to us; < 0 → income to us
                 account.balance = Math.max(0, account.balance - totalFunding);
+                await addBalance(chatId, -totalFunding); // FIX balance-race: atomic DB update
                 pos.lastFundingChargeAt = latestFundingBoundaryBefore(nowMs);
                 if (Math.abs(totalFunding) > 0.001) {
                   logger.info(
@@ -377,6 +380,7 @@ export async function checkPaperPositions(
             if (claimed) {
               const trade = _stTrade; const pnl = _stPnl;
               account.balance += pnl;
+              await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
               account.closedTrades.unshift(trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
@@ -410,6 +414,7 @@ export async function checkPaperPositions(
           const addSize = pos.pendingEntrySize;
           const addCommission = price * addSize * COMMISSION_RATE;
           account.balance = Math.max(0, account.balance - addCommission); // L3
+          await addBalance(chatId, -addCommission); // FIX balance-race: atomic DB update
           addAccountCosts(chatId, addCommission, 0).catch(() => {});
           const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
           pos.entryPrice = blended;
@@ -485,6 +490,7 @@ export async function checkPaperPositions(
         }
 
         account.balance += pnl;
+        await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
         account.closedTrades.unshift(trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Full close at TP1: record all stats immediately (same as SL/TP2 path)
@@ -550,6 +556,7 @@ export async function checkPaperPositions(
         }
 
         account.balance += pnl;
+        await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
         account.closedTrades.unshift(trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Final close: 1 stat entry per signal (TP1 partial excluded by design)
@@ -635,7 +642,9 @@ export async function checkPaperPositions(
     await updatePosition(chatId, p);
   }
   account.positions = remaining;
-  await saveBalance(chatId, account.balance, account.initialBalance, account.peakBalance);
+  // FIX balance-race: balance is now updated atomically inside each close branch via addBalance().
+  // The old bulk saveBalance() here was the source of the race: it overwrote concurrent
+  // openPaperPosition() balance changes that happened between the load and this save.
   return msgs;
 }
 
