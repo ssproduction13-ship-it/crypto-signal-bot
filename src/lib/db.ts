@@ -8,6 +8,17 @@ export const pool = new Pool({
   max: 10, idleTimeoutMillis: 30000, connectionTimeoutMillis: 5000,
 });
 pool.on("error", (err) => logger.error({ err }, "PG idle client error"));
+// BUG-09: log a warning whenever a connection request must queue behind the pool limit.
+// In prod, watch for repeated "PG pool pressure" entries — they signal cron fan-out
+// or slow queries holding connections; raise `max` or optimise queries if they appear.
+pool.on("connect", () => {
+  if (pool.waitingCount > 0) {
+    logger.warn(
+      { waitingCount: pool.waitingCount, totalCount: pool.totalCount, idleCount: pool.idleCount },
+      "PG pool pressure: connection requests are queued — consider raising pool.max or reducing query frequency",
+    );
+  }
+});
 
 const INIT_SQL = `
 CREATE TABLE IF NOT EXISTS journal_entries (
