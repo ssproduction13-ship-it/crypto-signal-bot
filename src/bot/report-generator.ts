@@ -1,5 +1,6 @@
 import { pool } from "../lib/db.js";
 import { calcWeightedPF } from "../lib/pf-utils.js";
+import { computeMaxDrawdown } from "../lib/metrics.js";
 import { loadPaperAccount, loadWeights, type ClosedPaperTrade, type PaperPosition } from "./storage.js";
 import { loadStrategyStats, type StrategyStats } from "./strategies.js";
 import { loadABVariants } from "./ab-testing.js";
@@ -747,9 +748,8 @@ function buildHtml(d: ReportData): string {
   const sharpe   = _std > 0 ? (_mean / _std) * Math.sqrt(252) : 0;
   const sqn      = _std > 0 ? (_mean / _std) * Math.sqrt(_pnlPcts.length) : 0;
   const sqnLabel = sqn >= 5 ? "Отлично" : sqn >= 3 ? "Хорошо" : sqn >= 2 ? "Норм" : sqn >= 1 ? "Слабо" : "—";
-  // Max drawdown (from % pnl series)
-  let _pk = 0, _eq = 0, maxDDpct = 0;
-  for (const p of _pnlPcts) { _eq += p; if (_eq > _pk) _pk = _eq; const d_ = _pk>0?(_pk-_eq)/_pk*100:0; if (d_>maxDDpct) maxDDpct=d_; }
+  // Max drawdown — compounded equity curve via shared helper (BUG-11 fix)
+  const maxDDpct = computeMaxDrawdown(_pnlPcts);
   const firstTradeDate = d.closedTrades.length
     ? d.closedTrades[d.closedTrades.length-1]!.openedAt
     : null;
@@ -1270,13 +1270,8 @@ export async function generateDailyReport(chatId: number): Promise<ReportResult>
   const sharpe  = _std > 0 ? (_mean / _std) * Math.sqrt(252) : 0;
   const sqn     = _std > 0 ? (_mean / _std) * Math.sqrt(pnlPcts.length) : 0;
 
-  // Max drawdown from pnl%
-  let _peak = 0, _eq = 0, maxDDpct = 0;
-  for (const p of pnlPcts) {
-    _eq += p; if (_eq > _peak) _peak = _eq;
-    const cur = _peak > 0 ? (_peak - _eq) / _peak * 100 : 0;
-    if (cur > maxDDpct) maxDDpct = cur;
-  }
+  // Max drawdown — compounded equity curve via shared helper (BUG-11 fix)
+  const maxDDpct = computeMaxDrawdown(pnlPcts);
 
   // Best / worst entity (by PF, min 5 trades)
   const stratsWithTrades = data.strategyDetails.filter(s =>

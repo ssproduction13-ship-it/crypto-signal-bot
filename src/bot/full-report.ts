@@ -5,6 +5,7 @@
 import { pool }                               from "../lib/db.js";
 import { logger }                             from "../lib/logger.js";
 import { calcWeightedPF }                     from "../lib/pf-utils.js";
+import { computeMaxDrawdown }                  from "../lib/metrics.js";
 import { loadPaperAccount }                   from "./storage.js";
 import type { ClosedPaperTrade, PaperPosition } from "./storage.js";
 import { calcReadinessIndex }                 from "./readiness-index.js";
@@ -45,15 +46,7 @@ function sqnScore(pnls: number[]): number {
   const std  = Math.sqrt(pnls.reduce((a, b) => a + (b - mean) ** 2, 0) / (pnls.length - 1));
   return std === 0 ? 0 : (mean / std) * Math.sqrt(pnls.length);
 }
-function maxDD(pnls: number[]): number {
-  let peak = 0, eq = 0, dd = 0;
-  for (const p of pnls) {
-    eq += p; if (eq > peak) peak = eq;
-    const cur = peak > 0 ? (peak - eq) / peak * 100 : 0;
-    if (cur > dd) dd = cur;
-  }
-  return dd;
-}
+// maxDD removed — replaced by shared computeMaxDrawdown from ../lib/metrics.js (BUG-11 fix)
 function medianVal(arr: number[]): number {
   if (!arr.length) return 0;
   const s = [...arr].sort((a, b) => a - b);
@@ -202,7 +195,7 @@ export async function generateFullReport(chatId: number): Promise<string[]> {
 
   const equityHigh   = Math.max(account.peakBalance ?? account.balance, account.balance);
   const currentDDpct = equityHigh > 0 ? ((equityHigh - account.balance) / equityHigh) * 100 : 0;
-  const maxDDpct     = maxDD(pnls);
+  const maxDDpct     = computeMaxDrawdown(pnls);
   const firstDate    = (firstRow.rows[0] as Record<string,unknown>)?.["first"] as string|null;
   const daysSince    = firstDate ? (now.getTime() - new Date(firstDate).getTime()) / (1000*3600*24) : 0;
   const annualRet    = daysSince > 7 ? retPct * (365 / daysSince) : 0;

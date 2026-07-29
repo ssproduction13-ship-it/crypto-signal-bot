@@ -1,6 +1,6 @@
 import { getPrice, getFundingRate } from "./binance.js";
 import {
-  loadPaperAccount, saveBalance, addBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts,
+  loadPaperAccount, saveBalance, addBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts, recordBalanceLedger,
   tryClaimPosition, tryMarkTP1, updateJournalClose, closePositionAndInsertTrade,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
@@ -214,6 +214,7 @@ export async function openPaperPosition(
   await insertPosition(chatId, pos);
   // FIX balance-race: atomic delta update so concurrent checkPaperPositions can't overwrite
   await addBalance(chatId, -openCommission);
+  recordBalanceLedger(chatId, -openCommission, `open_commission:${symbol}`).catch(() => {});
   await recordPositionOpened();
 
   const stratNames: Record<string, string> = {
@@ -279,6 +280,7 @@ export async function checkPaperPositions(
               const trade = _toTrade; const pnl = _toPnl;
               account.balance += pnl;
               await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
+              recordBalanceLedger(chatId, pnl, `close_partial_tp1:${pos.symbol}`).catch(() => {});
               account.closedTrades.unshift(trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
@@ -341,6 +343,7 @@ export async function checkPaperPositions(
                 // totalFunding > 0 → cost to us; < 0 → income to us
                 account.balance = Math.max(0, account.balance - totalFunding);
                 await addBalance(chatId, -totalFunding); // FIX balance-race: atomic DB update
+            recordBalanceLedger(chatId, -totalFunding, `funding:${pos.symbol}`).catch(() => {});
                 pos.lastFundingChargeAt = latestFundingBoundaryBefore(nowMs);
                 if (Math.abs(totalFunding) > 0.001) {
                   logger.info(
@@ -415,6 +418,7 @@ export async function checkPaperPositions(
           const addCommission = price * addSize * COMMISSION_RATE;
           account.balance = Math.max(0, account.balance - addCommission); // L3
           await addBalance(chatId, -addCommission); // FIX balance-race: atomic DB update
+          recordBalanceLedger(chatId, -addCommission, `pending_entry_commission:${pos.symbol}`).catch(() => {});
           addAccountCosts(chatId, addCommission, 0).catch(() => {});
           const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
           pos.entryPrice = blended;

@@ -1,1 +1,2 @@
 - [Audit fixes completed](audit-fixes.md) — 16 bugs fixed across 4 commits; remaining known issues documented
+- [BUG-13 R/R filter mismatch](bug-13-rr-filter.md) — live 74.5% rejections caused by stale Railway deploy; text fixed to match 1.5 threshold

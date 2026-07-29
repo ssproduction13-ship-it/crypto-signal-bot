@@ -1,4 +1,5 @@
 import { loadClosedTrades, loadWeights } from "./storage.js";
+import { computeMaxDrawdown } from "../lib/metrics.js";
     import { getMissedStats } from "./missed-trades.js";
     import type { ClosedPaperTrade } from "./storage.js";
 
@@ -9,11 +10,7 @@ import { loadClosedTrades, loadWeights } from "./storage.js";
       return std===0 ? 0 : mean/std;
     }
 
-    function maxDD(curve: number[]) {
-      let peak=curve[0]??0, dd=0;
-      for (const v of curve) { if(v>peak)peak=v; dd=Math.max(dd,peak>0?(peak-v)/peak*100:0); }
-      return dd;
-    }
+    // maxDD removed — use computeMaxDrawdown(ret) from ../lib/metrics.js (BUG-11 fix)
 
     export async function buildSelfAnalysis(chatId?: number): Promise<string> {
       const closed = await loadClosedTrades(chatId);
@@ -39,7 +36,7 @@ import { loadClosedTrades, loadWeights } from "./storage.js";
 
       let eq=1000; const curve=[1000];
       for (const r of ret) { eq*=(1+r/100); curve.push(eq); }
-      const dd = maxDD(curve);
+      const dd = computeMaxDrawdown(ret);
       const totalRet = ((curve[curve.length-1]!-1000)/1000*100);
 
       const bySym: Record<string,{w:number;t:number;pnl:number}> = {};

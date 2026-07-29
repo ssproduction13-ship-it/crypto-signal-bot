@@ -1111,6 +1111,38 @@ import { pruneOldData } from "./data-cleanup.js";
   }
 
   // ── Start ──────────────────────────────────────────────────────────────────
+  // BUG-12 fix: daily read-only balance reconciliation
+  async function runBalanceReconciliation(): Promise<void> {
+    try {
+      const { rows } = await pool.query<{ chat_id: string; balance: string; initial_balance: string }>(
+        "SELECT chat_id, balance, initial_balance FROM paper_accounts"
+      );
+      for (const row of rows) {
+        const chatId  = Number(row.chat_id);
+        const balance = parseFloat(row.balance);
+        const initial = parseFloat(row.initial_balance);
+        const { rows: tr } = await pool.query<{ total_pnl: string }>(
+          "SELECT COALESCE(SUM(pnl), 0)::text AS total_pnl FROM paper_closed_trades WHERE chat_id = $1",
+          [chatId]
+        );
+        const totalPnl = parseFloat(tr[0]?.total_pnl ?? "0");
+        // Allow $500 slack for open unrealised P&L on live positions.
+        const diff = Math.abs(balance - (initial + totalPnl));
+        if (diff > 500) {
+          logger.warn(
+            { chatId, balance, initial, totalPnl, diff: diff.toFixed(2) },
+            "BUG-12 balance reconciliation: balance diverges from initial+sum(pnl) — inspect balance_ledger"
+          );
+        } else {
+          logger.info({ chatId, diff: diff.toFixed(2) }, "BUG-12 reconciliation: OK");
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "runBalanceReconciliation failed");
+    }
+  }
+
+
   export async function startScheduler(bot: Telegraf): Promise<void> {
     _bot = bot;
     if (process.env["RESET_DATA"] === "true") {
@@ -1429,6 +1461,9 @@ cron.schedule("0 9 * * 1", async () => {
         logger.error({ err }, "Daily pruneOldData failed");
       }
     });
+
+    // BUG-12: daily balance reconciliation at 00:05 UTC
+    cron.schedule("5 0 * * *", () => { runBalanceReconciliation().catch(() => {}); }, { timezone: "UTC" });
 
     logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");
   }

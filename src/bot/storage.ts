@@ -472,6 +472,19 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       [delta, chatId]
     );
   }
+
+  /** BUG-12 fix: append every balance change to the audit ledger.
+   *  Use .catch() at call-site — table may not exist on first boot until initDb() runs. */
+  export async function recordBalanceLedger(
+    chatId: number,
+    delta: number,
+    reason: string,
+  ): Promise<void> {
+    await pool.query(
+      'INSERT INTO balance_ledger (chat_id, delta, reason) VALUES ($1, $2, $3)',
+      [chatId, delta, reason],
+    ).catch(err => logger.warn({ err, chatId, delta, reason }, 'recordBalanceLedger failed'));
+  }
   export async function addAccountCosts(chatId: number, commission: number, slippage: number): Promise<void> {
     await pool.query(
       `UPDATE paper_accounts SET
