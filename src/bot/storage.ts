@@ -133,6 +133,8 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       finalScore:r["final_score"]!=null?Number(r["final_score"]):undefined,
       maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
       mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
+      // BUG-03 fix: persist lastFundingChargeAt so funding is not re-applied every 30s on reload
+      lastFundingChargeAt:(r["last_funding_charge_at"] as string|null)??undefined,
     };
   }
   function toTrade(r: Record<string,unknown>): ClosedPaperTrade {
@@ -172,6 +174,8 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
     await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
     await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mae_r NUMERIC`);
     await pool.query(`ALTER TABLE paper_closed_trades   ADD COLUMN IF NOT EXISTS mfe_r NUMERIC`);
+    // BUG-03 fix: persist funding charge checkpoint so it is not re-applied every 30s on reload
+    await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS last_funding_charge_at TEXT`);
     // One-time fix: lower min_score that drifted above 65 — such values block all trades
     // Safe: WHERE min_score > 65 won't match after the first run (value becomes 58)
     await pool.query(`UPDATE user_settings SET min_score = 58 WHERE min_score > 65`);
@@ -499,13 +503,13 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score,last_funding_charge_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
        pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
        pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null,
        pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.interval??'1h', pos.riskPercent??null,
-       pos.finalScore??null]
+       pos.finalScore??null, pos.lastFundingChargeAt??null]
     );
   }
   export async function deletePosition(chatId: number, posId: string): Promise<void> {
@@ -513,10 +517,11 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8,mae_r=$9,mfe_r=$10 WHERE chat_id=$11 AND id=$12`,
+      // BUG-03 fix: last_funding_charge_at now persisted so it survives position reloads
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8,mae_r=$9,mfe_r=$10,last_funding_charge_at=$11 WHERE chat_id=$12 AND id=$13`,
       [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, pos.size,
        pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.entryPrice,
-       pos.maeR??null, pos.mfeR??null, chatId, pos.id]
+       pos.maeR??null, pos.mfeR??null, pos.lastFundingChargeAt??null, chatId, pos.id]
     );
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
