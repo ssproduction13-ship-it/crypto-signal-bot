@@ -28,3 +28,59 @@ export function computeMaxDrawdown(pnlPcts: number[]): number {
   }
   return maxDD;
 }
+
+/**
+ * Per-trade data needed for the MAE-aware drawdown variant.
+ * stopLoss and entryPrice are optional — when absent the function falls back
+ * to closed-P&L-only behaviour identical to computeMaxDrawdown.
+ */
+export interface TradeForDD {
+  pnlPercent: number;
+  maeR?: number | null;
+  stopLoss?: number | null;
+  entryPrice?: number | null;
+}
+
+/**
+ * Computes Max Drawdown taking intra-trade unrealised P&L into account.
+ *
+ * BUG-07 fix: computeMaxDrawdown only sees P&L at close, so a trade that
+ * dipped deep intra-bar and then recovered to a small win was invisible to
+ * the drawdown metric. This variant also considers the worst price the
+ * position reached (via maeR × stop distance) BEFORE booking the close.
+ *
+ * Worst-case unrealised P&L for a trade:
+ *   stopDistPct = |entryPrice − stopLoss| / entryPrice × 100
+ *   worstPct    = −(maeR × stopDistPct)   (always ≤ 0)
+ *
+ * @param trades  Chronological array of closed trades
+ * @returns Max drawdown in percent (0–100)
+ */
+export function computeMaxDrawdownWithMAE(trades: TradeForDD[]): number {
+  if (!trades.length) return 0;
+  let equity = 100;
+  let peak   = 100;
+  let maxDD  = 0;
+
+  for (const t of trades) {
+    // ── Intra-trade worst-case dip ────────────────────────────────────────
+    if (
+      t.maeR != null && t.maeR > 0 &&
+      t.stopLoss != null && t.stopLoss > 0 &&
+      t.entryPrice != null && t.entryPrice > 0
+    ) {
+      const stopDistPct   = Math.abs(t.entryPrice - t.stopLoss) / t.entryPrice * 100;
+      const worstPct      = -(t.maeR * stopDistPct);        // always ≤ 0
+      const equityAtWorst = equity * (1 + worstPct / 100);
+      const ddAtWorst     = peak > 0 ? (peak - equityAtWorst) / peak * 100 : 0;
+      if (ddAtWorst > maxDD) maxDD = ddAtWorst;
+    }
+
+    // ── Book closed P&L ───────────────────────────────────────────────────
+    equity *= (1 + t.pnlPercent / 100);
+    if (equity > peak) peak = equity;
+    const dd = peak > 0 ? (peak - equity) / peak * 100 : 0;
+    if (dd > maxDD) maxDD = dd;
+  }
+  return maxDD;
+}

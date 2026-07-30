@@ -10,7 +10,7 @@ import { recordStrategyTrade, type StrategyName } from "./strategies.js";
 import { checkNewPeak, checkMilestone } from "./notifications.js";
 import { logger } from "../lib/logger.js";
 import { pool } from "../lib/db.js";
-import { getActiveVariantId, recordABTrade } from "./ab-testing.js";
+import { getVariantForSignal, recordABTrade } from "./ab-testing.js";
 import { recordRegimeTrade, recordDirectionTrade, recordLossReason, classifyLossReason, type MarketRegime } from "./learning-engine.js";
 import { recordTimeTrade } from "./time-analytics.js";
 import { recordInstrumentTrade } from "./instrument-analytics.js";
@@ -251,8 +251,9 @@ export async function checkPaperPositions(
   const account  = await loadPaperAccount(chatId);
   const msgs: string[] = [];
   const remaining: PaperPosition[] = [];
-  // FIX Critical#7: fetch active A/B variant once per checkPaperPositions cycle
-  const abVariantId = await getActiveVariantId().catch(() => 1);
+  // BUG-07 fix: A/B variant is now assigned per-position via symbol hash
+  // (getVariantForSignal) so all variants collect trades simultaneously.
+  // abVariantId is no longer fetched once for the whole cycle.
 
   const stratNames: Record<string, string> = {
     TREND:"Тренд", BREAKOUT:"Пробой",
@@ -284,8 +285,8 @@ export async function checkPaperPositions(
               account.closedTrades.unshift(trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
-              // FIX Critical#7: record in active A/B variant
-              recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
+              // BUG-07 fix: hash-based variant assignment per symbol
+              getVariantForSignal(pos.symbol).then(vid => recordABTrade(vid, pnlEquityPct, pnl > 0)).catch(() => {});
               const regime = pos.marketRegime ?? "sideways";
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
@@ -387,8 +388,8 @@ export async function checkPaperPositions(
               account.closedTrades.unshift(trade);
               addAccountCosts(chatId, commission, slippage).catch(() => {});
               recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
-              // FIX Critical#7: record in active A/B variant
-              recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
+              // BUG-07 fix: hash-based variant assignment per symbol
+              getVariantForSignal(pos.symbol).then(vid => recordABTrade(vid, pnlEquityPct, pnl > 0)).catch(() => {});
               const regimeStale = pos.marketRegime ?? "sideways";
               recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
               recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
@@ -499,7 +500,7 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Full close at TP1: record all stats immediately (same as SL/TP2 path)
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
-        recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
+        getVariantForSignal(pos.symbol).then(vid => recordABTrade(vid, pnlEquityPct, pnl > 0)).catch(() => {});
         const tp1Regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
         recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
@@ -565,8 +566,8 @@ export async function checkPaperPositions(
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Final close: 1 stat entry per signal (TP1 partial excluded by design)
         recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
-        // FIX Critical#7: record this final close in the active A/B variant (was defined but never called)
-        recordABTrade(abVariantId, pnlEquityPct, pnl > 0).catch(() => {});
+        // BUG-07 fix: hash-based variant assignment per symbol
+        getVariantForSignal(pos.symbol).then(vid => recordABTrade(vid, pnlEquityPct, pnl > 0)).catch(() => {});
         const regime = pos.marketRegime ?? "sideways";
         recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
         recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});

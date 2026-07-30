@@ -121,7 +121,11 @@ export async function runWalkForwardTest(strategy: StrategyName): Promise<WalkFo
       overfitScore,
     });
 
-    pos += TEST_SIZE;
+    // BUG-07 fix: advance by TRAIN_SIZE + TEST_SIZE so windows never overlap.
+    // The old pos += TEST_SIZE caused each training slice to share TRAIN_SIZE–TEST_SIZE
+    // trades with the previous one — train data leaked into future test windows and
+    // made overfit scores unreliable. Non-overlapping windows are fewer but honest.
+    pos += TRAIN_SIZE + TEST_SIZE;
     windowIndex++;
   }
 

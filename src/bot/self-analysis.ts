@@ -1,5 +1,5 @@
 import { loadClosedTrades, loadWeights } from "./storage.js";
-import { computeMaxDrawdown } from "../lib/metrics.js";
+import { computeMaxDrawdownWithMAE } from "../lib/metrics.js";
     import { getMissedStats } from "./missed-trades.js";
     import type { ClosedPaperTrade } from "./storage.js";
 
@@ -36,7 +36,16 @@ import { computeMaxDrawdown } from "../lib/metrics.js";
 
       let eq=1000; const curve=[1000];
       for (const r of ret) { eq*=(1+r/100); curve.push(eq); }
-      const dd = computeMaxDrawdown(ret);
+      // BUG-07 fix: use MAE-aware drawdown so intra-trade dips are counted.
+      // Falls back to plain compounded equity if maeR/stopLoss are missing.
+      const dd = computeMaxDrawdownWithMAE(
+        chronological.map(e => ({
+          pnlPercent: e.pnlPercent,
+          maeR:       e.maeR,
+          stopLoss:   e.stopLoss,
+          entryPrice: e.entryPrice,
+        }))
+      );
       const totalRet = ((curve[curve.length-1]!-1000)/1000*100);
 
       const bySym: Record<string,{w:number;t:number;pnl:number}> = {};

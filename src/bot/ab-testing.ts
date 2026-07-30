@@ -92,6 +92,39 @@ export async function getActiveVariantId(): Promise<number> {
   return Number((rows[0] as Record<string, unknown>)["id"]);
 }
 
+/**
+ * Deterministic hash-based variant assignment (BUG-07 fix).
+ *
+ * The old round-robin rotation tested variants sequentially — Variant A got
+ * trades 1-25, Variant B got trades 26-50, etc.  Market conditions during
+ * each window differed systematically, making the comparison meaningless.
+ *
+ * This function assigns every signal to a variant simultaneously via a stable
+ * hash of the symbol so all three variants collect trades in parallel across
+ * the same market conditions.  Once a champion is crowned, all trades go to
+ * the champion (experiment is over).
+ *
+ * djb2 hash: deterministic, no external deps, fast.
+ */
+function djb2(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+export async function getVariantForSignal(symbol: string): Promise<number> {
+  const variants = await loadABVariants();
+  // Experiment over — champion takes all trades
+  const champion = variants.find(v => v.isChampion);
+  if (champion) return champion.id;
+  if (!variants.length) return 1;
+  // Distribute signals across all variants via symbol hash so each variant
+  // gets a statistically comparable sample of different coins simultaneously.
+  const sorted = [...variants].sort((a, b) => a.id - b.id);
+  const idx = djb2(symbol) % sorted.length;
+  return sorted[idx]!.id;
+}
+
 // Compare all variants and promote the best one
 // Returns a notification message if champion changed
 export async function evaluateABVariants(): Promise<string | null> {

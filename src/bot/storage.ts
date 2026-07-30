@@ -62,6 +62,8 @@ import { pool } from "../lib/db.js";
     maeR?: number;
     /** Max Favorable Excursion in R-multiples — how far price went in favour of the trade */
     mfeR?: number;
+    /** Stop-loss price at trade open — used by MAE-aware max-drawdown (BUG-07 fix) */
+    stopLoss?: number;
   }
   export interface PaperAccount {
     balance: number; initialBalance: number; peakBalance: number;
@@ -152,6 +154,7 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       marketRegime:(r["market_regime"] as string|null)??undefined,
       maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
       mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
+      stopLoss:r["stop_loss"]!=null?Number(r["stop_loss"]):undefined,
     };
   }
 
