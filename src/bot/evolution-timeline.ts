@@ -94,8 +94,16 @@ export async function autoSnapshotAfterLearning(): Promise<void> {
     const pf = gL > 0 ? gW / gL : gW > 0 ? 99 : 0;
     const wr = wins.length / pnls.length;
 
-    let peak = 0, eq = 0, dd = 0;
-    for (const r of [...pnls].reverse()) { eq += r; if (eq > peak) peak = eq; const cur = peak > 0 ? (peak - eq) / peak * 100 : 0; if (cur > dd) dd = cur; }
+    // BUG-DD: additive accumulation (eq += r) produced extreme DD% values (e.g. 2938%)
+    // because when peak is tiny (near 0) and losses accumulate to -150 the formula
+    // (peak - eq) / peak blows up. Fix: use compound-return equity curve (same approach
+    // as learning-engine.ts) which stays bounded and gives realistic DD%.
+    // pnls come from ORDER BY closed_at DESC, so reverse() gives oldest-first.
+    let eq = 100;
+    const curve: number[] = [100];
+    for (const r of [...pnls].reverse()) { eq *= (1 + r / 100); curve.push(eq); }
+    let peak = curve[0] ?? 100, dd = 0;
+    for (const v of curve) { if (v > peak) peak = v; const cur = peak > 0 ? (peak - v) / peak * 100 : 0; if (cur > dd) dd = cur; }
 
     // Strategy performance
     const stratMap: Record<string, number[]> = {};

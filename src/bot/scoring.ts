@@ -179,16 +179,7 @@ export function calcScore(
   const patternScore = clamp(patternRaw);
   factorScores["pattern"] = patternScore;
 
-  const total = clamp(
-    Math.round(
-      trendScore * weights.trend +
-        volumeScore * weights.volume +
-        momentumScore * weights.momentum +
-        levelsScore * weights.levels +
-        patternScore * weights.pattern
-    )
-  );
-
+  // ── Direction: compute BEFORE total so total can be direction-aware ─────────
   // fix: patternScore was absent from trendBias — strong reversal/breakout patterns
   // (pin bar, engulfing, double top/bottom) had zero influence on direction.
   // volumeScore added at half-weight: high-volume moves have stronger conviction.
@@ -206,6 +197,32 @@ export function calcScore(
   // (e.g. trendScore=60 + momentumScore=55 needed) while letting marginal trends through.
   const direction: "LONG" | "SHORT" | "NEUTRAL" =
     trendBias > 3 ? "LONG" : trendBias < -3 ? "SHORT" : "NEUTRAL";
+
+  // ── Total: direction-aware signal strength ───────────────────────────────────
+  // BUG-SHORT: previously total was computed BEFORE direction was known, using raw
+  // component scores. For SHORT signals, bearish indicators produce LOW component
+  // scores (e.g. trendScore=20, momentumScore=20) — numerically the same numbers that
+  // signal a strong SHORT — but summing them gives a LOW total (≈40), which is always
+  // below the minScore=62 threshold. Result: SHORT signals were NEVER executed despite
+  // 2564 attempts logged in decision_log (all rejected "Score ниже порога").
+  //
+  // Fix: for SHORT, invert the directional factors around 50 so that a strong bearish
+  // signal (low raw score) maps to a high signal-strength score.
+  // Volume is direction-neutral: high volume = strong signal regardless of direction.
+  const st = direction === "SHORT" ? (100 - trendScore)    : trendScore;
+  const sm = direction === "SHORT" ? (100 - momentumScore) : momentumScore;
+  const sl = direction === "SHORT" ? (100 - levelsScore)   : levelsScore;
+  const sp = direction === "SHORT" ? (100 - patternScore)  : patternScore;
+
+  const total = clamp(
+    Math.round(
+      st          * weights.trend +
+      volumeScore * weights.volume +
+      sm          * weights.momentum +
+      sl          * weights.levels +
+      sp          * weights.pattern
+    )
+  );
 
   return {
     trendScore,
