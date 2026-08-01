@@ -336,14 +336,16 @@ import { pruneOldData } from "./data-cleanup.js";
       const entityKey = `${strat}_${sig.score.direction}_${regime}`;
       const stratStatus = entityStatuses.find(s => s.entity === entityKey);
       const stratWeight = stratWeights[strat] ?? 1;
-      // Load user settings early so the score gate uses the user-configured min_score,
-      // not just the adaptive cachedMinScore (which can drift to 45–57 even when the
-      // user has explicitly set min_score = 70 in user_settings).
+      // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
-      // Cap user setting at 65 — prevents misconfigured values (e.g. 68-70) from
-      // blocking all trades when the adaptive ceiling is only 57.
-      const userMinCapped = Math.min(settingsEarly?.minScore ?? 0, 65);
-      const minScore = Math.max(cachedMinScore, userMinCapped);
+      // User setting now acts as an UPPER CAP on adaptive minScore:
+      //   minScore = clamp(adaptive, floor=45, ceil=userSetting)
+      // This means: if the user sets 58, adaptive cannot exceed 58 even when the
+      // loss-streak logic pushes it higher. Adaptive can still lower it toward 45
+      // during good periods. Previously max() was used, making user setting a floor
+      // instead — so setting 52 had no effect when adaptive was 62.
+      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 45), 65);
+      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 45);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
