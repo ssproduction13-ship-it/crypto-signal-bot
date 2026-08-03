@@ -315,9 +315,22 @@ import { pruneOldData } from "./data-cleanup.js";
           direction: effectiveDirection,
         });
       }
-      const selectionResult: StrategySelectionResult | null = strategySignals.length > 0
-        ? await selectBestStrategy(strategySignals, regime).catch(() => null)
-        : null;
+      let selectionResult: StrategySelectionResult | null = null;
+      if (strategySignals.length > 0) {
+        try {
+          selectionResult = await selectBestStrategy(strategySignals, regime);
+        } catch (err) {
+          // Do not turn database/schema/API failures into a misleading
+          // "NO_STRATEGY_SELECTED" rejection. The error must be visible in
+          // Railway logs so the production cause can be fixed.
+          logger.error({
+            err,
+            symbol: sub.symbol,
+            regime,
+            strategies: strategySignals.map((s) => s.strategy),
+          }, "Strategy selection failed");
+        }
+      }
       if (!selectionResult) {
         logger.warn({ symbol: sub.symbol, reason: 'NO_STRATEGY_SELECTED' }, 'Decision Engine: NO TRADE — no valid strategy selected');
         return null;

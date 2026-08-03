@@ -84,7 +84,14 @@ import { createRequire } from "node:module";
         this.ws.on("message", (raw: Buffer) => {
           try {
             const msg = JSON.parse(raw.toString()) as { type: string; topic?: string; subject?: string };
-            if (msg.type === "message" && msg.subject === "trade.candles.add" && msg.topic) {
+            // KuCoin currently sends `trade.candles.update` for candle updates.
+            // Keep accepting the legacy `trade.candles.add` subject as well so
+            // the bot remains compatible with older WS gateways.
+            if (
+              msg.type === "message" &&
+              (msg.subject === "trade.candles.update" || msg.subject === "trade.candles.add") &&
+              msg.topic
+            ) {
               const part = msg.topic.replace("/market/candles:", "");
               const idx = part.lastIndexOf("_");
               if (idx < 0) return;
