@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computeMaxDrawdown } from "../../lib/metrics.js";
+import { computeMaxDrawdown } from "../../lib/metrics.ts";
 
 test("computeMaxDrawdown — empty array returns 0", () => {
   assert.equal(computeMaxDrawdown([]), 0);

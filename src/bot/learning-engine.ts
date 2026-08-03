@@ -2,6 +2,7 @@ import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
 import { calcWeightedPF } from "../lib/pf-utils.js";
 import { getEntityShadowStats } from "./shadow-testing.js";
+import { evaluateRegimeStats } from "./regime-gate.js";
 import type { StrategyName } from "./strategies.js";
 import type { MarketCondition } from "./chaos-filter.js";
 import type { MarketRating } from "./market-rating.js";
@@ -104,7 +105,14 @@ export async function isStrategyBlockedInRegime(
   strategy: StrategyName, regime: MarketRegime,
   interval = "ALL" // M1 fix: query per-interval stats first, fall back to 'ALL' aggregate
 ): Promise<{blocked:boolean;reason:string}> {
-  // Try interval-specific stats first (>=10 trades); fall back to cross-interval 'ALL'
+  // Interval-specific stats are authoritative once they have a small but
+  // meaningful sample. Do not replace a 5-trade local bucket with the
+  // cross-interval aggregate: e.g. BREAKOUT/sideways/15m can have PF 1.78 and
+  // WR 40%, while ALL intervals may be poor and incorrectly block it.
+  // Keep the larger threshold for the aggregate fallback because it mixes
+  // different intervals and needs more evidence to be representative.
+  const MIN_INTERVAL_TRADES = 5;
+  const MIN_AGGREGATE_TRADES = 10;
   const candidates = interval !== "ALL" ? [interval, "ALL"] : ["ALL"];
   for (const iv of candidates) {
     const {rows} = await pool.query(
@@ -115,9 +123,10 @@ export async function isStrategyBlockedInRegime(
     const r = rows[0] as Record<string,unknown>;
     const trades=Number(r["trades"]),wins=Number(r["wins"]);
     const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-    if (trades<10) continue; // not enough data in this bucket — try next
-    const pf = lossPnl>0 ? winPnl/lossPnl : winPnl>0 ? 2.0 : 0;
-    const wr = wins/trades;
+    const minTrades = iv === "ALL" ? MIN_AGGREGATE_TRADES : MIN_INTERVAL_TRADES;
+    const stats = evaluateRegimeStats(trades, wins, winPnl, lossPnl, minTrades);
+    if (!stats) continue;
+    const { profitFactor: pf, winRate: wr } = stats;
     // fix: was `&&` (AND) — a strategy with PF=0.1 but WR=0.45 passed the filter
     // because only one condition was true. Changed to `||` (OR): if EITHER metric
     // is bad enough the strategy is blocked (a poor PF with decent WR still destroys capital).

@@ -487,13 +487,18 @@ import { pruneOldData } from "./data-cleanup.js";
         if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
       }
 
-      // Порог 0.60: стратегия с PF < 0.60 на 20+ сделках системно убыточна и должна блокироваться.
-      // Снижено с 0.75 → 0.60: порог 0.75 был слишком агрессивным и блокировал стратегии
-      // в зоне восстановления (PF 0.60–0.75 = убыточно, но не критично).
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.profitFactor < 0.60) {
-        gate.fail("Strategy PF", `PF стратегии ниже минимального порога`, stratStatus.profitFactor.toFixed(2), "0.60");
-      } else {
-        if (!gate.rejected) gate.pass("Strategy PF", (stratStatus?.trades ?? 0) >= 5 ? stratStatus!.profitFactor.toFixed(2) : "мало данных");
+      // PF is already incorporated into the strategy×direction×regime Entity
+      // weight/quarantine decision. A second strategy-level hard block here
+      // double-counts the same signal and can deadlock an entity: its weight is
+      // reduced to exploration level, but this gate still prevents it from
+      // collecting the evidence needed to recover.
+      if (!gate.rejected) {
+        gate.pass(
+          "Strategy PF",
+          (stratStatus?.trades ?? 0) >= 5
+            ? `учтён Entity system (PF ${stratStatus!.profitFactor.toFixed(2)})`
+            : "мало данных — учтено Entity system",
+        );
       }
 
       // Мягкий фильтр TREND+sideways: полный блок заменён на скор-зависимый порог.

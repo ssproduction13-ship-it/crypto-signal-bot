@@ -11,6 +11,7 @@
     "rootDir": "src",
     "sourceMap": true,
     "declaration": false,
+    "allowImportingTsExtensions": true,
     "types": [
       "node"
     ]
