@@ -71,9 +71,9 @@ import { pool } from "../lib/db.js";
           const SHADOW_REF_EQUITY = 10000;
           const pnlEquityPct = (pnl / SHADOW_REF_EQUITY) * 100;
           await pool.query(
-            `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,pnl_equity_pct,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-            [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"])]
+          `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,pnl_equity_pct,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow,entity)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"]),pos["entity"] ?? null]
           );
           await pool.query("DELETE FROM shadow_positions WHERE id=$1",[pos["id"]]);
         }
@@ -113,6 +113,14 @@ import { pool } from "../lib/db.js";
   ): Promise<void> {
     const stopDist = Math.abs(entryPrice - stopLoss);
     if (stopDist <= 0) return;
+    // Keep one open shadow position per entity and symbol. This prevents
+    // repeated scans or process restarts from inflating the virtual sample
+    // with duplicate positions before the previous one is resolved.
+    const { rows: existing } = await pool.query(
+      "SELECT 1 FROM shadow_positions WHERE entity=$1 AND symbol=$2 LIMIT 1",
+      [entity, symbol],
+    );
+    if (existing.length > 0) return;
     const size = 100 / stopDist;
     await pool.query(
       `INSERT INTO shadow_positions(id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,challenger_weights,market_regime,opened_at,is_direction_shadow,entity)

@@ -42,6 +42,7 @@ import { checkCorrelationRisk } from "./correlation-risk.js";
 import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 import { pruneOldData } from "./data-cleanup.js";
+import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 10; // restored from bootstrap value of 3 — 715 trades accumulated, entities mature
@@ -556,23 +557,6 @@ import { pruneOldData } from "./data-cleanup.js";
             `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)}`,
             "Score≥65 | Conf≥40% | FS≥20"
           );
-          // Shadow quarantine: заблокированный сигнал уходит в виртуальную сделку.
-          // Learning-engine отслеживает shadow PF/WR и выводит entity из карантина
-          // автоматически, не дожидаясь накопления реальных сделок (которые частично
-          // блокируются карантином — иначе получается deadlock: не торгует → нет данных → не выходит).
-          const shadowEntityKey = `shadowq:${entityKey}`;
-          if (Date.now() - (shadowBannedDebounce.get(shadowEntityKey) ?? 0) > SHADOW_BANNED_DEBOUNCE_MS) {
-            shadowBannedDebounce.set(shadowEntityKey, Date.now());
-            loadWeights().then(w =>
-              openEntityShadowPosition(
-                entityKey,
-                sub.symbol,
-                (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
-                sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-                strat, w, regime
-              ).catch(() => {})
-            ).catch(() => {});
-          }
         }
       } else if (!gate.rejected) {
         gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");
@@ -666,6 +650,24 @@ import { pruneOldData } from "./data-cleanup.js";
             rejectReason: gate.rejectReason || undefined,
             score: sig.score.total, confidence: sig.confidence.score,
           }).catch(() => {});
+        // Adaptive rejections continue learning in entity-level shadow mode.
+        // Safety/quality failures (chaos, neutral direction, funding, R/R,
+        // score, ATR, MTF, etc.) are intentionally excluded by the policy.
+        if (shouldOpenEntityShadow(gate.steps, sig.score.direction)) {
+          const shadowEntityKey = `shadow-adaptive:${entityKey}:${sub.symbol}`;
+          if (Date.now() - (shadowBannedDebounce.get(shadowEntityKey) ?? 0) > SHADOW_BANNED_DEBOUNCE_MS) {
+            shadowBannedDebounce.set(shadowEntityKey, Date.now());
+            loadWeights().then(w =>
+              openEntityShadowPosition(
+                entityKey,
+                sub.symbol,
+                sig.score.direction as "LONG"|"SHORT",
+                sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+                strat, w, regime
+              ).catch((err) => logger.debug({ err, symbol: sub.symbol, entity: entityKey }, "Entity shadow open failed"))
+            ).catch((err) => logger.debug({ err, symbol: sub.symbol, entity: entityKey }, "Entity shadow weights failed"));
+          }
+        }
           const rejectCode =
             gate.rejectReason?.toLowerCase().includes('карантин')
               ? 'QUARANTINE_RULE'
