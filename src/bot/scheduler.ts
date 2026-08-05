@@ -45,7 +45,7 @@ import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
-  export const MIN_FINAL_SCORE = 10; // restored from bootstrap value of 3 — 715 trades accumulated, entities mature
+  export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
@@ -216,10 +216,10 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
   // ── ТЗ: Динамический Score порог на основе накопленной статистики PF по бакетам ──
   // Заменяет прежнюю dynamicMinScore(marketIndex) — теперь порог кэшируется и
   // обновляется в cron раз в 12 часов на основе реального PF по бакетам score.
-  let cachedMinScore = 45;
+  let cachedMinScore = 55;
 
   async function adaptiveMinScore(): Promise<number> {
-    const BASE_MIN = 45;
+    const BASE_MIN = 55;
     try {
       const { rows: totalRows } = await pool.query(
         "SELECT COUNT(*) as total FROM trade_features WHERE pnl_percent IS NOT NULL"
@@ -275,7 +275,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
     if (finalScore >= 25) return 0.75; // средний — -25%
     if (finalScore >= 15) return 0.50; // слабый — -50%
     // FIX: bootstrap зона — было 0.30 (-70%), теперь 0.50 (-50%).
-    // При MIN_FINAL_SCORE=3 большинство сигналов попадают сюда и в связке с 9 другими
+    // При слишком низком MIN_FINAL_SCORE большинство сигналов попадало сюда и в связке с 9 другими
     // множителями итоговый размер схлопывался до < 0.05% депозита.
     return 0.50;                       // пограничный — -50%
   }
@@ -350,13 +350,13 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
       // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
       // User setting now acts as an UPPER CAP on adaptive minScore:
-      //   minScore = clamp(adaptive, floor=45, ceil=userSetting)
+      //   minScore = clamp(adaptive, floor=55, ceil=userSetting)
       // This means: if the user sets 58, adaptive cannot exceed 58 even when the
-      // loss-streak logic pushes it higher. Adaptive can still lower it toward 45
+      // loss-streak logic pushes it higher. Adaptive can still lower it toward 55
       // during good periods. Previously max() was used, making user setting a floor
       // instead — so setting 52 had no effect when adaptive was 62.
-      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 45), 65);
-      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 45);
+      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 55), 65);
+      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 55);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
@@ -393,8 +393,8 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
-      if (!gate.rejected && sig.confidence.score < 12) {
-        gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "12%");
+      if (!gate.rejected && sig.confidence.score < 30) {
+        gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "30%");
       } else if (!gate.rejected) {
         gate.pass("Confidence", `${sig.confidence.score}%`);
       }

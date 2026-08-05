@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 
 // ВАЖНО: это значение ДОЛЖНО совпадать с MIN_FINAL_SCORE в scheduler.ts.
 // Production v3.0 uses the mature-entity threshold after bootstrap.
-const MIN_FINAL_SCORE = 10;
+const MIN_FINAL_SCORE = 20;
 
 type StrategyStatus = "active" | "quarantine" | "disabled";
 
@@ -100,7 +100,7 @@ describe("Decision Engine v1.1", () => {
     });
   });
 
-  describe("Test 2 — FinalScore < 10 → reject (FINAL_SCORE_TOO_LOW)", () => {
+  describe("Test 2 — FinalScore < 20 → reject (FINAL_SCORE_TOO_LOW)", () => {
     test("rejects when finalScore is 9.99", () => {
       const gate = finalScoreGate(9.99);
       assert.equal(gate.pass, false);
@@ -114,11 +114,11 @@ describe("Decision Engine v1.1", () => {
     });
 
     test(`passes when finalScore equals MIN_FINAL_SCORE (${MIN_FINAL_SCORE})`, () => {
-      const gate = finalScoreGate(10);
+      const gate = finalScoreGate(MIN_FINAL_SCORE);
       assert.equal(gate.pass, true);
     });
 
-    test("passes when finalScore is above 10", () => {
+    test("passes when finalScore is above 20", () => {
       const gate = finalScoreGate(25);
       assert.equal(gate.pass, true);
     });

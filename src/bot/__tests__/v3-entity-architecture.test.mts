@@ -39,3 +39,11 @@ test("v3.0 selection derives regime performance from the full entity", () => {
     /SELECT win_pnl,loss_pnl FROM strategy_regime_stats/,
   );
 });
+
+test("trade quality floors stay above bootstrap noise", () => {
+  assert.match(schedulerSource, /export const MIN_FINAL_SCORE = 20/);
+  assert.match(schedulerSource, /sig\.score\.total < minScore/);
+  assert.match(schedulerSource, /const BASE_MIN = 55/);
+  assert.match(schedulerSource, /Math\.max\(Math\.min\(cachedMinScore, userCeil\), 55\)/);
+  assert.match(schedulerSource, /sig\.confidence\.score < 30/);
+});
