@@ -22,7 +22,7 @@ import type { TradeSignal } from "./signals.js";
   import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
   import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
-  import { checkShadowPositions, openEntityShadowPosition, openShadowPosition } from "./shadow-testing.js";
+  import { checkShadowPositions, openEntityShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
@@ -474,19 +474,6 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
           `status: banned`,
           "Разблокируется при WR ≥ 25% и PF ≥ 0.4"
         );
-        // Coin shadow trading: продолжаем отслеживание забаненных монет через shadow positions
-        const shadowBannedKey = `shadow:${sub.symbol}`;
-        if (Date.now() - (shadowBannedDebounce.get(shadowBannedKey) ?? 0) > SHADOW_BANNED_DEBOUNCE_MS) {
-          shadowBannedDebounce.set(shadowBannedKey, Date.now());
-          loadWeights().then(w =>
-            openShadowPosition(
-              sub.symbol,
-              (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
-              sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-              strat, w, regime
-            ).catch(() => {})
-          ).catch(() => {});
-        }
       } else if (!gate.rejected) {
         gate.skip("Instrument Watchlist", instrumentStatus === "normal" ? "Инструмент в норме" : "Предыдущий шаг не прошёл");
       }
@@ -837,13 +824,6 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         sideways: "↔️ Боковик", high_vol: "⚡ Волат.", low_vol: "😴 Затишье",
       };
       logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
-
-      loadWeights().then(w =>
-        openShadowPosition(sub.symbol, (sig.score.direction === "NEUTRAL" ? "LONG" : sig.score.direction) as "LONG"|"SHORT",
-          sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-          strat, w, regime
-        ).catch(() => {})
-      ).catch(() => {});
 
       const rankLines = stratRanking.length > 1
         ? stratRanking.map((r, i) => {
