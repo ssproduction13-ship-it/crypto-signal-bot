@@ -528,7 +528,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         [entityKey]
       ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
       const entityRow = entityWeightRows[0] as Record<string, unknown> | undefined;
-      const entityWeight = entityRow ? Number(entityRow["weight"]) : 1.0;
+      const persistedEntityWeight = entityRow ? Number(entityRow["weight"]) : 1.0;
       const entityQuarantine = entityRow ? Boolean(entityRow["quarantine"]) : false;
       if (!gate.rejected && entityQuarantine) {
         const highQuality = sig.score.total >= 65
@@ -545,7 +545,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
           );
         }
       } else if (!gate.rejected) {
-        gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(entityWeight * 100).toFixed(0)}%` : "bootstrap");
+        gate.pass("Entity Guard", entityRow ? `${entityKey} вес ${(persistedEntityWeight * 100).toFixed(0)}%` : "bootstrap");
       }
 
       // ── Entity × Symbol Cooldown — серийные убытки по одной монете ──────────
