@@ -6,7 +6,7 @@ import type { TradeSignal } from "./signals.js";
   import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
-  import { evaluateABVariants, checkDegradation , maybeRotateABVariant } from "./ab-testing.js";
+  import { evaluateABVariants, checkDegradation , maybeRotateABVariant, loadABVariants } from "./ab-testing.js";
   import { pool, resetAllData } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
@@ -22,7 +22,7 @@ import type { TradeSignal } from "./signals.js";
   import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
   import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
-  import { checkShadowPositions, openEntityShadowPosition } from "./shadow-testing.js";
+  import { checkShadowPositions, openEntityShadowPosition, openABShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
@@ -43,6 +43,7 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
+import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -824,6 +825,31 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         sideways: "↔️ Боковик", high_vol: "⚡ Волат.", low_vol: "😴 Затишье",
       };
       logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
+
+
+      // After a champion is selected, keep every challenger alive in shadow
+      // mode. Challengers use their own factor weights and never affect the
+      // paper balance, paper positions, or entity weights.
+      loadABVariants().then(variants => {
+        if (!variants.some(v => v.isChampion)) return;
+        const direction = sig.score.direction as "LONG" | "SHORT";
+        const challengers = variants.filter(v => !v.isChampion);
+        return Promise.allSettled(challengers.map(v => {
+          const decision = scoreABVariant({
+            trendScore: sig.score.trendScore,
+            volumeScore: sig.score.volumeScore,
+            momentumScore: sig.score.momentumScore,
+            levelsScore: sig.score.levelsScore,
+            patternScore: sig.score.patternScore,
+          }, v.weights);
+          if (!shouldOpenABShadow(direction, decision)) return Promise.resolve();
+          return openABShadowPosition(
+            v.id, sub.symbol, direction,
+            sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+            strat, v.weights, regime,
+          );
+        }));
+      }).catch(err => logger.debug({ err, symbol: sub.symbol }, "A/B shadow routing failed"));
 
       const rankLines = stratRanking.length > 1
         ? stratRanking.map((r, i) => {
