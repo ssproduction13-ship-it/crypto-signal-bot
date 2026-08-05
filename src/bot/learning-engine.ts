@@ -343,23 +343,16 @@ export async function selectBestStrategy(
     const recent = await getRecentEntityStats(entity);
     const trustScore = await calcTrustScore(sig.strategy, recent.trades, recent.wins, recent.winPnl, recent.lossPnl, recent.totalPnl, regime);
 
-    // Regime-specific PF
-    let regimePF = 1;
-    try {
-      const {rows:regRows} = await pool.query(
-        "SELECT win_pnl,loss_pnl FROM strategy_regime_stats WHERE strategy=$1 AND regime=$2 AND interval='ALL'",
-        [sig.strategy, regime]
-      );
-      if (regRows.length) {
-        const rr = regRows[0] as Record<string,unknown>;
-        const rwp=Number(rr["win_pnl"]),rlp=Number(rr["loss_pnl"]);
-        // Cap at 2.0: unbounded regimePF (e.g. 5 when lossPnl=0) inflated finalScore up to 750
-        regimePF = Math.min(2.0, rlp > 0 ? rwp/rlp : rwp > 0 ? 2.0 : 0);
-      }
-    } catch { regimePF = 1; }
+    // v3.0: regime performance must come from the full entity key
+    // strategy × direction × regime. The old strategy × regime lookup mixed
+    // LONG and SHORT outcomes and let one direction suppress the other.
+    // getRecentEntityStats(entity) above is the single source of truth here.
+    const regimePF = recent.trades > 0
+      ? Math.min(2.0, Math.max(0, recent.pf))
+      : 1.0;
 
-    // Final Score = Signal Score × Trust × Strategy Weight × Regime Score (TZ §1)
-    // Math.min(100): weight≤1.5, regimePF≤2.0, trust≤1.0 → theoretical max=100*1.5*2.0=300 before cap
+    // Final Score = Signal Score × Entity Trust × Entity Weight × Entity PF
+    // Math.min(100): weight≤1.5, entityPF≤2.0, trust≤1.0 → capped below.
     const trustFloor = recent.trades < 30 ? 0.40 : 0.20;
     const finalScore = Math.min(100, sig.score
       * Math.max(trustFloor, trustScore / 100)  // bootstrap floor 40% if trades<30, else 20%

@@ -11,7 +11,7 @@ import type { TradeSignal } from "./signals.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
   import {
-    detectMarketRegime, isStrategyBlockedInRegime, loadStrategyWeights,
+    detectMarketRegime,
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
     selectBestStrategy, recordLossReason, classifyLossReason, getAllEntityStatuses,
     generateWeeklyRanking, runDecayCycle, canRunDriftAdaptation, markDriftAdaptationRun,
@@ -56,8 +56,8 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
     strat: StrategyName;
     stratFScore: number;
     stratTrust: number;
-    stratWeight: number;
-    stratStatus: { trades: number; trustScore: number; profitFactor: number; status: string } | undefined;
+    entityWeight: number;
+    entityStatus: { trades: number; trustScore: number; profitFactor: number; status: string; weight: number } | undefined;
     stratRanking: Array<{ strategy: string; finalScore: number; trustScore: number; weight: number }>;
     isExploration: boolean;
     regime: MarketRegime;
@@ -343,13 +343,10 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
       const stratRanking = selectionResult.ranking ?? [];
       const isExploration = selectionResult.isExploration ?? false;
 
-      const [entityStatuses, stratWeights] = await Promise.all([
-        getAllEntityStatuses(regime).catch(() => []),
-        loadStrategyWeights().catch(() => ({} as Record<string,number>)),
-      ]);
+      const entityStatuses = await getAllEntityStatuses(regime).catch(() => []);
       const entityKey = `${strat}_${sig.score.direction}_${regime}`;
-      const stratStatus = entityStatuses.find(s => s.entity === entityKey);
-      const stratWeight = stratWeights[strat] ?? 1;
+      const entityStatus = entityStatuses.find(s => s.entity === entityKey);
+      const entityWeight = entityStatus?.weight ?? selectionResult.weight ?? 1;
       // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
       // User setting now acts as an UPPER CAP on adaptive minScore:
@@ -422,7 +419,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 
       // ── Quarantine gate ───────────────────────────────────────────────────────────────────────
       // Стратегия в карантине допускается только при высоком качестве сигнала
-      if (!gate.rejected && stratStatus?.status === "quarantine") {
+      if (!gate.rejected && entityStatus?.status === "quarantine") {
         const qScore = sig.score.total >= 65;
         const qConf  = sig.confidence.score >= 40;
         const qFS    = stratFScore >= 20;
@@ -494,11 +491,11 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         gate.skip("Instrument Watchlist", instrumentStatus === "normal" ? "Инструмент в норме" : "Предыдущий шаг не прошёл");
       }
 
-      const minTrust = stratStatus?.status === "quarantine" ? 20 : 5;
-      if (!gate.rejected && stratStatus && stratStatus.trades >= 20 && stratStatus.trustScore < minTrust) {
-        gate.fail("Trust Score", `Trust Score стратегии ниже порога`, stratStatus.trustScore, minTrust);
+      const minTrust = entityStatus?.status === "quarantine" ? 20 : 5;
+      if (!gate.rejected && entityStatus && entityStatus.trades >= 20 && entityStatus.trustScore < minTrust) {
+        gate.fail("Entity Trust Score", `Trust Score entity ниже порога`, entityStatus.trustScore, minTrust);
       } else {
-        if (!gate.rejected) gate.pass("Trust Score", stratStatus && stratStatus.trades >= 20 ? `${stratStatus.trustScore}/100` : `bootstrap (${stratStatus?.trades ?? 0}/20 сделок)`);
+        if (!gate.rejected) gate.pass("Entity Trust Score", entityStatus && entityStatus.trades >= 20 ? `${entityStatus.trustScore}/100` : `bootstrap (${entityStatus?.trades ?? 0}/20 сделок)`);
       }
 
       // PF is already incorporated into the strategy×direction×regime Entity
@@ -508,35 +505,24 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
       // collecting the evidence needed to recover.
       if (!gate.rejected) {
         gate.pass(
-          "Strategy PF",
-          (stratStatus?.trades ?? 0) >= 5
-            ? `учтён Entity system (PF ${stratStatus!.profitFactor.toFixed(2)})`
+          "Entity PF",
+          (entityStatus?.trades ?? 0) >= 5
+            ? `учтён Entity system (PF ${entityStatus!.profitFactor.toFixed(2)})`
             : "мало данных — учтено Entity system",
         );
       }
 
-      // Мягкий фильтр TREND+sideways: полный блок заменён на скор-зависимый порог.
-      // Данные: 52 убытка в sideways, но полный блок лишал бота сделок на сутки+.
-      // Компромисс: в sideways/low_vol пропускаем TREND только при score ≥ 63.
-      if (!gate.rejected && strat === "TREND" && (regime === "sideways" || regime === "low_vol") && sig.score.total < 63) {
-        gate.fail(
-          "TREND Sideways Filter",
-          `TREND в ${regime} со слабым сигналом — высокий риск`,
-          `score=${sig.score.total}`,
-          "нужен score ≥ 63 в боковике"
-        );
-      } else if (!gate.rejected) {
-        gate.skip("TREND Sideways Filter", strat !== "TREND" ? `${strat} — фильтр не применяется` : `score=${sig.score.total} ≥ 63 или режим ${regime} — OK`);
+      // v3.0: regime performance is already part of the entity key
+      // (strategy × direction × regime). Do not apply a second strategy-level
+      // regime gate here: it would mix LONG and SHORT evidence and could block
+      // a healthy entity because its sibling direction performed poorly.
+      if (!gate.rejected) {
+        gate.pass("Entity Regime", `${entityKey} — regime учтён в entity`);
+      } else {
+        gate.skip("Entity Regime", "Предыдущий шаг не прошёл");
       }
 
-      const { blocked: regimeBlocked, reason: regimeReason } = await isStrategyBlockedInRegime(strat, regime, sub.interval).catch(() => ({ blocked: false, reason: '' }));
-      if (!gate.rejected && regimeBlocked) {
-        gate.fail("Режим рынка", regimeReason, `${strat} в ${regime}`);
-      } else if (!gate.rejected) {
-        gate.pass("Режим рынка", `${regime} → ${strat} OK`);
-      }
-
-      // ── Entity Guard — независимый карантин/вес по strategy+direction ────────
+      // ── Entity Guard — независимый карантин/вес по strategy+direction+regime ──
       const { rows: entityWeightRows } = await pool.query(
         "SELECT weight, quarantine FROM strategy_entity_weights WHERE entity=$1",
         [entityKey]
@@ -584,10 +570,10 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
         gate.pass("IRD Filter", irdReason || `${sub.symbol} ${sig.score.direction}/${regime}: OK`);
       }
 
-      if (!gate.rejected && stratWeight === 0) {
-        gate.fail("Вес стратегии", "Стратегия отключена движком адаптации", "0%");
-      } else if (!gate.rejected) {
-        gate.pass("Вес стратегии", `${(stratWeight * 100).toFixed(0)}%`);
+      if (!gate.rejected) {
+        gate.pass("Entity Weight", `${entityKey}: ${(entityWeight * 100).toFixed(0)}%`);
+      } else {
+        gate.skip("Entity Weight", "Предыдущий шаг не прошёл");
       }
 
       // UTC to match recordTimeTrade which stores UTC buckets
@@ -775,7 +761,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
       }
 
       return {
-        sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus,
+        sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus,
         stratRanking, isExploration, regime, minScore, effectiveRiskPct,
         gateSteps: [
           ...gate.steps,
@@ -797,7 +783,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 
   // ── Execute trade candidate: open position + notification ─────────────────────────
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
-    const { sub, sig, strat, stratFScore, stratTrust, stratWeight, stratStatus, stratRanking,
+    const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
     const res = await openPaperPosition(
       sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
@@ -870,7 +856,7 @@ import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
       await safeSend(sub.chatId,
         `🤖 *Новая позиция${isExploration ? " 🎲 [Exploration]" : ""}*\n\n` +
         `${dir} *${sub.symbol}*\n` +
-        `Стратегия: ${stratNames[strat] ?? strat} (вес ${(stratWeight * 100).toFixed(0)}% | trust ${stratStatus?.trustScore ?? stratTrust}/100)\n` +
+        `Стратегия: ${stratNames[strat] ?? strat} (entity ${(entityWeight * 100).toFixed(0)}% | trust ${entityStatus?.trustScore ?? stratTrust}/100)\n` +
         `Режим: ${regimeLabels[regime] ?? regime} | FinalScore: ${stratFScore.toFixed(1)}\n` +
         `Score: ${sig.score.total}/100 | Min: ${minScore} | Conf: ${sig.confidence.score}%\n` +
         `${sig.marketRating.emoji} Рынок: ${sig.marketRating.label} (${sig.marketRating.index}/100)\n` +
