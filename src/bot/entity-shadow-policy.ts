@@ -17,6 +17,7 @@ const ADAPTIVE_REJECT_CHECKS = new Set([
   "Entity Guard",
   "Entity Cooldown",
   "Trust Score",
+  "Entity Trust Score",
   "Вес стратегии",
   "Strategy PF",
   "TREND Sideways Filter",

@@ -19,6 +19,7 @@ test("entity shadow policy", async (t) => {
       "Entity Guard",
       "Entity Cooldown",
       "Trust Score",
+      "Entity Trust Score",
       "Вес стратегии",
       "TREND Sideways Filter",
     ]) {
