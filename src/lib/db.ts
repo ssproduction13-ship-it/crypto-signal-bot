@@ -521,13 +521,13 @@ const MIGRATIONS = [
   "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS pnl_equity_pct DOUBLE PRECISION",
   "CREATE INDEX IF NOT EXISTS idx_sct_dir_shadow ON shadow_closed_trades(strategy, direction, is_direction_shadow, closed_at)",
   // ── Shadow Quarantine: entity-level shadow tracking для карантинных стратегий ──
-  // entity = ключ strategy_entity_weights (напр. "VOLUME_IMPULSE_LONG").
+  // entity = ключ strategy_entity_weights (напр. "VOLUME_IMPULSE_LONG_sideways").
   // Позволяет learning-engine принять решение о выходе из карантина по shadow PF/WR,
   // а не ждать реальных сделок (которые частично заблокированы карантином).
   "ALTER TABLE shadow_positions ADD COLUMN IF NOT EXISTS entity TEXT",
   "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
   "CREATE INDEX IF NOT EXISTS idx_sct_entity ON shadow_closed_trades(entity, closed_at) WHERE entity IS NOT NULL",
-  // ── 8-Entity Architecture: strategy × direction independent weights ─────────
+  // ── 48-Entity Architecture: strategy × direction × regime weights ────────────
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS entity TEXT",
   `CREATE TABLE IF NOT EXISTS strategy_entity_weights (
     entity        TEXT PRIMARY KEY,
@@ -544,16 +544,21 @@ const MIGRATIONS = [
     quarantine_since TIMESTAMPTZ DEFAULT NULL,
     updated_at    TIMESTAMPTZ DEFAULT NOW()
   )`,
-  `INSERT INTO strategy_entity_weights (entity, strategy, direction) VALUES
-    ('TREND_LONG',          'TREND',          'LONG'),
-    ('TREND_SHORT',         'TREND',          'SHORT'),
-    ('VOLUME_IMPULSE_LONG', 'VOLUME_IMPULSE', 'LONG'),
-    ('VOLUME_IMPULSE_SHORT','VOLUME_IMPULSE', 'SHORT'),
-    ('MEAN_REVERSION_LONG', 'MEAN_REVERSION', 'LONG'),
-    ('MEAN_REVERSION_SHORT','MEAN_REVERSION', 'SHORT'),
-    ('BREAKOUT_LONG',       'BREAKOUT',       'LONG'),
-    ('BREAKOUT_SHORT',      'BREAKOUT',       'SHORT')
-  ON CONFLICT DO NOTHING`,
+  `INSERT INTO strategy_entity_weights (entity, strategy, direction)
+   SELECT e.base || '_' || r.regime,
+          regexp_replace(e.base, '_(LONG|SHORT)$', ''),
+          CASE WHEN e.base LIKE '%_LONG' THEN 'LONG' ELSE 'SHORT' END
+     FROM (VALUES
+       ('TREND_LONG'),('TREND_SHORT'),
+       ('VOLUME_IMPULSE_LONG'),('VOLUME_IMPULSE_SHORT'),
+       ('MEAN_REVERSION_LONG'),('MEAN_REVERSION_SHORT'),
+       ('BREAKOUT_LONG'),('BREAKOUT_SHORT')
+     ) AS e(base)
+     CROSS JOIN (VALUES
+       ('trend_up'),('trend_down'),('sideways'),
+       ('high_vol'),('low_vol'),('unknown')
+     ) AS r(regime)
+    ON CONFLICT DO NOTHING`,
   // ── Historical analytics snapshots ─────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS stats_snapshots (
     id               SERIAL PRIMARY KEY,
@@ -603,7 +608,24 @@ const MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS chaos_filter_state (id INTEGER PRIMARY KEY DEFAULT 1, is_chaos BOOLEAN NOT NULL DEFAULT false, atr_percent DOUBLE PRECISION, reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
     "ALTER TABLE decision_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
     "ALTER TABLE walk_forward_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-    `INSERT INTO strategy_entity_weights (entity,strategy,direction,weight,quarantine,trust_score,trades,wins,win_pnl,loss_pnl,cycles_below_threshold,updated_at) SELECT q.entity,q.strategy,q.direction,1.0,false,0,0,0,0.0,0.0,0,NOW() FROM (SELECT e.b||'_'||r.g AS entity,CASE WHEN e.b IN('TREND_LONG','TREND_SHORT')THEN'TREND' WHEN e.b IN('VOLUME_IMPULSE_LONG','VOLUME_IMPULSE_SHORT')THEN'VOLUME_IMPULSE' WHEN e.b IN('MEAN_REVERSION_LONG','MEAN_REVERSION_SHORT')THEN'MEAN_REVERSION' WHEN e.b IN('BREAKOUT_LONG','BREAKOUT_SHORT')THEN'BREAKOUT'END AS strategy,CASE WHEN e.b LIKE'%_LONG'THEN'LONG'ELSE'SHORT'END AS direction FROM(VALUES('TREND_LONG'),('TREND_SHORT'),('VOLUME_IMPULSE_LONG'),('VOLUME_IMPULSE_SHORT'),('MEAN_REVERSION_LONG'),('MEAN_REVERSION_SHORT'),('BREAKOUT_LONG'),('BREAKOUT_SHORT'))AS e(b) CROSS JOIN(VALUES('trend_up'),('trend_down'),('sideways'),('high_vol'),('low_vol'),('unknown'))AS r(g))q WHERE NOT EXISTS(SELECT 1 FROM strategy_entity_weights WHERE entity=q.entity)`,
+    `INSERT INTO strategy_entity_weights (entity,strategy,direction,weight,quarantine,trust_score,trades,wins,win_pnl,loss_pnl,cycles_below_threshold,updated_at)
+     SELECT q.entity,q.strategy,q.direction,1.0,false,0,0,0,0.0,0.0,0,NOW()
+       FROM (
+         SELECT e.b||'_'||r.g AS entity,
+                regexp_replace(e.b, '_(LONG|SHORT)$', '') AS strategy,
+                CASE WHEN e.b LIKE '%_LONG' THEN 'LONG' ELSE 'SHORT' END AS direction
+           FROM (VALUES
+             ('TREND_LONG'),('TREND_SHORT'),
+             ('VOLUME_IMPULSE_LONG'),('VOLUME_IMPULSE_SHORT'),
+             ('MEAN_REVERSION_LONG'),('MEAN_REVERSION_SHORT'),
+             ('BREAKOUT_LONG'),('BREAKOUT_SHORT')
+           ) AS e(b)
+           CROSS JOIN (VALUES
+             ('trend_up'),('trend_down'),('sideways'),
+             ('high_vol'),('low_vol'),('unknown')
+           ) AS r(g)
+       ) q
+      WHERE NOT EXISTS (SELECT 1 FROM strategy_entity_weights WHERE entity=q.entity)`,
     ];
 
 

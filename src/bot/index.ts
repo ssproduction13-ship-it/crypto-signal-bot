@@ -290,7 +290,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 
         // Keep the dashboard compact. Detailed per-entity statistics live in
         // the dedicated "Стратегии" screen; the dashboard only summarizes the
-        // current regime's 8 entities (4 strategy families × LONG/SHORT).
+        // current regime's 8 strategy×direction views (4 families × LONG/SHORT).
         const sortedStrats = (entityStatuses as any[])
           .sort((a: any, b: any) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
         const best = sortedStrats.find((s: any) => s.trades > 0);
@@ -907,10 +907,20 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
                   COALESCE(SUM(CASE WHEN pct.pnl <= 0 THEN ABS(pct.pnl) ELSE 0 END), 0) AS loss_pnl
            FROM strategy_entity_weights sew
            LEFT JOIN LATERAL (
-             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+             SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl,
+                    entity,
+                    market_regime
              FROM paper_closed_trades
              WHERE strategy  = sew.strategy
                AND direction = sew.direction
+               AND (
+                 pct.entity = sew.entity
+                 OR (
+                   pct.entity !~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'
+                   AND COALESCE(pct.market_regime, 'unknown') =
+                       substring(sew.entity from '(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$')
+                 )
+               )
                AND chat_id   = $1
                AND closed_at::timestamptz >= $2::timestamptz
                AND outcome NOT IN ('TIMEOUT_STALE')
@@ -952,7 +962,8 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
             const pf  = lossPnl > 0 ? (winPnl / lossPnl).toFixed(2) : winPnl > 0 ? "∞" : "—";
             const wPct = (weight * 100).toFixed(0);
             const icon = quarantine ? "⚠️" : weight >= 0.8 ? "✅" : "📉";
-            const emojiEntity = entityIcons[entity] ?? "•";
+            const baseEntity = entity.replace(/_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/, "");
+            const emojiEntity = entityIcons[baseEntity] ?? "•";
             const adaptLine = trades >= 10
               ? `Вес: ${wPct}% | Trust: ${trust}/100`
               : `Сделок: ${trades} (нужно 10 для адаптации)`;

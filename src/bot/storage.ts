@@ -54,7 +54,7 @@ import { pool } from "../lib/db.js";
     slippage?: number;
     /** PnL as % of account equity at trade open — the real account impact metric */
     pnlEquityPct?: number;
-    /** `${strategy}_${direction}` — the 8-entity key used by strategy_entity_weights */
+    /** `${strategy}_${direction}_${marketRegime}` — the v3.0 entity key */
     entity?: string;
     /** Market regime at trade open time — required for regime-based analytics */
     marketRegime?: string;
@@ -334,7 +334,7 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
           [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
            t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
            t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
-           t.pnlEquityPct??null,t.entity??`${t.strategy??'TREND'}_${t.direction}`,
+            t.pnlEquityPct??null,t.entity??`${t.strategy??'TREND'}_${t.direction}_${t.marketRegime??'unknown'}`,
            t.marketRegime??null]
         );
       }
@@ -532,7 +532,7 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
        t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
        t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
        t.commission??0,t.slippage??0,t.pnlEquityPct??null,
-       t.entity??`${t.strategy??'TREND'}_${t.direction}`,
+        t.entity??`${t.strategy??'TREND'}_${t.direction}_${t.marketRegime??'unknown'}`,
        t.marketRegime??null, t.maeR??null, t.mfeR??null]
     );
   }
@@ -595,7 +595,7 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
          trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
          trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
          trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null,
-         trade.entity??`${trade.strategy??'TREND'}_${trade.direction}`,
+         trade.entity??`${trade.strategy??'TREND'}_${trade.direction}_${trade.marketRegime??'unknown'}`,
          trade.marketRegime??null, trade.maeR??null, trade.mfeR??null]
       );
       await client.query('COMMIT');

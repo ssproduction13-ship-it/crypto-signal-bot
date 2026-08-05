@@ -65,16 +65,14 @@ interface ReportData {
 }
 
 // v3.0 report model: strategy × direction × market regime.
-// Keep the report independent from the legacy 8-row seed that may still exist
-// in strategy_entity_weights after a database upgrade.
-const REPORT_BASE_ENTITIES = [
+const REPORT_BASE_KEYS = [
   "TREND_LONG", "TREND_SHORT",
   "VOLUME_IMPULSE_LONG", "VOLUME_IMPULSE_SHORT",
   "MEAN_REVERSION_LONG", "MEAN_REVERSION_SHORT",
   "BREAKOUT_LONG", "BREAKOUT_SHORT",
 ] as const;
 const REPORT_REGIMES = ["trend_up", "trend_down", "sideways", "high_vol", "low_vol", "unknown"] as const;
-const REPORT_ENTITIES = REPORT_BASE_ENTITIES.flatMap(base =>
+const REPORT_ENTITIES = REPORT_BASE_KEYS.flatMap(base =>
   REPORT_REGIMES.map(regime => `${base}_${regime}`)
 );
 
@@ -91,8 +89,6 @@ function reportEntityForTrade(t: ClosedPaperTrade): string {
 function parseReportEntity(entity: string): { baseStrategy: string; direction: string | null; regime: string | null } {
   const match = entity.match(/^(.+)_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$/);
   if (match) return { baseStrategy: match[1]!, direction: match[2]!, regime: match[3]! };
-  const legacy = entity.match(/^(.+)_(LONG|SHORT)$/);
-  if (legacy) return { baseStrategy: legacy[1]!, direction: legacy[2]!, regime: null };
   return { baseStrategy: entity, direction: null, regime: null };
 }
 

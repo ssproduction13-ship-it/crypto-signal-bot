@@ -1424,7 +1424,9 @@ import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
           const [ss, fw, sew, sw, srs] = await Promise.all([
             pool.query("SELECT * FROM strategy_stats"),
             pool.query("SELECT * FROM factor_weights"),
-            pool.query("SELECT * FROM strategy_entity_weights"),
+            pool.query(`SELECT *
+                          FROM strategy_entity_weights
+                         WHERE entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'`),
             pool.query("SELECT * FROM strategy_weights"),
             pool.query("SELECT * FROM strategy_regime_stats"),
           ]);

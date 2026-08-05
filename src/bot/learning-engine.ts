@@ -10,17 +10,18 @@ import type { MarketRating } from "./market-rating.js";
 export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol"|"unknown";
 export type StrategyStatus = "active"|"quarantine"|"disabled";
 
-// v3.0: 48-entity architecture — strategy × direction × regime
-// TREND_LONG in trend_up vs TREND_LONG in low_vol → separate PF, weight, quarantine
+// v3.0: 48-entity architecture — strategy × direction × regime.
+// The base keys below are only code-generation inputs; they are not database
+// entities. Every persisted entity must include its market regime.
 export type StrategyEntity = string; // e.g. "TREND_LONG_trend_up"
-export const BASE_ENTITIES = [
+export const BASE_ENTITY_KEYS = [
   "TREND_LONG","TREND_SHORT",
   "VOLUME_IMPULSE_LONG","VOLUME_IMPULSE_SHORT",
   "MEAN_REVERSION_LONG","MEAN_REVERSION_SHORT",
   "BREAKOUT_LONG","BREAKOUT_SHORT",
 ] as const;
 export const ALL_REGIMES: MarketRegime[] = ["trend_up","trend_down","sideways","high_vol","low_vol","unknown"];
-export const ALL_ENTITIES_48: StrategyEntity[] = [...BASE_ENTITIES].flatMap(e => ALL_REGIMES.map(r => `${e}_${r}`));
+export const ALL_ENTITIES_48: StrategyEntity[] = [...BASE_ENTITY_KEYS].flatMap(e => ALL_REGIMES.map(r => `${e}_${r}`));
 
 /** Parse regime-aware entity key back into its three components */
 export function parseEntity(entity: string): { strategy: StrategyName; direction: "LONG"|"SHORT"; regime: MarketRegime } {
@@ -433,7 +434,7 @@ export async function getAllStrategyStatuses(
 export async function getAllEntityStatuses(
   regime: MarketRegime = "sideways"
 ): Promise<EntityTrustResult[]> {
-  const ENTITIES: StrategyEntity[] = [...BASE_ENTITIES].map(e => `${e}_${regime}`);
+  const ENTITIES: StrategyEntity[] = [...BASE_ENTITY_KEYS].map(e => `${e}_${regime}`);
   const {rows:ewRows} = await pool.query(
     "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
   );
@@ -650,7 +651,7 @@ function pfToTargetWeight(pf: number): number {
 
   const changes:string[]=[];
 
-  // ── Entity adaptation: 8 independent strategy×direction units ────────────────
+  // ── Entity adaptation: 48 independent strategy×direction×regime units ───────
   const {rows:ewRows} = await pool.query(
     "SELECT entity, weight, quarantine, cycles_below_threshold FROM strategy_entity_weights"
   );
@@ -937,7 +938,9 @@ export async function snapshotStrategyVersion(changes:string): Promise<void> {
   const label=await getVersionCounter();
 
   const {rows:entitySnap} = await pool.query(
-    "SELECT entity, weight, quarantine, trust_score FROM strategy_entity_weights"
+    `SELECT entity, weight, quarantine, trust_score
+       FROM strategy_entity_weights
+      WHERE entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'`
   );
   const notesPayload = JSON.stringify({ reason: changes, entityWeights: entitySnap });
 
@@ -973,14 +976,19 @@ export async function checkAndRollback(): Promise<string|null> {
       try {
         const prevNotes = JSON.parse((prev["notes"] as string) ?? "{}") as { entityWeights?: Array<Record<string, unknown>> };
         const prevEntityWeights = prevNotes.entityWeights;
+        let restoredEntityCount = 0;
         if (prevEntityWeights && prevEntityWeights.length > 0) {
           for (const ew of prevEntityWeights) {
-            await pool.query(
-              "UPDATE strategy_entity_weights SET weight=$2, quarantine=$3 WHERE entity=$1",
+            const result = await pool.query(
+              `UPDATE strategy_entity_weights
+                  SET weight=$2, quarantine=$3
+                WHERE entity=$1
+                  AND entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'`,
               [ew["entity"], ew["weight"], ew["quarantine"]]
             );
+            restoredEntityCount += result.rowCount ?? 0;
           }
-          entityRestoreNote = `\nВосстановлены веса ${prevEntityWeights.length} сущностей.`;
+          entityRestoreNote = `\nВосстановлены веса ${restoredEntityCount} режимных сущностей.`;
         }
       } catch (err) {
         logger.warn({ err }, "Failed to restore entity_weights from snapshot notes");
@@ -996,13 +1004,16 @@ export async function generateLearningReport(): Promise<string> {
   const tradeCount=await getClosedTradeCount();
   const {rows:vRows} = await pool.query("SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT 2");
 
-  // ТЗ Шаг 8: единый список из 8 сущностей (strategy×direction) вместо
-  // отдельной секции "4 стратегии" + отдельной секции "LONG vs SHORT".
+  // v3.0: report the same 48 regime-aware entities used by adaptation and
+  // signal selection; legacy strategy×direction rows are excluded.
   // Используем getRecentEntityStats — тот же источник PF/WR что и адаптация
   // (последние ${ADAPTATION_WINDOW} сделок, взвешенный PF), чтобы данные
   // в отчёте совпадали с данными в строках изменений адаптации.
   const {rows:entityRows} = await pool.query(
-    "SELECT entity, weight, quarantine FROM strategy_entity_weights ORDER BY strategy, direction"
+    `SELECT entity, weight, quarantine
+       FROM strategy_entity_weights
+      WHERE entity ~ '_(LONG|SHORT)_(trend_up|trend_down|sideways|high_vol|low_vol|unknown)$'
+      ORDER BY strategy, direction, entity`
   );
   const entityLines:string[]=[];
   for (const r of entityRows as Record<string,unknown>[]) {
@@ -1029,7 +1040,7 @@ export async function generateLearningReport(): Promise<string> {
   }
 
   const reportLabel=`v${Math.floor(tradeCount/100)}.${tradeCount%100<50?0:5}`;
-  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Сущности (strategy×direction):*`,...entityLines,vLine].filter(Boolean).join("\n");
+  const summary=[`🧠 *AI Learning Report — ${reportLabel}*`,`📊 Сделок: ${tradeCount}`,"",`📐 *Сущности (strategy×direction×regime, 48):*`,...entityLines,vLine].filter(Boolean).join("\n");
 
   await pool.query(
     "INSERT INTO learning_reports(version_label,created_at,trade_count_at_report,summary,report_json) VALUES($1,$2,$3,$4,$5)",

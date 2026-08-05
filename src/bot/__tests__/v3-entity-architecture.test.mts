@@ -10,6 +10,14 @@ const learningEngineSource = readFileSync(
   new URL("../learning-engine.ts", import.meta.url),
   "utf8",
 );
+const storageSource = readFileSync(
+  new URL("../storage.ts", import.meta.url),
+  "utf8",
+);
+const dbSource = readFileSync(
+  new URL("../../lib/db.ts", import.meta.url),
+  "utf8",
+);
 
 test("v3.0 trade decision uses strategy × direction × regime entities", () => {
   assert.match(schedulerSource, /const entityKey = `\$\{strat\}_\$\{sig\.score\.direction\}_\$\{regime\}`/);
@@ -38,6 +46,15 @@ test("v3.0 selection derives regime performance from the full entity", () => {
     learningEngineSource,
     /SELECT win_pnl,loss_pnl FROM strategy_regime_stats/,
   );
+});
+
+test("legacy strategy×direction rows cannot be recreated or persisted", () => {
+  assert.match(learningEngineSource, /BASE_ENTITY_KEYS/);
+  assert.doesNotMatch(learningEngineSource, /BASE_ENTITIES/);
+  assert.match(dbSource, /CROSS JOIN \(VALUES[\s\S]*trend_up[\s\S]*unknown/);
+  assert.doesNotMatch(dbSource, /INSERT INTO strategy_entity_weights \(entity, strategy, direction\) VALUES[\s\S]*TREND_LONG.*TREND_SHORT/);
+  assert.match(storageSource, /_\$\{t\.marketRegime\?\?'unknown'\}/);
+  assert.match(storageSource, /_\$\{trade\.marketRegime\?\?'unknown'\}/);
 });
 
 test("trade quality floors stay above bootstrap noise", () => {
