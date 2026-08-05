@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   strategy TEXT NOT NULL DEFAULT 'TREND',
   opened_at TEXT NOT NULL,
   breakeven_moved BOOLEAN NOT NULL DEFAULT false,
+  profit_protection_stage INTEGER NOT NULL DEFAULT 0,
+  initial_stop_distance DOUBLE PRECISION,
   trail_atr DOUBLE PRECISION,
   market_regime TEXT NOT NULL DEFAULT 'sideways',
   interval TEXT NOT NULL DEFAULT '1h'
@@ -227,6 +229,8 @@ const MIGRATIONS = [
     ALTER TABLE subscriptions ADD PRIMARY KEY (chat_id, symbol, interval);
   EXCEPTION WHEN others THEN NULL; END $$`,
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS breakeven_moved BOOLEAN NOT NULL DEFAULT false",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS profit_protection_stage INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS initial_stop_distance DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trail_atr DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'TREND'",
   "ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS peak_balance NUMERIC(20,8) NOT NULL DEFAULT 10000",

@@ -17,6 +17,7 @@ import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
 import { recordInstrumentRegimeTrade } from "./instrument-regime-stats.js";
 import { recordEntitySymbolResult } from "./entity-cooldown.js";
+import { calculateProfitProtection } from "./profit-protection.js";
 
 
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
@@ -179,7 +180,8 @@ export async function openPaperPosition(
   const pos: PaperPosition = {
     id:genId(), symbol, direction, entryPrice, size,
     stopLoss, tp1, tp2, openedAt:new Date().toISOString(),
-    chatId, strategy, breakevenMoved:false, trailAtr:atr??null,
+    chatId, strategy, breakevenMoved:false, profitProtectionStage:0,
+    initialStopDistance:stopDist, trailAtr:atr??null,
     equityAtOpen: account.balance,
     pendingEntrySize, pendingEntryTrigger, marketRegime, interval,
     riskPercent: rp,
@@ -285,7 +287,9 @@ export async function checkPaperPositions(
 
         // ── MAE/MFE tracking (R-multiples) ───────────────────────────────────────────────────────────
         {
-          const stopDist = Math.abs(pos.entryPrice - pos.stopLoss);
+          const stopDist = pos.initialStopDistance != null && pos.initialStopDistance > 0
+            ? pos.initialStopDistance
+            : Math.abs(pos.entryPrice - pos.stopLoss) || Math.abs(pos.tp1 - pos.entryPrice) / 2;
           if (stopDist > 0) {
             const pnlSign    = pos.direction === "LONG" ? 1 : -1;
             const move       = pnlSign * (price - pos.entryPrice);
@@ -356,6 +360,9 @@ export async function checkPaperPositions(
           addAccountCosts(chatId, addCommission, 0).catch(() => {});
           const blended = (pos.entryPrice * pos.size + price * addSize) / (pos.size + addSize);
           pos.entryPrice = blended;
+          if ((pos.profitProtectionStage ?? 0) === 0) {
+            pos.initialStopDistance = Math.abs(pos.entryPrice - pos.stopLoss);
+          }
           pos.size += addSize;
           pos.pendingEntrySize = undefined;
           pos.pendingEntryTrigger = undefined;
@@ -369,34 +376,40 @@ export async function checkPaperPositions(
         }
       }
 
-      // ── Trailing stop ──────────────────────────────────────────────────────
-      if (pos.breakevenMoved && pos.trailAtr != null && pos.trailAtr > 0) {
+      // ── Profit protection and ATR trailing ─────────────────────────────────
+      // Keep the original risk distance: the live stop is intentionally moved.
+      const initialRiskDistance = pos.initialStopDistance != null && pos.initialStopDistance > 0
+        ? pos.initialStopDistance
+        : Math.abs(pos.entryPrice - pos.stopLoss) || Math.abs(pos.tp1 - pos.entryPrice) / 2;
+      const favorableMove = pos.direction === "LONG"
+        ? price - pos.entryPrice
+        : pos.entryPrice - price;
+      const favorableR = initialRiskDistance > 0 ? favorableMove / initialRiskDistance : 0;
+      const protection = calculateProfitProtection({
+        direction: pos.direction,
+        entryPrice: pos.entryPrice,
+        currentStopLoss: pos.stopLoss,
+        initialRiskDistance,
+        favorableR,
+        stage: pos.profitProtectionStage ?? (pos.breakevenMoved ? 2 : 0),
+      });
+      if (protection) {
+        pos.stopLoss = protection.stopLoss;
+        pos.profitProtectionStage = protection.stage;
+        pos.breakevenMoved = true;
+        const lockMessage = protection.stage === 2
+          ? `📈 *Защита прибыли усилена — ${pos.symbol}*\n${dirLabel} | Движение достигло 3× риска\nСтоп перенесён на +1R: \`${formatPrice(pos.stopLoss)}\`\n_Минимальная защищённая прибыль: +1R до комиссий_`
+          : `📌 *Стоп → защита прибыли — ${pos.symbol}*\n${dirLabel} | Прибыль достигла 2× риска\nСтоп перенесён на +0.25R: \`${formatPrice(pos.stopLoss)}\`\n_При откате защищена небольшая прибыль, а TP2 остаётся активным_`;
+        msgs.push(lockMessage);
+        if (sendNotification) await sendNotification(lockMessage).catch(() => {});
+      }
+
+      if ((pos.profitProtectionStage ?? 0) >= 2 && pos.trailAtr != null && pos.trailAtr > 0) {
         const trail = pos.direction === "LONG"
           ? price - pos.trailAtr * 1.0
           : price + pos.trailAtr * 1.0;
         if (pos.direction === "LONG"  && trail > pos.stopLoss) pos.stopLoss = trail;
         if (pos.direction === "SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
-      }
-
-      // ── Early Breakeven ────────────────────────────────────────────────────
-      if (!pos.breakevenMoved) {
-        const originalStopDist = Math.abs(pos.entryPrice - pos.stopLoss);
-        const unrealizedGain   = pos.direction === "LONG"
-          ? price - pos.entryPrice
-          : pos.entryPrice - price;
-        const slNotAtEntry = pos.direction === "LONG"
-          ? pos.stopLoss < pos.entryPrice
-          : pos.stopLoss > pos.entryPrice;
-        if (slNotAtEntry && originalStopDist > 0 && unrealizedGain >= 2 * originalStopDist) {
-          pos.stopLoss = pos.entryPrice;
-          const beMsg =
-            `📌 *Стоп → безубыток — ${pos.symbol}*\n` +
-            `${dirLabel} | Прибыль достигла 2× риска\n` +
-            `Стоп перенесён в точку входа: \`${formatPrice(pos.entryPrice)}\`\n` +
-            `_Позиция теперь без риска убытка_`;
-          msgs.push(beMsg);
-          if (sendNotification) await sendNotification(beMsg).catch(() => {});
-        }
       }
 
       // ── TP1 Partial Close ──────────────────────────────────────────────────

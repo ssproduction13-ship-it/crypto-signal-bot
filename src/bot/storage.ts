@@ -16,7 +16,12 @@ import { pool } from "../lib/db.js";
     entryPrice: number; size: number; stopLoss: number;
     tp1: number; tp2: number; openedAt: string; chatId: number;
     strategy: StrategyName;
-    breakevenMoved: boolean; trailAtr: number|null;
+    breakevenMoved: boolean;
+    /** 0 = no lock, 1 = +0.25R lock after +2R, 2 = +1R lock/trailing after +3R */
+    profitProtectionStage: number;
+    /** Original entry-to-stop distance, preserved when the stop is moved. */
+    initialStopDistance?: number;
+    trailAtr: number|null;
     llmSentiment?: string; llmRisk?: string; llmConfidence?: number;
     /** Balance at the moment position was opened — used for equity-based PnL % */
     equityAtOpen?: number;
@@ -121,6 +126,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       openedAt:r["opened_at"] as string,
       strategy:(r["strategy"] as StrategyName) ?? "UNKNOWN",
       breakevenMoved:Boolean(r["breakeven_moved"]),
+      profitProtectionStage:r["profit_protection_stage"]!=null
+        ? Math.max(0, Math.min(2, Number(r["profit_protection_stage"])))
+        : (Boolean(r["breakeven_moved"]) ? 2 : 0),
+      initialStopDistance:r["initial_stop_distance"]!=null ? Number(r["initial_stop_distance"]) : undefined,
       trailAtr:r["trail_atr"]!=null?Number(r["trail_atr"]):null,
       llmSentiment:(r["llm_sentiment"] as string|null)??undefined,
       llmRisk:(r["llm_risk"] as string|null)??undefined,
@@ -320,10 +329,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       await client.query("DELETE FROM paper_positions WHERE chat_id=$1",[chatId]);
       for (const pos of a.positions) {
         await client.query(
-          `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,risk_percent)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,profit_protection_stage,initial_stop_distance,trail_atr,llm_sentiment,llm_risk,llm_confidence,risk_percent)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
           [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
-           pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
+           pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.profitProtectionStage??0,pos.initialStopDistance??null,pos.trailAtr,
            pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.riskPercent??null]
         );
       }
@@ -503,10 +512,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score,last_funding_charge_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,profit_protection_stage,initial_stop_distance,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score,last_funding_charge_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
-       pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.trailAtr,
+       pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.profitProtectionStage??0,pos.initialStopDistance??null,pos.trailAtr,
        pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null,
        pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.interval??'1h', pos.riskPercent??null,
        pos.finalScore??null, pos.lastFundingChargeAt??null]
@@ -518,8 +527,8 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   export async function updatePosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
       // BUG-03 fix: last_funding_charge_at now persisted so it survives position reloads
-      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,trail_atr=$3,size=$4,pending_entry_size=$5,pending_entry_trigger=$6,market_regime=$7,entry_price=$8,mae_r=$9,mfe_r=$10,last_funding_charge_at=$11 WHERE chat_id=$12 AND id=$13`,
-      [pos.stopLoss, pos.breakevenMoved, pos.trailAtr, pos.size,
+      `UPDATE paper_positions SET stop_loss=$1,breakeven_moved=$2,profit_protection_stage=$3,initial_stop_distance=$4,trail_atr=$5,size=$6,pending_entry_size=$7,pending_entry_trigger=$8,market_regime=$9,entry_price=$10,mae_r=$11,mfe_r=$12,last_funding_charge_at=$13 WHERE chat_id=$14 AND id=$15`,
+      [pos.stopLoss, pos.breakevenMoved, pos.profitProtectionStage??0, pos.initialStopDistance??null, pos.trailAtr, pos.size,
        pos.pendingEntrySize??null, pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.entryPrice,
        pos.maeR??null, pos.mfeR??null, pos.lastFundingChargeAt??null, chatId, pos.id]
     );
