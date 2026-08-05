@@ -44,6 +44,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
 import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
+import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./exploration-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -347,6 +348,8 @@ import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
       const entityStatuses = await getAllEntityStatuses(regime).catch(() => []);
       const entityKey = `${strat}_${sig.score.direction}_${regime}`;
       const entityStatus = entityStatuses.find(s => s.entity === entityKey);
+      const entityTrades = entityStatus?.trades ?? 0;
+      const bootstrapEntity = entityTrades < BOOTSTRAP_ENTITY_TRADES;
       const entityWeight = entityStatus?.weight ?? selectionResult.weight ?? 1;
       // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
@@ -444,23 +447,23 @@ import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
       let instrumentSizeMultiplier = 1.0;
       const instrumentStatus = await getInstrumentStatus(sub.symbol).catch(() => "normal" as const);
       if (!gate.rejected && instrumentStatus === "watchlist") {
-        if (sig.score.total < 65 || sig.confidence.score < 55 || stratFScore < 30) {
+        if (sig.score.total < (bootstrapEntity ? 60 : 65) || sig.confidence.score < (bootstrapEntity ? 45 : 55) || stratFScore < (bootstrapEntity ? 20 : 30)) {
           gate.fail(
             "Instrument Watchlist",
             `${sub.symbol} в watchlist — нужен сильный сигнал`,
             `Score ${sig.score.total} Conf ${sig.confidence.score}% FS ${stratFScore.toFixed(1)}`,
-            "мин Score≥65 / Conf≥55% / FS≥30"
+            bootstrapEntity ? "мин Score≥60 / Conf≥45% / FS≥20 (bootstrap)" : "мин Score≥65 / Conf≥55% / FS≥30"
           );
         } else {
           gate.pass("Instrument Watchlist", `${sub.symbol} watchlist, сигнал сильный — пропущено`);
         }
       } else if (!gate.rejected && instrumentStatus === "deep_watchlist") {
-        if (sig.score.total < 75 || sig.confidence.score < 65 || stratFScore < 40) {
+        if (sig.score.total < (bootstrapEntity ? 70 : 75) || sig.confidence.score < (bootstrapEntity ? 55 : 65) || stratFScore < (bootstrapEntity ? 30 : 40)) {
           gate.fail(
             "Instrument Watchlist",
             `${sub.symbol} в глубоком watchlist — нужен исключительный сигнал`,
             `Score ${sig.score.total} Conf ${sig.confidence.score}% FS ${stratFScore.toFixed(1)}`,
-            "мин Score≥75 / Conf≥65% / FS≥40"
+            bootstrapEntity ? "мин Score≥70 / Conf≥55% / FS≥30 (bootstrap)" : "мин Score≥75 / Conf≥65% / FS≥40"
           );
         } else {
           instrumentSizeMultiplier = 0.5;
@@ -589,13 +592,17 @@ import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
       }
 
       // ── FinalScore Gate (Decision Engine v1.1) ────────────────────────────────────────────
-      // MIN_FINAL_SCORE is a module-level export (M5 fix — was local const, not testable)
-      if (!gate.rejected && stratFScore < MIN_FINAL_SCORE) {
-        gate.fail("FinalScore Gate", "FinalScore ниже минимального порога", stratFScore.toFixed(1), MIN_FINAL_SCORE);
-        logger.warn({ symbol: sub.symbol, strat, finalScore: stratFScore, min: MIN_FINAL_SCORE, reason: 'FINAL_SCORE_TOO_LOW' },
-          `Decision Engine: FINAL_SCORE_TOO_LOW — ${stratFScore.toFixed(1)} < ${MIN_FINAL_SCORE}`);
+      // Bootstrap entities get a bounded evidence-collection allowance.
+      // Mature entities keep the original quality floor.
+      const effectiveFinalScoreMinimum = finalScoreMinimum(entityTrades);
+      if (!gate.rejected && stratFScore < effectiveFinalScoreMinimum) {
+        gate.fail("FinalScore Gate", "FinalScore ниже минимального порога", stratFScore.toFixed(1), effectiveFinalScoreMinimum);
+        logger.warn({ symbol: sub.symbol, strat, finalScore: stratFScore, min: effectiveFinalScoreMinimum, entityTrades, bootstrapEntity, reason: 'FINAL_SCORE_TOO_LOW' },
+          `Decision Engine: FINAL_SCORE_TOO_LOW — ${stratFScore.toFixed(1)} < ${effectiveFinalScoreMinimum}`);
       } else if (!gate.rejected) {
-        gate.pass("FinalScore Gate", `${stratFScore.toFixed(1)} >= ${MIN_FINAL_SCORE} ✓`);
+        gate.pass("FinalScore Gate", bootstrapEntity
+          ? `${stratFScore.toFixed(1)} >= ${effectiveFinalScoreMinimum} ✓ (bootstrap ${entityTrades}/${BOOTSTRAP_ENTITY_TRADES})`
+          : `${stratFScore.toFixed(1)} >= ${effectiveFinalScoreMinimum} ✓`);
       } else {
         gate.skip("FinalScore Gate", "Предыдущий шаг не прошёл");
       }
@@ -722,7 +729,8 @@ import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
         // Нижняя граница: effectiveRiskPct не ниже 30% от baseRisk.
         // Пример: baseRisk=2%, 0.30 пол → минимум 0.6% — разумный минимум для paper trading.
         const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs;
-        const effectiveRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
+        const flooredRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
+        const effectiveRiskPct = capBootstrapRisk(baseRisk, flooredRiskPct, entityTrades);
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({
           baseRisk,
