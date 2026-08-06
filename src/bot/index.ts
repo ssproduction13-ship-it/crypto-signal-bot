@@ -12,7 +12,6 @@ import { Telegraf, Markup } from "telegraf";
   import { buildSelfAnalysis } from "./self-analysis.js";
   import { resumeTrading } from "./risk-manager.js";
   import { loadStrategyStats, formatStrategyStats } from "./strategies.js";
-  import { initABVariants } from "./ab-testing.js";
   import { calcMarketRating, formatMarketRating } from "./market-rating.js";
   import { formatPrice } from "./risk.js";
   import { logger } from "../lib/logger.js";
@@ -1434,7 +1433,6 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 
   export function startBot(): void {
     const bot = createBot();
-    initABVariants().catch(err => logger.error({ err }, "initABVariants failed"));
     startScheduler(bot);
     bot.launch().catch(err => logger.error({ err }, "Bot launch error"));
     // Register commands so Telegram shows the ☰ Menu button automatically

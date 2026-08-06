@@ -4,10 +4,6 @@ import { pool } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { StrategyName } from "./strategies.js";
   import type { FactorWeights } from "./storage.js";
-  import { recordABTrade } from "./ab-testing.js";
-
-  type ABShadowWeights = FactorWeights & { __abVariantId?: number };
-
   export interface ShadowPosition {
     id: string; symbol: string; direction: "LONG"|"SHORT";
     entryPrice: number; size: number; stopLoss: number;
@@ -31,42 +27,6 @@ import { pool } from "../lib/db.js";
     );
   }
 
-
-  export async function openABShadowPosition(
-    variantId: number,
-    symbol: string, direction: "LONG" | "SHORT",
-    entryPrice: number, stopLoss: number, tp1: number, tp2: number,
-    strategy: StrategyName, challengerWeights: FactorWeights, marketRegime: string,
-  ): Promise<void> {
-    const stopDist = Math.abs(entryPrice - stopLoss);
-    if (stopDist <= 0 || !Number.isInteger(variantId) || variantId <= 0) return;
-
-    // A/B rows remain separate from entity shadow rows (entity IS NULL).
-    // Keep one open challenger position per symbol and variant.
-    const { rows: existing } = await pool.query(
-      `SELECT 1 FROM shadow_positions
-       WHERE symbol=$1 AND entity IS NULL
-         AND challenger_weights->>'__abVariantId'=$2
-       LIMIT 1`,
-      [symbol, String(variantId)],
-    );
-    if (existing.length > 0) return;
-
-    const size = 100 / stopDist;
-    const taggedWeights: ABShadowWeights = { ...challengerWeights, __abVariantId: variantId };
-    await pool.query(
-      `INSERT INTO shadow_positions(
-         id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,
-         strategy,challenger_weights,market_regime,opened_at,is_direction_shadow,entity
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,NULL)
-       ON CONFLICT DO NOTHING`,
-      [
-        genId(), symbol, direction, entryPrice, size, stopLoss, tp1, tp2,
-        strategy, JSON.stringify(taggedWeights), marketRegime,
-        new Date().toISOString(),
-      ],
-    );
-  }
 
   export async function checkShadowPositions(): Promise<void> {
     const {rows} = await pool.query("SELECT * FROM shadow_positions");
@@ -115,20 +75,6 @@ import { pool } from "../lib/db.js";
            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"]),pos["entity"] ?? null]
           );
-          const rawWeights = pos["challenger_weights"];
-          let abVariantId: number | null = null;
-          if (rawWeights != null) {
-            try {
-              const parsed = typeof rawWeights === "string" ? JSON.parse(rawWeights) : rawWeights;
-              const candidateId = Number((parsed as Record<string, unknown>)["__abVariantId"]);
-              if (Number.isInteger(candidateId) && candidateId > 0) abVariantId = candidateId;
-            } catch {
-              // Preserve the legacy shadow close path for malformed metadata.
-            }
-          }
-          if (abVariantId != null) {
-            await recordABTrade(abVariantId, pnlEquityPct, pnl > 0);
-          }
           await pool.query("DELETE FROM shadow_positions WHERE id=$1",[pos["id"]]);
         }
       } catch(err) { logger.debug({err},"shadow position check failed"); }

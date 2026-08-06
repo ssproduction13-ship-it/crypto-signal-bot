@@ -6,7 +6,6 @@ import type { TradeSignal } from "./signals.js";
   import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
-  import { evaluateABVariants, checkDegradation , maybeRotateABVariant, loadABVariants } from "./ab-testing.js";
   import { pool, resetAllData } from "../lib/db.js";
   import { logger } from "../lib/logger.js";
   import type { Interval } from "./binance.js";
@@ -22,7 +21,7 @@ import type { TradeSignal } from "./signals.js";
   import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
   import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
-  import { checkShadowPositions, openEntityShadowPosition, openABShadowPosition } from "./shadow-testing.js";
+  import { checkShadowPositions, openEntityShadowPosition } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
@@ -43,7 +42,6 @@ import { maybeRunAutoDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analy
 import { saveStatsSnapshot } from "./stats-snapshot.js";
 import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
-import { scoreABVariant, shouldOpenABShadow } from "./ab-shadow-policy.js";
 import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./exploration-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
@@ -835,29 +833,9 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
       logger.info({ symbol: sub.symbol, score: sig.score.total, direction: sig.score.direction, strat, regime }, "Auto trade opened");
 
 
-      // After a champion is selected, keep every challenger alive in shadow
-      // mode. Challengers use their own factor weights and never affect the
-      // paper balance, paper positions, or entity weights.
-      loadABVariants().then(variants => {
-        if (!variants.some(v => v.isChampion)) return;
-        const direction = sig.score.direction as "LONG" | "SHORT";
-        const challengers = variants.filter(v => !v.isChampion);
-        return Promise.allSettled(challengers.map(v => {
-          const decision = scoreABVariant({
-            trendScore: sig.score.trendScore,
-            volumeScore: sig.score.volumeScore,
-            momentumScore: sig.score.momentumScore,
-            levelsScore: sig.score.levelsScore,
-            patternScore: sig.score.patternScore,
-          }, v.weights);
-          if (!shouldOpenABShadow(direction, decision)) return Promise.resolve();
-          return openABShadowPosition(
-            v.id, sub.symbol, direction,
-            sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-            strat, v.weights, regime,
-          );
-        }));
-      }).catch(err => logger.debug({ err, symbol: sub.symbol }, "A/B shadow routing failed"));
+      // A/B testing is intentionally disabled. Paper trading uses the single
+      // production baseline from factor_weights plus the strategy × direction ×
+      // regime entity selection above; no champion or challenger routing occurs.
 
       const rankLines = stratRanking.length > 1
         ? stratRanking.map((r, i) => {
@@ -1011,6 +989,7 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
           tp2: candidate.sig.risk.tp2,
           openedAt: new Date().toISOString(),
           breakevenMoved: false,
+          profitProtectionStage: 0,
           trailAtr: null,
           strategy: candidate.strat,
           marketRegime: candidate.regime,
@@ -1087,18 +1066,6 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
       if (sub.symbol === symbol && sub.interval === interval)
         void analyzeAndTrade(sub);
     }
-  }
-
-  // ── AB evaluator (every 6 hours) ─────────────────────────────────────────────
-  async function runABEvaluation(): Promise<void> {
-    try {
-      const rotationMsg = await maybeRotateABVariant();
-        if (rotationMsg) for (const chatId of chatIds) await safeSend(chatId, rotationMsg);
-              const championMsg = await evaluateABVariants();
-      if (championMsg) for (const chatId of chatIds) await safeSend(chatId, championMsg);
-      const degradationMsg = await checkDegradation();
-      if (degradationMsg) for (const chatId of chatIds) await safeSend(chatId, degradationMsg);
-    } catch (err) { logger.error({ err }, "AB evaluation error"); }
   }
 
   // ── Startup summary ─────────────────────────────────────────────────────────
@@ -1194,8 +1161,6 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
       // Batch scan: collect all signals, sort by FinalScore, open in priority order
       void runBatchScanCycle();
     });
-
-    cron.schedule("0 */6 * * *", async () => { void runABEvaluation(); });
 
     cron.schedule("0 */4 * * *", async () => {
       if (!chatIds.size) return;

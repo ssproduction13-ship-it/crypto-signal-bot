@@ -3,7 +3,6 @@ import { calcWeightedPF } from "../lib/pf-utils.js";
 import { computeMaxDrawdown } from "../lib/metrics.js";
 import { loadPaperAccount, loadWeights, type ClosedPaperTrade, type PaperPosition } from "./storage.js";
 import { loadStrategyStats, type StrategyStats } from "./strategies.js";
-import { loadABVariants } from "./ab-testing.js";
 import { getPrice } from "./binance.js";
 import { getRecentDecisionLog, getDecisionStats, type DecisionTrace } from "./decision-trace.js";
 import { logger } from "../lib/logger.js";
@@ -54,7 +53,6 @@ interface ReportData {
   weights: Record<string, number>;
   riskState: Record<string, unknown>;
   missedTrades: Array<Record<string, unknown>>;
-  abVariants: Awaited<ReturnType<typeof loadABVariants>>;
   positionPrices: Record<string, number>;
   decisionLog: DecisionTrace[];
   decisionStats: Awaited<ReturnType<typeof getDecisionStats>>;
@@ -95,11 +93,10 @@ function parseReportEntity(entity: string): { baseStrategy: string; direction: s
 // ── Data collection ───────────────────────────────────────────────────────────
 
 async function collectData(chatId: number): Promise<ReportData> {
-  const [account, strategyStats, weights, abVariants, decisionLog, decisionStats] = await Promise.all([
+  const [account, strategyStats, weights, decisionLog, decisionStats] = await Promise.all([
     loadPaperAccount(chatId),
     loadStrategyStats(),
     loadWeights(),
-    loadABVariants(),
     getRecentDecisionLog(30),
     getDecisionStats(),
   ]);
@@ -168,7 +165,7 @@ async function collectData(chatId: number): Promise<ReportData> {
     weights: weights as unknown as Record<string, number>,
     riskState: (riskRes.rows[0] ?? {}) as Record<string, unknown>,
     missedTrades: missedRes.rows as Array<Record<string, unknown>>,
-    abVariants, positionPrices, decisionLog, decisionStats,
+    positionPrices, decisionLog, decisionStats,
     learningReports: lrRes.rows as Array<Record<string, unknown>>,
     strategyHistory: shRes.rows as Array<Record<string, unknown>>,
     strategyWeights,
@@ -758,7 +755,6 @@ function buildHtml(d: ReportData): string {
   const pnlDay  = d.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 86400000).reduce((a, t) => a + t.pnl, 0);
   const pnlWeek = d.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 604800000).reduce((a, t) => a + t.pnl, 0);
   const pnlMonth= d.closedTrades.filter(t => now - new Date(t.closedAt).getTime() < 2592000000).reduce((a, t) => a + t.pnl, 0);
-  const champion = d.abVariants.find(v => v.isChampion);
   const recentTrades = d.closedTrades.slice(0, 20);
   const totalMissed = d.missedTrades.length;
   const filterReasons: Record<string, number> = {};
