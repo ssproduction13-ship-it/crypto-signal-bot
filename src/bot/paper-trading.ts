@@ -1,7 +1,7 @@
 import { getPrice } from "./binance.js";
 import {
   loadPaperAccount, saveBalance, addBalance, insertPosition, deletePosition, updatePosition, insertClosedTrade, loadSettings, genId, addAccountCosts, recordBalanceLedger,
-  tryClaimPosition, tryMarkTP1, updateJournalClose, closePositionAndInsertTrade,
+  tryClaimPosition, updateJournalClose, closePositionAndInsertTrade,
   type PaperPosition, type ClosedPaperTrade,
 } from "./storage.js";
 import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
