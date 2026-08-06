@@ -380,22 +380,16 @@ export async function checkPaperPositions(
       // Variant A closes 100% at TP1; no breakeven/profit-lock move is applied.
 
       // ── TP1 Full Close at 2R ───────────────────────────────────────────────
-      // Guard: breakevenMoved=false ensures this fires only once per position.
-      // Additional atomic guard: tryMarkTP1 prevents double-fire in concurrent cycles.
-      const tp1Hit = !pos.breakevenMoved && (
+      // Full close is protected atomically by closePositionAndInsertTrade below.
+      // Do not gate this on breakevenMoved: that flag may be true on positions
+      // created by the previous profit-lock version, but TP1 must still close them.
+      const tp1Hit = (
         (pos.direction === "LONG"  && price >= pos.tp1) ||
         (pos.direction === "SHORT" && price <= pos.tp1)
       );
 
       if (tp1Hit) {
-        // Atomically claim TP1 processing — if another concurrent cycle beat us, skip.
         // Variant A: TP1 is a FULL close (100%). No partial remainder, no pyramiding.
-        const tp1Claimed = await tryMarkTP1(chatId, pos.id);
-        if (!tp1Claimed) {
-          // Another cycle already processed TP1 for this position — keep it in remaining
-          remaining.push(pos);
-          continue;
-        }
 
         const { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage } =
           buildCloseRecord(pos, pos.tp1, pos.size, "TP1", equityAtOpen);
