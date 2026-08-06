@@ -17,7 +17,6 @@ import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
 import { recordInstrumentRegimeTrade } from "./instrument-regime-stats.js";
 import { recordEntitySymbolResult } from "./entity-cooldown.js";
-import { calculateProfitProtection } from "./profit-protection.js";
 
 
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
@@ -376,43 +375,11 @@ export async function checkPaperPositions(
         }
       }
 
-      // ── Profit protection and ATR trailing ─────────────────────────────────
-      // Keep the original risk distance: the live stop is intentionally moved.
-      const initialRiskDistance = pos.initialStopDistance != null && pos.initialStopDistance > 0
-        ? pos.initialStopDistance
-        : Math.abs(pos.entryPrice - pos.stopLoss) || Math.abs(pos.tp1 - pos.entryPrice) / 2;
-      const favorableMove = pos.direction === "LONG"
-        ? price - pos.entryPrice
-        : pos.entryPrice - price;
-      const favorableR = initialRiskDistance > 0 ? favorableMove / initialRiskDistance : 0;
-      const protection = calculateProfitProtection({
-        direction: pos.direction,
-        entryPrice: pos.entryPrice,
-        currentStopLoss: pos.stopLoss,
-        initialRiskDistance,
-        favorableR,
-        stage: pos.profitProtectionStage ?? (pos.breakevenMoved ? 2 : 0),
-      });
-      if (protection) {
-        pos.stopLoss = protection.stopLoss;
-        pos.profitProtectionStage = protection.stage;
-        pos.breakevenMoved = true;
-        const lockMessage = protection.stage === 2
-          ? `📈 *Защита прибыли усилена — ${pos.symbol}*\n${dirLabel} | Движение достигло 3× риска\nСтоп перенесён на +1R: \`${formatPrice(pos.stopLoss)}\`\n_Минимальная защищённая прибыль: +1R до комиссий_`
-          : `📌 *Стоп → защита прибыли — ${pos.symbol}*\n${dirLabel} | Прибыль достигла 2× риска\nСтоп перенесён на +0.25R: \`${formatPrice(pos.stopLoss)}\`\n_При откате защищена небольшая прибыль, а TP2 остаётся активным_`;
-        msgs.push(lockMessage);
-        if (sendNotification) await sendNotification(lockMessage).catch(() => {});
-      }
+      // ── Fixed 2R target ───────────────────────────────────────────────────
+      // TP1 is calculated at 4 ATR against the 2 ATR initial stop (2R).
+      // Variant A closes 100% at TP1; no breakeven/profit-lock move is applied.
 
-      if ((pos.profitProtectionStage ?? 0) >= 2 && pos.trailAtr != null && pos.trailAtr > 0) {
-        const trail = pos.direction === "LONG"
-          ? price - pos.trailAtr * 1.0
-          : price + pos.trailAtr * 1.0;
-        if (pos.direction === "LONG"  && trail > pos.stopLoss) pos.stopLoss = trail;
-        if (pos.direction === "SHORT" && trail < pos.stopLoss) pos.stopLoss = trail;
-      }
-
-      // ── TP1 Partial Close ──────────────────────────────────────────────────
+      // ── TP1 Full Close at 2R ───────────────────────────────────────────────
       // Guard: breakevenMoved=false ensures this fires only once per position.
       // Additional atomic guard: tryMarkTP1 prevents double-fire in concurrent cycles.
       const tp1Hit = !pos.breakevenMoved && (
