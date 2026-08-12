@@ -120,17 +120,12 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
   const shadowBannedDebounce = new Map<string, number>();
   const SHADOW_BANNED_DEBOUNCE_MS = 4 * 60 * 60 * 1000;
 
-  // ── One-per-hour notification dedup maps ──────────────────────────────────
-  const lastCorrGuardNotify = new Map<number, number>(); // chatId → timestamp
-  const CORR_GUARD_NOTIFY_MS = 60 * 60 * 1000; // 1 hour
-
   // fix: these Maps grow indefinitely — on 100+ pairs × 30 days the process
   // accumulates hundreds of MB of stale entries. Clean up old keys hourly.
   setInterval(() => {
     const cutoff = Date.now() - 2 * 3600 * 1000; // keep last 2 hours
     for (const [k, ts] of recentlyProcessed)    if (ts < cutoff) recentlyProcessed.delete(k);
     for (const [k, ts] of shadowBannedDebounce) if (ts < cutoff) shadowBannedDebounce.delete(k);
-    for (const [k, ts] of lastCorrGuardNotify)  if (ts < cutoff) lastCorrGuardNotify.delete(k);
   }, 3600 * 1000);
 
   // ── Concurrency guard: prevents checkPositions from running in parallel ──────
@@ -682,11 +677,9 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
 
       if (!corrRisk.allowed) {
         logger.debug({ symbol: sub.symbol, reason: corrRisk.reason }, 'Correlation Guard: REJECT');
-        const lastNotify = lastCorrGuardNotify.get(sub.chatId) ?? 0;
-        if (Date.now() - lastNotify > CORR_GUARD_NOTIFY_MS) {
-          lastCorrGuardNotify.set(sub.chatId, Date.now());
-          await safeSend(sub.chatId, `🚫 *Correlation Guard*\n${corrRisk.message}\n_${corrRisk.reason}_`);
-        }
+        // Correlation rejects are expected during normal portfolio operation.
+        // Keep the guard and trace, but do not send a Telegram message for
+        // every scanned symbol.
         return null;
       }
       const cooldown = await evaluateCooldown(sub.chatId).catch(() => ({
