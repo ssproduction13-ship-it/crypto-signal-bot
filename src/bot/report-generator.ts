@@ -62,6 +62,34 @@ interface ReportData {
   strategyEntityWeights: Array<Record<string, unknown>>;
 }
 
+type AsyncTask<T> = () => Promise<T>;
+
+/**
+ * A report fans out into many independent reads. Running all of them at once
+ * competes with the scheduler and position checker for the same small PG
+ * pool, which can make pg time out while waiting for a client. Keep the
+ * report's own concurrency bounded without changing the report contents.
+ */
+async function runWithConcurrency<T>(
+  tasks: Array<AsyncTask<T>>,
+  limit: number,
+): Promise<T[]> {
+  const results = new Array<T>(tasks.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = next++;
+      if (index >= tasks.length) return;
+      results[index] = await tasks[index]!();
+    }
+  }
+
+  const workerCount = Math.min(Math.max(1, limit), tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 // v3.0 report model: strategy × direction × market regime.
 const REPORT_BASE_KEYS = [
   "TREND_LONG", "TREND_SHORT",
@@ -93,30 +121,34 @@ function parseReportEntity(entity: string): { baseStrategy: string; direction: s
 // ── Data collection ───────────────────────────────────────────────────────────
 
 async function collectData(chatId: number): Promise<ReportData> {
-  const [account, strategyStats, weights, decisionLog, decisionStats] = await Promise.all([
-    loadPaperAccount(chatId),
+  const account = await loadPaperAccount(chatId);
+  const [strategyStats, weights] = await Promise.all([
     loadStrategyStats(),
     loadWeights(),
+  ]);
+  const [decisionLog, decisionStats] = await Promise.all([
     getRecentDecisionLog(30),
     getDecisionStats(),
   ]);
 
-  const [riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes, sdsRes] = await Promise.all([
-    pool.query("SELECT * FROM risk_state WHERE id=1")
+  const [
+    riskRes, missedRes, lrRes, shRes, swRes, taRes, iaRes, ewRes, sdsRes,
+  ] = await runWithConcurrency([
+    () => pool.query("SELECT * FROM risk_state WHERE id=1")
       .catch((err) => { logger.error({ err }, "report-generator: risk_state query failed"); return { rows: [] }; }),
-    pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200")
+    () => pool.query("SELECT * FROM missed_trades ORDER BY timestamp DESC LIMIT 200")
       .catch((err) => { logger.error({ err }, "report-generator: missed_trades query failed"); return { rows: [] }; }),
-    pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5")
+    () => pool.query("SELECT version_label,created_at,trade_count_at_report,summary FROM learning_reports ORDER BY created_at DESC LIMIT 5")
       .catch((err) => { logger.error({ err }, "report-generator: learning_reports query failed"); return { rows: [] }; }),
-    pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30")
+    () => pool.query("SELECT * FROM strategy_history ORDER BY changed_at DESC LIMIT 30")
       .catch((err) => { logger.error({ err }, "report-generator: strategy_history query failed"); return { rows: [] }; }),
-    pool.query("SELECT * FROM strategy_weights")
+    () => pool.query("SELECT * FROM strategy_weights")
       .catch((err) => { logger.error({ err }, "report-generator: strategy_weights query failed"); return { rows: [] }; }),
-    pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day")
+    () => pool.query("SELECT hour_of_day, SUM(trades) AS trades, SUM(wins) AS wins FROM time_analytics GROUP BY hour_of_day ORDER BY hour_of_day")
       .catch((err) => { logger.error({ err }, "report-generator: time_analytics query failed"); return { rows: [] }; }),
-    pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC")
+    () => pool.query("SELECT symbol, trades, wins, win_pnl, loss_pnl, total_pnl FROM instrument_analytics WHERE trades>=3 ORDER BY trades DESC")
       .catch((err) => { logger.error({ err }, "report-generator: instrument_analytics query failed"); return { rows: [] }; }),
-    pool.query(`SELECT e.entity, e.strategy, e.direction, e.regime,
+    () => pool.query(`SELECT e.entity, e.strategy, e.direction, e.regime,
                        COALESCE(sew.weight, 1.0) AS weight,
                        COALESCE(sew.quarantine, false) AS quarantine,
                        COALESCE(sew.trust_score, 0) AS trust_score,
@@ -137,11 +169,11 @@ async function collectData(chatId: number): Promise<ReportData> {
                   ) AS r(regime)
                 ) e
                 LEFT JOIN strategy_entity_weights sew ON sew.entity=e.entity
-                ORDER BY e.strategy, e.direction, e.regime`)
+                 ORDER BY e.strategy, e.direction, e.regime`)
       .catch((err) => { logger.error({ err }, "report-generator: strategy_entity_weights query failed"); return { rows: [] }; }),
-    pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats")
+    () => pool.query("SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats")
       .catch((err) => { logger.error({ err }, "report-generator: strategy_direction_stats query failed"); return { rows: [] }; }),
-  ]);
+  ], 3);
 
   const positionPrices: Record<string, number> = {};
   await Promise.all(account.positions.map(async (p) => {
