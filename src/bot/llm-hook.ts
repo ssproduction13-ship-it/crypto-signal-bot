@@ -16,6 +16,15 @@ export interface LLMAnalysis {
   confidence: number;
 }
 
+export function computeLlmAgreement(
+  analysis: LLMAnalysis | null | undefined,
+  direction: "LONG" | "SHORT",
+): boolean | null {
+  if (!analysis || analysis.newsSentiment === "neutral") return null;
+  return (analysis.newsSentiment === "bullish" && direction === "LONG")
+    || (analysis.newsSentiment === "bearish" && direction === "SHORT");
+}
+
 export type LLMProvider = (
   signal: TradeSignal,
   news: NewsItem[]

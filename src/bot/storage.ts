@@ -35,6 +35,8 @@ import { pool } from "../lib/db.js";
     riskPercent?: number;
     /** FinalScore (Decision Engine) at the moment the position was opened — used by the pyramiding quality gate */
     finalScore?: number;
+    /** IDs of shadow observations captured for this signal. */
+    shadowFeatureIds?: number[];
     /** Running max adverse excursion in R-multiples (updated each tick, stored on close) */
     maeR?: number;
     /** Running max favorable excursion in R-multiples (updated each tick, stored on close) */
@@ -69,6 +71,12 @@ import { pool } from "../lib/db.js";
     mfeR?: number;
     /** Stop-loss price at trade open — used by MAE-aware max-drawdown (BUG-07 fix) */
     stopLoss?: number;
+    /** Forward-looking LLM/news fields retained for experiment analysis. */
+    llmNewsSentiment?: string;
+    llmRiskLevel?: string;
+    llmAgreed?: boolean | null;
+    /** IDs of shadow observations linked to this closed trade. */
+    shadowFeatureIds?: number[];
   }
   export interface PaperAccount {
     balance: number; initialBalance: number; peakBalance: number;
@@ -140,6 +148,9 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       marketRegime:(r["market_regime"] as string|null)??undefined,
       interval:(r["interval"] as string|null)??undefined,
       finalScore:r["final_score"]!=null?Number(r["final_score"]):undefined,
+      shadowFeatureIds:Array.isArray(r["shadow_feature_ids"])
+        ? (r["shadow_feature_ids"] as unknown[]).map(Number).filter(Number.isInteger)
+        : undefined,
       maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
       mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
       // BUG-03 fix: persist lastFundingChargeAt so funding is not re-applied every 30s on reload
@@ -166,6 +177,9 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
       mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
       stopLoss:r["stop_loss"]!=null?Number(r["stop_loss"]):undefined,
+      llmNewsSentiment:(r["llm_news_sentiment"] as string|null)??undefined,
+      llmRiskLevel:(r["llm_risk_level"] as string|null)??undefined,
+      llmAgreed:r["llm_agreed"]!=null ? Boolean(r["llm_agreed"]) : null,
     };
   }
 
@@ -177,6 +191,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
     await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_sentiment TEXT`);
     await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk      TEXT`);
     await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_confidence INTEGER`);
+    await pool.query(`ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS shadow_feature_ids JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_news_sentiment TEXT`);
+    await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk_level TEXT`);
+    await pool.query(`ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_agreed BOOLEAN`);
     await pool.query(`ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_size    NUMERIC`);
     await pool.query(`ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_trigger NUMERIC`);
     await pool.query(`ALTER TABLE paper_positions       ADD COLUMN IF NOT EXISTS mae_r NUMERIC`);
@@ -512,13 +530,13 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function insertPosition(chatId: number, pos: PaperPosition): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,profit_protection_stage,initial_stop_distance,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score,last_funding_charge_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_positions(id,chat_id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,opened_at,breakeven_moved,profit_protection_stage,initial_stop_distance,trail_atr,llm_sentiment,llm_risk,llm_confidence,equity_at_open,pending_entry_size,pending_entry_trigger,market_regime,interval,risk_percent,final_score,last_funding_charge_at,shadow_feature_ids)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) ON CONFLICT(id) DO NOTHING`,
       [pos.id,chatId,pos.symbol,pos.direction,pos.entryPrice,pos.size,
        pos.stopLoss,pos.tp1,pos.tp2,pos.strategy??'TREND',pos.openedAt,pos.breakevenMoved,pos.profitProtectionStage??0,pos.initialStopDistance??null,pos.trailAtr,
        pos.llmSentiment??null,pos.llmRisk??null,pos.llmConfidence??null,pos.equityAtOpen??null,
        pos.pendingEntrySize??null,pos.pendingEntryTrigger??null, pos.marketRegime??'sideways', pos.interval??'1h', pos.riskPercent??null,
-       pos.finalScore??null, pos.lastFundingChargeAt??null]
+       pos.finalScore??null, pos.lastFundingChargeAt??null, JSON.stringify(pos.shadowFeatureIds ?? [])]
     );
   }
   export async function deletePosition(chatId: number, posId: string): Promise<void> {
@@ -535,15 +553,24 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
       [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
        t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
        t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
        t.commission??0,t.slippage??0,t.pnlEquityPct??null,
         t.entity??`${t.strategy??'TREND'}_${t.direction}_${t.marketRegime??'unknown'}`,
-       t.marketRegime??null, t.maeR??null, t.mfeR??null]
+       t.marketRegime??null, t.maeR??null, t.mfeR??null,
+       t.llmNewsSentiment ?? t.llmSentiment ?? null,
+       t.llmRiskLevel ?? t.llmRisk ?? null,
+       t.llmAgreed ?? null]
     );
+    if (t.shadowFeatureIds?.length) {
+      await pool.query(
+        `UPDATE shadow_features SET trade_id=$1 WHERE id = ANY($2::int[])`,
+        [t.id, t.shadowFeatureIds],
+      );
+    }
   }
   export function genId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
 
@@ -598,15 +625,24 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
         return false; // Another cycle already claimed this position
       }
       await client.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
         [trade.id,chatId,trade.symbol,trade.direction,trade.entryPrice,trade.closePrice,
          trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
          trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
          trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null,
          trade.entity??`${trade.strategy??'TREND'}_${trade.direction}_${trade.marketRegime??'unknown'}`,
-         trade.marketRegime??null, trade.maeR??null, trade.mfeR??null]
+         trade.marketRegime??null, trade.maeR??null, trade.mfeR??null,
+         trade.llmNewsSentiment ?? trade.llmSentiment ?? null,
+         trade.llmRiskLevel ?? trade.llmRisk ?? null,
+         trade.llmAgreed ?? null]
       );
+      if (trade.shadowFeatureIds?.length) {
+        await client.query(
+          `UPDATE shadow_features SET trade_id=$1 WHERE id = ANY($2::int[])`,
+          [trade.id, trade.shadowFeatureIds],
+        );
+      }
       await client.query('COMMIT');
       return true;
     } catch (err) {

@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS shadow_features (
 CREATE INDEX IF NOT EXISTS idx_shadow_features_name
   ON shadow_features(feature_name, created_at);
 
+ALTER TABLE paper_positions
+  ADD COLUMN IF NOT EXISTS shadow_feature_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 ALTER TABLE paper_closed_trades
   ADD COLUMN IF NOT EXISTS llm_news_sentiment text;
 ALTER TABLE paper_closed_trades

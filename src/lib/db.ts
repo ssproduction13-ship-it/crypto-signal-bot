@@ -231,6 +231,7 @@ const MIGRATIONS = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   "CREATE INDEX IF NOT EXISTS idx_shadow_features_name ON shadow_features(feature_name, created_at)",
+  "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS shadow_feature_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_news_sentiment TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk_level TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_agreed BOOLEAN",

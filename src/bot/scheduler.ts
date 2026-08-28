@@ -778,7 +778,11 @@ import { checkDailyVolumeGuardrail, MIN_DAILY_TRADES } from "./volume-guardrail.
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
       effectiveRiskPct, sig.risk.atr,
       strat, regime, sub.interval,
-      stratFScore
+      stratFScore,
+      sig.llmAnalysis?.newsSentiment,
+      sig.llmAnalysis?.riskLevel,
+      sig.llmAnalysis?.confidence,
+      sig.shadowFeatureIds,
     );
 
     if (res.success) {

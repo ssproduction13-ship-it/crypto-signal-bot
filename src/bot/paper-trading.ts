@@ -75,6 +75,13 @@ function buildCloseRecord(
     marketRegime: pos.marketRegime ?? "sideways",
     maeR: pos.maeR,
     mfeR: pos.mfeR,
+    llmNewsSentiment: pos.llmSentiment,
+    llmRiskLevel: pos.llmRisk,
+    llmAgreed: pos.llmSentiment === "neutral" || !pos.llmSentiment
+      ? null
+      : (pos.llmSentiment === "bullish" && pos.direction === "LONG")
+        || (pos.llmSentiment === "bearish" && pos.direction === "SHORT"),
+    shadowFeatureIds: pos.shadowFeatureIds,
   };
   return { trade, pnl, pnlPct, pnlEquityPct, realisticPrice, commission, slippage };
 }
@@ -132,7 +139,11 @@ export async function openPaperPosition(
   marketRegime: MarketRegime = "sideways",
   interval: string = "1h",
   // ТЗ "Условный пирамидинг": FinalScore at open time, stored for the pyramiding quality gate
-  finalScore?: number
+  finalScore?: number,
+  llmSentiment?: string,
+  llmRisk?: string,
+  llmConfidence?: number,
+  shadowFeatureIds?: number[],
 ): Promise<{success:boolean;message:string;position?:PaperPosition}> {
   const account  = await loadPaperAccount(chatId);
   const settings = await loadSettings(chatId);
@@ -184,6 +195,7 @@ export async function openPaperPosition(
     pendingEntrySize, pendingEntryTrigger, marketRegime, interval,
     riskPercent: rp,
     finalScore,
+    llmSentiment, llmRisk, llmConfidence, shadowFeatureIds,
   };
   account.positions.push(pos);
   await insertPosition(chatId, pos);

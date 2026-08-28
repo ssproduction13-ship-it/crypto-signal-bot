@@ -7,7 +7,10 @@ import { calcRisk, formatPrice, type RiskParams } from "./risk.js";
 import { assessMarket, type MarketCondition } from "./chaos-filter.js";
 import { loadWeights, loadSettings, addJournalEntry, genId } from "./storage.js";
 import { recordMissedTrade } from "./missed-trades.js";
-import { analyzWithLLM, formatLLMAnalysis, isLLMAvailable, type LLMAnalysis } from "./llm-hook.js";
+import {
+  analyzWithLLM, computeLlmAgreement, formatLLMAnalysis, isLLMAvailable,
+  type LLMAnalysis,
+} from "./llm-hook.js";
 import { evalAllStrategies, getBestStrategy, type StrategySignal } from "./strategies.js";
 import { calcConfidence, type ConfidenceResult } from "./confidence.js";
 import { calcMarketRating, type MarketRating } from "./market-rating.js";
@@ -16,6 +19,7 @@ import type { SupportResistance } from "./levels.js";
 import type { PatternResult } from "./patterns.js";
 import { logger } from "../lib/logger.js";
 import { detectMarketRegime } from "./learning-engine.js";
+import { recordShadowFeature } from "./feature-shadow.js";
 
 export interface TradeSignal {
   symbol: string; price: number; interval: string;
@@ -32,6 +36,8 @@ export interface TradeSignal {
   fundingRate?: number | null;
   /** Raw indicator snapshot at signal time — stored in trade_features for ML */
   ind: IndicatorResult;
+  /** Shadow observations captured while evaluating this signal. */
+  shadowFeatureIds?: number[];
 }
 
 export async function generateSignal(
@@ -112,10 +118,21 @@ export async function generateSignal(
     } as TradeSignal).catch(() => null);
   }
 
+  const shadowFeatureIds: number[] = [];
+  if (llmAnalysis && score.direction !== "NEUTRAL") {
+    const agreed = computeLlmAgreement(llmAnalysis, score.direction as "LONG" | "SHORT");
+    const shadowId = await recordShadowFeature("llm_news_gate", symbol.toUpperCase(), {
+      agreed,
+      sentiment: llmAnalysis.newsSentiment,
+      riskLevel: llmAnalysis.riskLevel,
+    });
+    if (shadowId != null) shadowFeatureIds.push(shadowId);
+  }
+
   return {
     symbol: symbol.toUpperCase(), price, interval, score, risk, market, levels, pattern,
     timestamp: new Date(), filtered, filterReason, llmAnalysis,
-    strategies, bestStrategy, confidence, marketRating, fundingRate, ind,
+    strategies, bestStrategy, confidence, marketRating, fundingRate, ind, shadowFeatureIds,
   };
 }
 
