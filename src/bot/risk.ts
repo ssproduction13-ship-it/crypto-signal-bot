@@ -1,5 +1,6 @@
 import { ATR } from "technicalindicators";
 import type { Candle } from "./binance.js";
+import type { SupportResistance } from "./levels.js";
 
 export interface RiskParams {
   entryPrice: number;
@@ -20,7 +21,8 @@ export function calcRisk(
   candles: Candle[],
   direction: "LONG" | "SHORT",
   accountSize: number,
-  riskPercent: number
+  riskPercent: number,
+  levels?: SupportResistance,
 ): RiskParams {
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
@@ -46,6 +48,35 @@ export function calcRisk(
     stopLoss = entryPrice + atr * 2.0;
     tp1 = entryPrice - atr * 4.0;
     tp2 = entryPrice - atr * 7.0;
+  }
+
+  // Put the stop beyond the nearest market-structure level when that level
+  // gives a little more room than ATR, but never let it expand risk
+  // disproportionately. Position sizing below is intentionally calculated
+  // after this adjustment.
+  if (levels) {
+    const structuralLevel = direction === "LONG"
+      ? levels.nearestSupport
+      : levels.nearestResistance;
+    if (structuralLevel != null) {
+      const buffer = atr * 0.3;
+      const structuralStop = direction === "LONG"
+        ? structuralLevel - buffer
+        : structuralLevel + buffer;
+      const structuralDirectionIsValid = direction === "LONG"
+        ? structuralStop < entryPrice
+        : structuralStop > entryPrice;
+      const atrStopDistance = Math.abs(entryPrice - stopLoss);
+      const structuralStopDistance = Math.abs(entryPrice - structuralStop);
+
+      if (
+        structuralDirectionIsValid
+        && structuralStopDistance > atrStopDistance
+        && structuralStopDistance <= atrStopDistance * 1.5
+      ) {
+        stopLoss = structuralStop;
+      }
+    }
   }
 
   const stopDistancePct =

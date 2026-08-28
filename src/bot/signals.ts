@@ -63,7 +63,13 @@ export async function generateSignal(
   const pattern = detectPattern(candles);
   const score   = calcScore(ind, levels, pattern, weights, candles);
   const market  = assessMarket(candles, ind);
-  const risk    = calcRisk(candles, score.direction !== "NEUTRAL" ? score.direction : "LONG", accountSize, riskPercent);
+  const risk    = calcRisk(
+    candles,
+    score.direction !== "NEUTRAL" ? score.direction : "LONG",
+    accountSize,
+    riskPercent,
+    levels,
+  );
 
   const strategies   = evalAllStrategies(ind, levels, pattern, candles);
   const bestStrategy = getBestStrategy(strategies);
