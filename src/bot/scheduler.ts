@@ -44,6 +44,8 @@ import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./exploration-policy.js";
 import { checkDailyVolumeGuardrail, MIN_DAILY_TRADES } from "./volume-guardrail.js";
+import { getBtcMomentum } from "./lead-lag.js";
+import { recordShadowFeature } from "./feature-shadow.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -284,6 +286,25 @@ import { checkDailyVolumeGuardrail, MIN_DAILY_TRADES } from "./volume-guardrail.
 
     try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
+      if (sub.symbol !== "BTCUSDT" && sig.score.direction !== "NEUTRAL") {
+        const btc = await getBtcMomentum(sub.interval).catch((err) => {
+          logger.debug({ err, symbol: sub.symbol }, "BTC lead lookup failed");
+          return { direction: "flat" as const, strengthPct: 0 };
+        });
+        const agrees = btc.direction !== "flat"
+          ? (btc.direction === "up" && sig.score.direction === "LONG")
+            || (btc.direction === "down" && sig.score.direction === "SHORT")
+          : null;
+        const shadowId = await recordShadowFeature("btc_lead", sub.symbol.toUpperCase(), {
+          agrees,
+          btcDirection: btc.direction,
+          strengthPct: btc.strengthPct,
+          signalDirection: sig.score.direction,
+        });
+        if (shadowId != null) {
+          sig.shadowFeatureIds = [...(sig.shadowFeatureIds ?? []), shadowId];
+        }
+      }
       const now = new Date();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
 
