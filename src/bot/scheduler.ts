@@ -43,6 +43,7 @@ import { saveStatsSnapshot } from "./stats-snapshot.js";
 import { pruneOldData } from "./data-cleanup.js";
 import { shouldOpenEntityShadow } from "./entity-shadow-policy.js";
 import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./exploration-policy.js";
+import { checkDailyVolumeGuardrail, MIN_DAILY_TRADES } from "./volume-guardrail.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -1446,6 +1447,37 @@ cron.schedule("0 9 * * 1", async () => {
 
     // BUG-12: daily balance reconciliation at 00:05 UTC
     cron.schedule("5 0 * * *", () => { runBalanceReconciliation().catch(() => {}); }, { timezone: "UTC" });
+
+    // Volume guardrail: warn, but never automatically toggle a feature.
+    // Automatic on/off oscillation would make the guardrail itself a source of
+    // instability. Set VOLUME_GUARDRAIL_CHAT_ID to the owner's Telegram chat
+    // id; fall back to active subscribers for backwards-compatible operation.
+    cron.schedule("0 10 * * *", async () => {
+      try {
+        const result = await checkDailyVolumeGuardrail();
+        if (result.ok) return;
+
+        const configuredOwner = Number(process.env["VOLUME_GUARDRAIL_CHAT_ID"]);
+        const recipients = Number.isFinite(configuredOwner) && configuredOwner !== 0
+          ? [configuredOwner]
+          : [...chatIds];
+        const message =
+          `⚠️ *Guardrail объёма сделок*\n\n` +
+          `Закрытых сделок за последние 24 часа: *${result.tradesLast24h}* ` +
+          `(минимум: *${MIN_DAILY_TRADES}*).\n\n` +
+          `Новые экспериментальные множители не следует переводить в live. ` +
+          `Последний включённый множитель нужно временно откатить вручную ` +
+          `до восстановления объёма.`;
+
+        if (!recipients.length) {
+          logger.warn("Volume guardrail: нет получателей для Telegram-предупреждения");
+        } else {
+          for (const chatId of recipients) await safeSend(chatId, message);
+        }
+      } catch (err) {
+        logger.error({ err }, "Daily volume guardrail failed");
+      }
+    }, { timezone: "UTC" });
 
     logger.info("Scheduler started — Self Learning Engine v2 + RC modules active");
   }
