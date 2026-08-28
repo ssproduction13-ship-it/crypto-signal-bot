@@ -51,3 +51,19 @@ test("keeps legacy calcRisk calls working without levels", () => {
   assert.equal(risk.isRRViable, true);
   assert.ok(risk.positionSize > 0);
 });
+
+test("widens take-profit targets in a trend without changing the ATR stop", () => {
+  const base = calcRisk(candles(), "LONG", 10_000, 1, undefined, "unknown");
+  const trend = calcRisk(candles(), "LONG", 10_000, 1, undefined, "trend_up");
+  assert.equal(trend.stopLoss, base.stopLoss);
+  assert.ok(trend.tp1 > base.tp1);
+  assert.ok(trend.tp2 > base.tp2);
+});
+
+test("narrows take-profit targets in sideways and low-volatility regimes", () => {
+  const base = calcRisk(candles(), "LONG", 10_000, 1, undefined, "unknown");
+  const sideways = calcRisk(candles(), "LONG", 10_000, 1, undefined, "sideways");
+  const lowVol = calcRisk(candles(), "LONG", 10_000, 1, undefined, "low_vol");
+  assert.ok(sideways.tp1 < base.tp1);
+  assert.ok(lowVol.tp2 < base.tp2);
+});

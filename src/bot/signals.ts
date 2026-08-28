@@ -63,18 +63,19 @@ export async function generateSignal(
   const pattern = detectPattern(candles);
   const score   = calcScore(ind, levels, pattern, weights, candles);
   const market  = assessMarket(candles, ind);
+
+  const strategies   = evalAllStrategies(ind, levels, pattern, candles);
+  const bestStrategy = getBestStrategy(strategies);
+  const marketRating = calcMarketRating(ind, market, candles);
+  const regime = detectMarketRegime(market, marketRating);
   const risk    = calcRisk(
     candles,
     score.direction !== "NEUTRAL" ? score.direction : "LONG",
     accountSize,
     riskPercent,
     levels,
+    regime,
   );
-
-  const strategies   = evalAllStrategies(ind, levels, pattern, candles);
-  const bestStrategy = getBestStrategy(strategies);
-  const marketRating = calcMarketRating(ind, market, candles);
-  const regime = detectMarketRegime(market, marketRating);
     const confidence   = await calcConfidence(ind, market, bestStrategy?.strategy, score.total, symbol, regime);
 
   let filtered = false, filterReason: string | null = null;

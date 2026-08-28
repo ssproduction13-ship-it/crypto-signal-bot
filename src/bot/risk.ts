@@ -1,6 +1,7 @@
 import { ATR } from "technicalindicators";
 import type { Candle } from "./binance.js";
 import type { SupportResistance } from "./levels.js";
+import type { MarketRegime } from "./learning-engine.js";
 
 export interface RiskParams {
   entryPrice: number;
@@ -23,6 +24,7 @@ export function calcRisk(
   accountSize: number,
   riskPercent: number,
   levels?: SupportResistance,
+  regime?: MarketRegime,
 ): RiskParams {
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
@@ -40,14 +42,21 @@ export function calcRisk(
 
   // fix: widened stop 1.3→2.0 ATR to reduce noise-triggered exits (position size auto-shrinks ~35%)
   // TP1 3→4 ATR keeps R/R=1.5 (minimum threshold); TP2 5→7 ATR = 3.5R target
+  const tpMultiplier = regime === "trend_up" || regime === "trend_down"
+    ? 1.2
+    : regime === "sideways" || regime === "low_vol"
+      ? 0.85
+      : 1.0;
+  const tp1Atr = 4.0 * tpMultiplier;
+  const tp2Atr = 7.0 * tpMultiplier;
   if (direction === "LONG") {
     stopLoss = entryPrice - atr * 2.0;
-    tp1 = entryPrice + atr * 4.0;
-    tp2 = entryPrice + atr * 7.0;
+    tp1 = entryPrice + atr * tp1Atr;
+    tp2 = entryPrice + atr * tp2Atr;
   } else {
     stopLoss = entryPrice + atr * 2.0;
-    tp1 = entryPrice - atr * 4.0;
-    tp2 = entryPrice - atr * 7.0;
+    tp1 = entryPrice - atr * tp1Atr;
+    tp2 = entryPrice - atr * tp2Atr;
   }
 
   // Put the stop beyond the nearest market-structure level when that level
