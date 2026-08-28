@@ -32,7 +32,7 @@ export interface StrategyChangeTest {
 }
 
 // Welch's t-test (two-sample, unequal variance)
-function welchTTest(a: number[], b: number[]): { tStat: number; pValue: number } {
+export function welchTTest(a: number[], b: number[]): { tStat: number; pValue: number } {
   if (a.length < 5 || b.length < 5) return { tStat: 0, pValue: 1 };
 
   const meanA = a.reduce((s, v) => s + v, 0) / a.length;

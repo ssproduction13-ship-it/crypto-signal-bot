@@ -221,6 +221,19 @@ CREATE TABLE IF NOT EXISTS notification_state (
 `;
 
 const MIGRATIONS = [
+  // Forward-looking feature experiments and LLM outcome metadata.
+  `CREATE TABLE IF NOT EXISTS shadow_features (
+    id SERIAL PRIMARY KEY,
+    feature_name TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    trade_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_shadow_features_name ON shadow_features(feature_name, created_at)",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_news_sentiment TEXT",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk_level TEXT",
+  "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_agreed BOOLEAN",
   // FIX Critical#2: subscriptions PK must include interval (allows multi-interval per symbol)
   `DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='subscriptions_pkey') THEN
