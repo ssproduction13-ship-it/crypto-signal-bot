@@ -6,6 +6,15 @@ import { evaluateRegimeStats } from "./regime-gate.js";
 import type { StrategyName } from "./strategies.js";
 import type { MarketCondition } from "./chaos-filter.js";
 import type { MarketRating } from "./market-rating.js";
+import {
+  getDefaultStrategyRegimeLimits,
+} from "./regime-limits.js";
+
+export {
+  DEFAULT_STRATEGY_REGIME_LIMITS,
+  getDefaultStrategyRegimeLimits,
+  type StrategyRegimeLimits,
+} from "./regime-limits.js";
 
 export type MarketRegime = "trend_up"|"trend_down"|"sideways"|"high_vol"|"low_vol"|"unknown";
 export type StrategyStatus = "active"|"quarantine"|"disabled";
@@ -112,8 +121,34 @@ export async function isStrategyBlockedInRegime(
   // WR 40%, while ALL intervals may be poor and incorrectly block it.
   // Keep the larger threshold for the aggregate fallback because it mixes
   // different intervals and needs more evidence to be representative.
-  const MIN_INTERVAL_TRADES = 5;
-  const MIN_AGGREGATE_TRADES = 10;
+  let limits = getDefaultStrategyRegimeLimits(strategy, regime);
+  try {
+    const { rows: limitRows } = await pool.query(
+      `SELECT enabled, min_interval_trades, min_aggregate_trades,
+              min_profit_factor, min_win_rate
+         FROM strategy_regime_limits
+        WHERE strategy=$1 AND regime=$2`,
+      [strategy, regime],
+    );
+    if (limitRows.length) {
+      const row = limitRows[0] as Record<string, unknown>;
+      const numberOrDefault = (value: unknown, fallback: number) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+      limits = {
+        enabled: row["enabled"] == null ? limits.enabled : Boolean(row["enabled"]),
+        minIntervalTrades: numberOrDefault(row["min_interval_trades"], limits.minIntervalTrades),
+        minAggregateTrades: numberOrDefault(row["min_aggregate_trades"], limits.minAggregateTrades),
+        minProfitFactor: numberOrDefault(row["min_profit_factor"], limits.minProfitFactor),
+        minWinRate: numberOrDefault(row["min_win_rate"], limits.minWinRate),
+      };
+    }
+  } catch (err) {
+    logger.debug({ err, strategy, regime }, "Strategy/regime limits unavailable — using defaults");
+  }
+  if (!limits.enabled) return { blocked: false, reason: "" };
+
   const candidates = interval !== "ALL" ? [interval, "ALL"] : ["ALL"];
   for (const iv of candidates) {
     const {rows} = await pool.query(
@@ -124,14 +159,14 @@ export async function isStrategyBlockedInRegime(
     const r = rows[0] as Record<string,unknown>;
     const trades=Number(r["trades"]),wins=Number(r["wins"]);
     const winPnl=Number(r["win_pnl"]),lossPnl=Number(r["loss_pnl"]);
-    const minTrades = iv === "ALL" ? MIN_AGGREGATE_TRADES : MIN_INTERVAL_TRADES;
+    const minTrades = iv === "ALL" ? limits.minAggregateTrades : limits.minIntervalTrades;
     const stats = evaluateRegimeStats(trades, wins, winPnl, lossPnl, minTrades);
     if (!stats) continue;
     const { profitFactor: pf, winRate: wr } = stats;
     // fix: was `&&` (AND) — a strategy with PF=0.1 but WR=0.45 passed the filter
     // because only one condition was true. Changed to `||` (OR): if EITHER metric
     // is bad enough the strategy is blocked (a poor PF with decent WR still destroys capital).
-    if (pf<0.7 || wr<0.38) {
+    if (pf < limits.minProfitFactor || wr < limits.minWinRate) {
       const regimeLabel:Record<string,string>={trend_up:"восходящий тренд",trend_down:"нисходящий тренд",sideways:"боковик",high_vol:"высокая волатильность",low_vol:"затишье"};
       const ivNote = iv !== "ALL" ? ` [${iv}]` : "";
       return {blocked:true,reason:`${strategy} убыточна в режиме "${regimeLabel[regime]??regime}"${ivNote} (PF ${pf.toFixed(2)}, WR ${(wr*100).toFixed(0)}%)`};

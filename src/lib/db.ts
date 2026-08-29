@@ -168,6 +168,26 @@ CREATE TABLE IF NOT EXISTS notification_state (
     total_pnl NUMERIC(20,8) NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy, regime)
   );
+  CREATE TABLE IF NOT EXISTS strategy_regime_limits (
+    strategy TEXT NOT NULL, regime TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    min_interval_trades INTEGER NOT NULL DEFAULT 5,
+    min_aggregate_trades INTEGER NOT NULL DEFAULT 10,
+    min_profit_factor DOUBLE PRECISION NOT NULL DEFAULT 0.70,
+    min_win_rate DOUBLE PRECISION NOT NULL DEFAULT 0.38,
+    PRIMARY KEY (strategy, regime)
+  );
+  INSERT INTO strategy_regime_limits
+    (strategy, regime, enabled, min_interval_trades, min_aggregate_trades, min_profit_factor, min_win_rate)
+  SELECT s.strategy, r.regime, true, 5, 10, 0.70, 0.38
+  FROM (VALUES
+    ('TREND'), ('BREAKOUT'), ('VOLUME_IMPULSE'), ('MEAN_REVERSION')
+  ) AS s(strategy)
+  CROSS JOIN (VALUES
+    ('trend_up'), ('trend_down'), ('sideways'),
+    ('high_vol'), ('low_vol'), ('unknown')
+  ) AS r(regime)
+  ON CONFLICT (strategy, regime) DO NOTHING;
   CREATE TABLE IF NOT EXISTS shadow_positions (
     id TEXT PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT NOT NULL,
     entry_price NUMERIC(20,8) NOT NULL, size NUMERIC(20,8) NOT NULL,
@@ -235,6 +255,26 @@ const MIGRATIONS = [
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_news_sentiment TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk_level TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_agreed BOOLEAN",
+  `CREATE TABLE IF NOT EXISTS strategy_regime_limits (
+    strategy TEXT NOT NULL, regime TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    min_interval_trades INTEGER NOT NULL DEFAULT 5,
+    min_aggregate_trades INTEGER NOT NULL DEFAULT 10,
+    min_profit_factor DOUBLE PRECISION NOT NULL DEFAULT 0.70,
+    min_win_rate DOUBLE PRECISION NOT NULL DEFAULT 0.38,
+    PRIMARY KEY (strategy, regime)
+  )`,
+  `INSERT INTO strategy_regime_limits
+    (strategy, regime, enabled, min_interval_trades, min_aggregate_trades, min_profit_factor, min_win_rate)
+   SELECT s.strategy, r.regime, true, 5, 10, 0.70, 0.38
+   FROM (VALUES
+     ('TREND'), ('BREAKOUT'), ('VOLUME_IMPULSE'), ('MEAN_REVERSION')
+   ) AS s(strategy)
+   CROSS JOIN (VALUES
+     ('trend_up'), ('trend_down'), ('sideways'),
+     ('high_vol'), ('low_vol'), ('unknown')
+   ) AS r(regime)
+   ON CONFLICT (strategy, regime) DO NOTHING`,
   // FIX Critical#2: subscriptions PK must include interval (allows multi-interval per symbol)
   `DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='subscriptions_pkey') THEN
