@@ -141,7 +141,9 @@ export async function runDataCleanup(chatId: number): Promise<CleanupResult> {
 
     // Step 8 — Clear time/instrument analytics and stale snapshots
     await client.query("DELETE FROM time_analytics        WHERE 1=1");
-    await client.query("DELETE FROM instrument_analytics  WHERE 1=1");
+    // Keep permanent exclusions: cleanup rebuilds analytics, but must not
+    // silently erase an operator-approved safety decision.
+    await client.query("DELETE FROM instrument_analytics WHERE permanently_excluded=false");
     await client.query("DELETE FROM strategy_versions     WHERE 1=1");
     await client.query("DELETE FROM learning_reports      WHERE 1=1");
 

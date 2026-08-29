@@ -217,7 +217,10 @@ CREATE TABLE IF NOT EXISTS notification_state (
     total_pnl NUMERIC(20,8) NOT NULL DEFAULT 0,
     priority_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     best_strategy TEXT NOT NULL DEFAULT 'TREND',
-    updated_at TEXT NOT NULL DEFAULT '2000-01-01'
+    updated_at TEXT NOT NULL DEFAULT '2000-01-01',
+    permanently_excluded BOOLEAN NOT NULL DEFAULT false,
+    excluded_at TIMESTAMPTZ DEFAULT NULL,
+    ban_count INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS learning_reports (
     id SERIAL PRIMARY KEY, version_label TEXT NOT NULL,
@@ -548,6 +551,9 @@ const MIGRATIONS = [
   "CREATE INDEX IF NOT EXISTS idx_dl_strategy    ON decision_log(strategy)",
   // ── AI Watchlist: status column for instrument-level shadow-quarantine ──────
   "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'normal'",
+  "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS permanently_excluded BOOLEAN NOT NULL DEFAULT false",
+  "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMPTZ DEFAULT NULL",
+  "ALTER TABLE instrument_analytics ADD COLUMN IF NOT EXISTS ban_count INTEGER NOT NULL DEFAULT 0",
   // ── Фикс 2: LONG/SHORT direction statistics ──────────────────────────────
   `CREATE TABLE IF NOT EXISTS strategy_direction_stats (
     strategy   TEXT NOT NULL,

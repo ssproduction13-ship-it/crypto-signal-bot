@@ -25,7 +25,7 @@ import { pool } from "../lib/db.js";
 import { generateFullReport } from "./full-report.js";
 import { generateDailyReport } from "./report-generator.js";
   import { getTimeAnalytics } from "./time-analytics.js";
-  import { getInstrumentAnalytics } from "./instrument-analytics.js";
+import { getInstrumentAnalytics, unexcludeInstrument } from "./instrument-analytics.js";
   import { loadFeatureImportance, formatFeatureImportance } from "./feature-importance.js";
   import { getResearchHistory } from "./ai-researcher.js";
   import { getSimilarTradesStats } from "./similar-trades.js";
@@ -231,6 +231,38 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
     bot.command("menu", async (ctx) => {
       await ctx.reply("Главное меню:", mainMenu());
     });
+
+  // Permanent instrument exclusions are intentionally operator-only. Keep the
+  // whitelist in an environment variable rather than trusting Telegram roles.
+  function isWhitelistedAdmin(chatId: number): boolean {
+    const raw = process.env["ADMIN_CHAT_IDS"] ?? "";
+    return raw.split(",").map((value) => value.trim()).filter(Boolean).includes(String(chatId));
+  }
+
+  // /unexclude BTCUSDT — reset a permanent exclusion after manual review.
+  bot.command("unexclude", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (chatId == null || !isWhitelistedAdmin(chatId)) {
+      await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+      return;
+    }
+    const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+    const symbol = text.split(/\s+/)[1]?.trim().toUpperCase() ?? "";
+    if (!/^[A-Z0-9]+USDT$/.test(symbol)) {
+      await ctx.reply("Использование: /unexclude BTCUSDT");
+      return;
+    }
+    if (!(await validateSymbol(symbol))) {
+      await ctx.reply(`❌ Пара ${symbol} не найдена на бирже.`);
+      return;
+    }
+    const changed = await unexcludeInstrument(symbol);
+    await ctx.reply(
+      changed
+        ? `✅ ${symbol} исключение снято. Счётчик отдельных банов сброшен; инструмент снова доступен для оценки.`
+        : `ℹ️ Для ${symbol} нет записи об исключении.`,
+    );
+  });
 
     // ── Navigation ─────────────────────────────────────────────────────────
     bot.action("menu_main", async (ctx) => {

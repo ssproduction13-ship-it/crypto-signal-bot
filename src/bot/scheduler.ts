@@ -485,6 +485,9 @@ import { recordShadowFeature } from "./feature-shadow.js";
           gate.pass("Instrument Watchlist", `${sub.symbol} deep watchlist, сигнал прошёл повышенный порог (размер ×0.5)`);
         }
       } else if (!gate.rejected && instrumentStatus === "banned") {
+        // Permanent exclusions are cleared only by a whitelisted operator.
+        // A permanent exclusion is still represented as status='banned' so
+        // the regular decision gate cannot accidentally bypass it.
         // Полный бан: WR < 25% или PF < 0.4 на 10+ сделках — инструмент-аутсайдер.
         // Разблокируется автоматически через updateAllInstrumentStatuses когда WR ≥ 25% и PF ≥ 0.4.
         gate.fail(
@@ -1385,14 +1388,18 @@ import { recordShadowFeature } from "./feature-shadow.js";
         if (!toWatchlist && !fromWatchlist) continue;
         for (const chatId of chatIds) {
           if (toWatchlist) {
-            const label = change.newStatus === "deep_watchlist" ? "🔴 Deep Watchlist" : "👁 Watchlist";
-            const icon  = change.newStatus === "deep_watchlist" ? "🔴" : "👁";
+            const label = change.newStatus === "banned"
+              ? (change.permanentlyExcluded ? "🚫 исключена навсегда" : "🚫 заблокирована")
+              : change.newStatus === "deep_watchlist" ? "🔴 Deep Watchlist" : "👁 Watchlist";
+            const icon  = change.newStatus === "banned" ? "🚫" : change.newStatus === "deep_watchlist" ? "🔴" : "👁";
             await safeSend(chatId,
               `${icon} *${change.symbol} переведена в ${label}*
 ` +
               `PF: ${change.pf === 99 ? "∞" : change.pf.toFixed(2)} | WR: ${change.wr.toFixed(0)}% | Сделок: ${change.trades}
 ` +
-              `Требования к сигналам повышены. Слабые сигналы по этой монете будут отклоняться.`
+              (change.newStatus === "banned"
+                ? `Бан №${change.banCount}/3. ${change.permanentlyExcluded ? "Снятие только вручную: /unexclude SYMBOL (whitelist)." : "При восстановлении метрик статус может сняться до третьего отдельного бана."}`
+                : `Требования к сигналам повышены. Слабые сигналы по этой монете будут отклоняться.`)
             );
           } else {
             await safeSend(chatId,

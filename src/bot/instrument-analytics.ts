@@ -148,10 +148,12 @@ export async function isInstrumentBanned(symbol: string): Promise<boolean> {
 export async function getInstrumentStatus(symbol: string): Promise<InstrumentStatus> {
   try {
     const { rows } = await pool.query(
-      "SELECT status FROM instrument_analytics WHERE symbol=$1", [symbol]
+      "SELECT status, permanently_excluded FROM instrument_analytics WHERE symbol=$1", [symbol]
     );
     if (!rows.length) return "normal";
-    return ((rows[0] as Record<string, unknown>)["status"] as InstrumentStatus) ?? "normal";
+    const row = rows[0] as Record<string, unknown>;
+    if (Boolean(row["permanently_excluded"])) return "banned";
+    return (row["status"] as InstrumentStatus) ?? "normal";
   } catch (err) {
     logger.debug({ err }, "getInstrumentStatus failed");
     return "normal";
@@ -164,16 +166,19 @@ export async function getInstrumentStatus(symbol: string): Promise<InstrumentSta
  * Возвращает список изменений для отправки Telegram-уведомлений.
  */
 export async function updateAllInstrumentStatuses(): Promise<
-  { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number }[]
+  { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number; banCount: number; permanentlyExcluded: boolean }[]
 > {
-  const changes: { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number }[] = [];
+  const changes: { symbol: string; oldStatus: InstrumentStatus; newStatus: InstrumentStatus; pf: number; wr: number; trades: number; banCount: number; permanentlyExcluded: boolean }[] = [];
   try {
     const { rows } = await pool.query(
-      "SELECT symbol, trades, wins, win_pnl, loss_pnl, status FROM instrument_analytics WHERE trades >= 10"
+      "SELECT symbol, trades, wins, win_pnl, loss_pnl, status, ban_count, permanently_excluded FROM instrument_analytics"
     );
     for (const row of rows as Record<string, unknown>[]) {
       const symbol = row["symbol"] as string;
       const oldStatus = ((row["status"] as InstrumentStatus) ?? "normal");
+      const banCount = Number(row["ban_count"] ?? 0);
+      const permanentlyExcluded = Boolean(row["permanently_excluded"]);
+      if (permanentlyExcluded) continue;
       const trades    = Number(row["trades"]);
       const wins      = Number(row["wins"]);
       const winPnl    = Number(row["win_pnl"]);
@@ -208,13 +213,51 @@ export async function updateAllInstrumentStatuses(): Promise<
       const effectiveTrades = recentN >= 10 ? recentN : trades;
 
       const newStatus = classifyInstrument({ trades: effectiveTrades, pf, wr });
-      if (newStatus !== oldStatus) {
-        await pool.query("UPDATE instrument_analytics SET status=$2 WHERE symbol=$1", [symbol, newStatus]).catch(() => {});
-        changes.push({ symbol, oldStatus, newStatus, pf, wr: wr * 100, trades: effectiveTrades });
+      // Count a separate ban only when the instrument transitions into banned.
+      // A still-banned instrument is not counted again by every daily run.
+      const enteredBan = newStatus === "banned" && oldStatus !== "banned";
+      const nextBanCount = banCount + (enteredBan ? 1 : 0);
+      const nextPermanent = nextBanCount >= 3;
+      const statusChanged = newStatus !== oldStatus;
+      if (statusChanged || enteredBan) {
+        await pool.query(
+          `UPDATE instrument_analytics
+              SET status=$2,
+                  ban_count=$3,
+                  permanently_excluded=$4,
+                  excluded_at=CASE WHEN $4 THEN COALESCE(excluded_at, NOW()) ELSE excluded_at END
+            WHERE symbol=$1`,
+          [symbol, newStatus, nextBanCount, nextPermanent]
+        ).catch(() => {});
+        changes.push({
+          symbol,
+          oldStatus,
+          newStatus,
+          pf,
+          wr: wr * 100,
+          trades: effectiveTrades,
+          banCount: nextBanCount,
+          permanentlyExcluded: nextPermanent,
+        });
       }
     }
   } catch (err) {
     logger.error({ err }, "updateAllInstrumentStatuses failed");
   }
   return changes;
+}
+
+/** Manually release a permanent exclusion. Caller must enforce the admin whitelist. */
+export async function unexcludeInstrument(symbol: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE instrument_analytics
+        SET status='normal',
+            permanently_excluded=false,
+            excluded_at=NULL,
+            ban_count=0,
+            priority_weight=1.0
+      WHERE symbol=$1 AND permanently_excluded=true`,
+    [symbol],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
