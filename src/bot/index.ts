@@ -39,11 +39,12 @@ import { getInstrumentAnalytics, unexcludeInstrument } from "./instrument-analyt
   import { evaluateCooldown, formatCooldownStatus } from "./auto-cooldown.js";
   import { generateWeeklyResearch, getLastWeeklyReport } from "./weekly-research.js";
   import { calcReadinessIndex, formatReadinessReport } from "./readiness-index.js";
-import { getDecisionStats, getRecentDecisionLog } from "./decision-trace.js";
+import { getDecisionStats, getRecentDecisionLog, type DecisionTrace } from "./decision-trace.js";
 import { getListingsReport } from "./listing-watcher.js";
 import { runDataCleanup } from "./data-cleanup.js";
 import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-snapshot.js";
+import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } from "./economic-calendar.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -262,6 +263,74 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         ? `✅ ${symbol} исключение снято. Счётчик отдельных банов сброшен; инструмент снова доступен для оценки.`
         : `ℹ️ Для ${symbol} нет записи об исключении.`,
     );
+  });
+
+  // /addevent 2026-08-30T14:30:00Z high USD CPI
+  // Economic events are operator-entered and never accepted from arbitrary chats.
+  bot.command("addevent", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (chatId == null || !isWhitelistedAdmin(chatId)) {
+      await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+      return;
+    }
+    const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+    const parts = text.trim().split(/\s+/);
+    const eventAt = new Date(parts[1] ?? "");
+    const impact = (parts[2] ?? "").toLowerCase();
+    const allowedImpacts = new Set(["low", "medium", "high"]);
+    if (!Number.isFinite(eventAt.getTime()) || !allowedImpacts.has(impact)) {
+      await ctx.reply(
+        "Использование: /addevent 2026-08-30T14:30:00Z high USD CPI\n" +
+        "Impact: low, medium или high. Время — ISO 8601 в UTC.",
+      );
+      return;
+    }
+    const remaining = parts.slice(3);
+    const currency = /^[A-Z]{2,8}$/.test(remaining[0] ?? "") ? remaining.shift()! : "GLOBAL";
+    const title = remaining.join(" ").trim();
+    if (!title || title.length > 200 || eventAt.getTime() < Date.now() - 5 * 60_000) {
+      await ctx.reply("Нужно указать непустое событие (до 200 символов) в будущем.");
+      return;
+    }
+    try {
+      const event = await addEconomicEvent({
+        title,
+        currency,
+        impact: impact as "low" | "medium" | "high",
+        eventAt,
+        blackoutBeforeMinutes: defaultBlackoutMinutes(impact as "low" | "medium" | "high"),
+        blackoutAfterMinutes: defaultBlackoutMinutes(impact as "low" | "medium" | "high"),
+        createdBy: chatId,
+      });
+      await ctx.reply(
+        `✅ Событие добавлено: ${event.title}\n` +
+        `🕒 ${event.eventAt} | ${event.currency} | ${event.impact}\n` +
+        `⏸ Blackout: ${event.blackoutBeforeMinutes} мин до / ${event.blackoutAfterMinutes} мин после`,
+      );
+    } catch (err) {
+      logger.error({ err, chatId }, "addEconomicEvent failed");
+      await ctx.reply("❌ Не удалось сохранить экономическое событие.");
+    }
+  });
+
+  bot.command("events", async (ctx) => {
+    try {
+      const events = await listUpcomingEconomicEvents();
+      if (!events.length) {
+        await ctx.reply("📅 Предстоящих экономических событий нет.");
+        return;
+      }
+      await ctx.reply(
+        "📅 *Экономический календарь*\n\n" +
+        events.map((event) =>
+          `• ${event.eventAt} — ${event.currency} ${event.impact}: ${event.title}`,
+        ).join("\n"),
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      logger.error({ err }, "listUpcomingEconomicEvents failed");
+      await ctx.reply("❌ Не удалось загрузить экономический календарь.");
+    }
   });
 
     // ── Navigation ─────────────────────────────────────────────────────────
@@ -753,7 +822,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
         // Ensure table exists before querying
         const [stats, recent] = await Promise.all([
           getDecisionStats().catch(() => ({ total: 0, opened: 0, rejected: 0, topRejectReasons: [] })),
-          getRecentDecisionLog(30).catch(() => []),
+          getRecentDecisionLog(30).catch((): DecisionTrace[] => []),
         ]);
 
         const rejects = recent.filter(d => d.verdict === 'REJECT');
@@ -1368,7 +1437,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
       try {
         const chatId = ctx.chat.id;
         const [statuses, health, readiness] = await Promise.all([
-          getAllEntityStatuses().catch(() => []),
+          getAllEntityStatuses().catch(() => [] as Awaited<ReturnType<typeof getAllEntityStatuses>>),
           checkLearningHealth(chatId).catch(() => null),
           calcReadinessIndex(chatId).catch(() => null),
         ]);
@@ -1464,6 +1533,10 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
   }
 
   export function startBot(): void {
+    if (!process.env["TELEGRAM_BOT_TOKEN"]) {
+      logger.warn("TELEGRAM_BOT_TOKEN is not set — Telegram bot and scheduler are disabled");
+      return;
+    }
     const bot = createBot();
     startScheduler(bot);
     bot.launch().catch(err => logger.error({ err }, "Bot launch error"));

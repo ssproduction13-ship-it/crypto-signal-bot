@@ -666,6 +666,53 @@ const MIGRATIONS = [
   // ── ТЗ "Условный пирамидинг": store the FinalScore at position open so the
   // pyramiding quality gate can re-check signal quality without re-deriving it ─
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS final_score DOUBLE PRECISION",
+     // ── Forward-looking features: economic blackout calendar and order flow ──
+     `CREATE TABLE IF NOT EXISTS economic_events (
+       id SERIAL PRIMARY KEY,
+       title TEXT NOT NULL,
+       currency TEXT NOT NULL DEFAULT 'GLOBAL',
+       impact TEXT NOT NULL DEFAULT 'medium',
+       event_at TIMESTAMPTZ NOT NULL,
+       blackout_before_minutes INTEGER NOT NULL DEFAULT 15,
+       blackout_after_minutes INTEGER NOT NULL DEFAULT 15,
+       created_by BIGINT NOT NULL,
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       CHECK (impact IN ('low', 'medium', 'high')),
+       CHECK (blackout_before_minutes BETWEEN 0 AND 1440),
+       CHECK (blackout_after_minutes BETWEEN 0 AND 1440)
+     )`,
+     "CREATE INDEX IF NOT EXISTS idx_economic_events_at ON economic_events(event_at)",
+     `CREATE TABLE IF NOT EXISTS order_flow_snapshots (
+       id BIGSERIAL PRIMARY KEY,
+       symbol TEXT NOT NULL,
+       bid_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+       ask_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+       imbalance DOUBLE PRECISION NOT NULL DEFAULT 0,
+       open_interest DOUBLE PRECISION,
+       captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+     "CREATE INDEX IF NOT EXISTS idx_order_flow_symbol_time ON order_flow_snapshots(symbol, captured_at DESC)",
+     `CREATE TABLE IF NOT EXISTS strategy_regime_fit (
+       strategy TEXT NOT NULL,
+       regime TEXT NOT NULL,
+       enabled BOOLEAN NOT NULL DEFAULT true,
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       PRIMARY KEY (strategy, regime)
+     )`,
+     `INSERT INTO strategy_regime_fit(strategy, regime, enabled)
+      SELECT s.strategy, r.regime,
+             CASE
+               WHEN s.strategy = 'TREND' AND r.regime IN ('sideways', 'low_vol') THEN false
+               ELSE true
+             END
+        FROM (VALUES
+          ('TREND'), ('BREAKOUT'), ('VOLUME_IMPULSE'), ('MEAN_REVERSION')
+        ) AS s(strategy)
+        CROSS JOIN (VALUES
+          ('trend_up'), ('trend_down'), ('sideways'),
+          ('high_vol'), ('low_vol'), ('unknown')
+        ) AS r(regime)
+      ON CONFLICT (strategy, regime) DO NOTHING`,
     // v3.0: missing tables (also applied via SQL migration 2026-07-23, idempotent on re-boot)
     "CREATE TABLE IF NOT EXISTS learning_reports (id SERIAL PRIMARY KEY, version_label TEXT, created_at TEXT NOT NULL DEFAULT '', trade_count_at_report INTEGER NOT NULL DEFAULT 0, summary TEXT, report_json JSONB)",
     "CREATE TABLE IF NOT EXISTS entity_cooldown (entity TEXT PRIMARY KEY, cooldown_until TIMESTAMPTZ, reason TEXT, consecutive_losses INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",

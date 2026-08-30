@@ -9,6 +9,7 @@ import type { MarketRating } from "./market-rating.js";
 import {
   getDefaultStrategyRegimeLimits,
 } from "./regime-limits.js";
+import { isStrategyRegimeFitEnabled } from "./strategy-regime-fit.js";
 
 export {
   DEFAULT_STRATEGY_REGIME_LIMITS,
@@ -363,6 +364,10 @@ export async function selectBestStrategy(
   const scored: Array<{sig:StrategySignalInput;trustScore:number;regimePF:number;weight:number;finalScore:number}> = [];
 
   for (const sig of signals) {
+    if (!(await isStrategyRegimeFitEnabled(sig.strategy, regime))) {
+      logger.debug({ strategy: sig.strategy, regime }, "Strategy skipped by configured regime fit");
+      continue;
+    }
     const entity = getEntity(sig.strategy, sig.direction as "LONG"|"SHORT", regime);
     const wRow = (wRows as Record<string,unknown>[]).find(r => r["entity"] === entity);
     // Active entities keep floor 0.10 for bootstrap exploration.

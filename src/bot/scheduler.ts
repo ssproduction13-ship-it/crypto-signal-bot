@@ -46,6 +46,8 @@ import { capBootstrapRisk, finalScoreMinimum, BOOTSTRAP_ENTITY_TRADES } from "./
 import { checkDailyVolumeGuardrail, MIN_DAILY_TRADES } from "./volume-guardrail.js";
 import { getBtcMomentum } from "./lead-lag.js";
 import { recordShadowFeature } from "./feature-shadow.js";
+import { getActiveEconomicBlackout, formatEconomicBlackout } from "./economic-calendar.js";
+import { captureOrderFlowSnapshots } from "./order-flow.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -360,7 +362,9 @@ import { recordShadowFeature } from "./feature-shadow.js";
       const stratRanking = selectionResult.ranking ?? [];
       const isExploration = selectionResult.isExploration ?? false;
 
-      const entityStatuses = await getAllEntityStatuses(regime).catch(() => []);
+      const entityStatuses = await getAllEntityStatuses(regime).catch(
+        () => [] as Awaited<ReturnType<typeof getAllEntityStatuses>>,
+      );
       const entityKey = `${strat}_${sig.score.direction}_${regime}`;
       const entityStatus = entityStatuses.find(s => s.entity === entityKey);
       const entityTrades = entityStatus?.trades ?? 0;
@@ -379,9 +383,20 @@ import { recordShadowFeature } from "./feature-shadow.js";
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 
-      if (sig.market.isChaotic) {
-        gate.fail("Рынок: хаос", "Хаотичный рынок", `ATR ${sig.market.atrPercent?.toFixed(1)}%`);
+      const economicBlackout = await getActiveEconomicBlackout(now).catch(() => null);
+      if (economicBlackout) {
+        gate.fail(
+          "Economic Calendar",
+          "Торговая пауза из-за экономического события",
+          formatEconomicBlackout(economicBlackout),
+        );
       } else {
+        gate.pass("Economic Calendar", "Активных blackout-событий нет");
+      }
+
+      if (!gate.rejected && sig.market.isChaotic) {
+        gate.fail("Рынок: хаос", "Хаотичный рынок", `ATR ${sig.market.atrPercent?.toFixed(1)}%`);
+      } else if (!gate.rejected) {
         gate.pass("Рынок: хаос", "OK");
       }
 
@@ -1182,6 +1197,14 @@ import { recordShadowFeature } from "./feature-shadow.js";
     cron.schedule("*/15 * * * *", async () => {
       // Batch scan: collect all signals, sort by FinalScore, open in priority order
       void runBatchScanCycle();
+    });
+
+    // Order-flow research collector: snapshots are stored every 15 minutes.
+    // It intentionally has no trade gate or position-size effect in v1.
+    cron.schedule("*/15 * * * *", async () => {
+      const symbols = [...new Set([...subs.values()].map((sub) => sub.symbol))];
+      if (!symbols.length) return;
+      await captureOrderFlowSnapshots(symbols);
     });
 
     cron.schedule("0 */4 * * *", async () => {
