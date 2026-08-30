@@ -1,6 +1,7 @@
 import axios from "axios";
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
+import { calculateOrderBookImbalance, type OrderFlowSignal } from "./order-flow-math.js";
 
 const SPOT_API = "https://api.kucoin.com";
 const FUTURES_API = "https://api-futures.kucoin.com";
@@ -14,29 +15,8 @@ export interface OrderFlowSnapshot {
   capturedAt: string;
 }
 
-export interface OrderFlowSignal {
-  imbalance: number;
-  direction: "bid" | "ask" | "neutral";
-}
-
-/**
- * Positive imbalance means more bid depth, negative means more ask depth.
- * This is intentionally a data-only v1 signal: it is recorded for research,
- * but it does not block or resize trades yet.
- */
-export function calculateOrderBookImbalance(
-  bids: readonly [number, number][],
-  asks: readonly [number, number][],
-): OrderFlowSignal {
-  const bidVolume = bids.reduce((sum, [, size]) => sum + Math.max(0, size), 0);
-  const askVolume = asks.reduce((sum, [, size]) => sum + Math.max(0, size), 0);
-  const total = bidVolume + askVolume;
-  const imbalance = total > 0 ? (bidVolume - askVolume) / total : 0;
-  return {
-    imbalance,
-    direction: imbalance > 0.2 ? "bid" : imbalance < -0.2 ? "ask" : "neutral",
-  };
-}
+export { calculateOrderBookImbalance } from "./order-flow-math.js";
+export type { OrderFlowSignal } from "./order-flow-math.js";
 
 function futuresSymbol(symbol: string): string {
   const normalized = symbol.toUpperCase();

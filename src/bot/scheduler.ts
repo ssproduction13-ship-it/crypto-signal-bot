@@ -48,6 +48,8 @@ import { getBtcMomentum } from "./lead-lag.js";
 import { recordShadowFeature } from "./feature-shadow.js";
 import { getActiveEconomicBlackout, formatEconomicBlackout } from "./economic-calendar.js";
 import { captureOrderFlowSnapshots } from "./order-flow.js";
+import { computeLlmAgreement } from "./llm-hook.js";
+import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -288,6 +290,7 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
 
     try {
       const sig = await generateSignal(sub.symbol, sub.interval, sub.chatId);
+      let btcLeadAgreement: boolean | null = null;
       if (sub.symbol !== "BTCUSDT" && sig.score.direction !== "NEUTRAL") {
         const btc = await getBtcMomentum(sub.interval).catch((err) => {
           logger.debug({ err, symbol: sub.symbol }, "BTC lead lookup failed");
@@ -297,6 +300,7 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
           ? (btc.direction === "up" && sig.score.direction === "LONG")
             || (btc.direction === "down" && sig.score.direction === "SHORT")
           : null;
+        btcLeadAgreement = agrees;
         const shadowId = await recordShadowFeature("btc_lead", sub.symbol.toUpperCase(), {
           agrees,
           btcDirection: btc.direction,
@@ -756,10 +760,21 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
         const safeIrd      = isFinite(irdSizeMult)              && irdSizeMult              > 0 ? irdSizeMult              : 1.0;
         const safePTilt    = isFinite(portfolioTiltMult)        && portfolioTiltMult        > 0 ? portfolioTiltMult        : 1.0;
         const safeFs       = isFinite(fsMult)                   && fsMult                   > 0 ? fsMult                   : 1.0;
+        const llmAgreement = sig.score.direction === "LONG" || sig.score.direction === "SHORT"
+          ? computeLlmAgreement(sig.llmAnalysis, sig.score.direction)
+          : null;
+        const llmSizeMultiplier = sig.llmAnalysis?.riskLevel === "high" && llmAgreement === false
+          ? await getShadowLiveMultiplier("llm_news_gate", llmAgreement, 1.0, 0.5, "agreed")
+          : 1.0;
+        const btcLeadSizeMultiplier = sub.symbol !== "BTCUSDT"
+          ? await getShadowLiveMultiplier("btc_lead", btcLeadAgreement, 1.1, 0.7)
+          : 1.0;
+        const safeLlm      = isFinite(llmSizeMultiplier)      && llmSizeMultiplier      > 0 ? llmSizeMultiplier      : 1.0;
+        const safeBtcLead  = isFinite(btcLeadSizeMultiplier)  && btcLeadSizeMultiplier  > 0 ? btcLeadSizeMultiplier  : 1.0;
         // FIX: 10 множителей перемножаются — итог может схлопнуться до < 0.05% депозита.
         // Нижняя граница: effectiveRiskPct не ниже 30% от baseRisk.
         // Пример: baseRisk=2%, 0.30 пол → минимум 0.6% — разумный минимум для paper trading.
-        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs;
+        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs * safeLlm * safeBtcLead;
         const flooredRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
         const effectiveRiskPct = capBootstrapRisk(baseRisk, flooredRiskPct, entityTrades);
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
@@ -775,6 +790,8 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
           irdSizeMult,
           portfolioTiltMult,
           fsMult,
+          llmSizeMultiplier,
+          btcLeadSizeMultiplier,
           effectiveRiskPct,
         }, "RISK_INVALID: effectiveRiskPct not finite/positive — skipping trade");
         return null;
@@ -783,8 +800,8 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
         gate.pass("Portfolio Tilt", `${portfolioRiskState.consecutiveLosses} убытков подряд → размер ×${(portfolioTiltMult * 100).toFixed(0)}%`);
       }
       gate.pass("FinalScore Size", `FS ${stratFScore.toFixed(1)} → размер ×${(fsMult * 100).toFixed(0)}%`);
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult }, 'Size reduced by guards');
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0 || llmSizeMultiplier < 1.0 || btcLeadSizeMultiplier < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult, llmMult: llmSizeMultiplier, btcLeadMult: btcLeadSizeMultiplier }, 'Size reduced by guards');
       }
 
       return {
