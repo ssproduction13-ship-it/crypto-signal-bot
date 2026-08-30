@@ -1,7 +1,6 @@
 import axios from "axios";
 import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
-import { calculateOrderBookImbalance, type OrderFlowSignal } from "./order-flow-math.js";
 
 const SPOT_API = "https://api.kucoin.com";
 const FUTURES_API = "https://api-futures.kucoin.com";
