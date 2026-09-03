@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 // ── Pure decision logic helpers (mirrors scheduler.ts gate logic) ────────────
 
 // ВАЖНО: это значение ДОЛЖНО совпадать с MIN_FINAL_SCORE в scheduler.ts.
-// Production v3.0 uses the mature-entity threshold after bootstrap.
-const MIN_FINAL_SCORE = 20;
+// Production uses the mature-entity threshold after bootstrap.
+const MIN_FINAL_SCORE = 8;
 
 type StrategyStatus = "active" | "quarantine" | "disabled";
 
@@ -100,9 +100,9 @@ describe("Decision Engine v1.1", () => {
     });
   });
 
-  describe("Test 2 — FinalScore < 20 → reject (FINAL_SCORE_TOO_LOW)", () => {
-    test("rejects when finalScore is 9.99", () => {
-      const gate = finalScoreGate(9.99);
+  describe("Test 2 — FinalScore < 8 → reject (FINAL_SCORE_TOO_LOW)", () => {
+    test("rejects when finalScore is 7.99", () => {
+      const gate = finalScoreGate(7.99);
       assert.equal(gate.pass, false);
       assert.equal(gate.reason, "FINAL_SCORE_TOO_LOW");
     });
@@ -118,8 +118,8 @@ describe("Decision Engine v1.1", () => {
       assert.equal(gate.pass, true);
     });
 
-    test("passes when finalScore is above 20", () => {
-      const gate = finalScoreGate(25);
+    test("passes when finalScore is above 8", () => {
+      const gate = finalScoreGate(10);
       assert.equal(gate.pass, true);
     });
   });

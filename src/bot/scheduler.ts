@@ -55,7 +55,7 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
 import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } from "./strategy-regime-fit.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
-  export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
+  export const MIN_FINAL_SCORE = 8; // mature-entity quality floor; bootstrap remains at 5
 
   interface Sub { chatId: number; symbol: string; interval: Interval; }
 
@@ -229,10 +229,10 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   // ── ТЗ: Динамический Score порог на основе накопленной статистики PF по бакетам ──
   // Заменяет прежнюю dynamicMinScore(marketIndex) — теперь порог кэшируется и
   // обновляется в cron раз в 12 часов на основе реального PF по бакетам score.
-  let cachedMinScore = 55;
+  let cachedMinScore = 54;
 
   async function adaptiveMinScore(): Promise<number> {
-    const BASE_MIN = 55;
+    const BASE_MIN = 54;
     try {
       const { rows: totalRows } = await pool.query(
         "SELECT COUNT(*) as total FROM trade_features WHERE pnl_percent IS NOT NULL"
@@ -258,7 +258,9 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         const lossPnl = Number(row["loss_pnl"]);
         const pf = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 2.0 : 0;
         if (pf >= 1.0) {
-          return Math.min(57, Math.max(BASE_MIN, Number(row["bucket"])));
+          // Keep the evidence-collection floor at the selected balanced level.
+          // Other quality and safety gates remain active after this threshold.
+          return Math.min(54, Math.max(BASE_MIN, Number(row["bucket"])));
         }
       }
       return BASE_MIN;
@@ -393,13 +395,13 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
       // User setting now acts as an UPPER CAP on adaptive minScore:
-      //   minScore = clamp(adaptive, floor=55, ceil=userSetting)
+      //   minScore = clamp(adaptive, floor=54, ceil=userSetting)
       // This means: if the user sets 58, adaptive cannot exceed 58 even when the
       // loss-streak logic pushes it higher. Adaptive can still lower it toward 55
       // during good periods. Previously max() was used, making user setting a floor
       // instead — so setting 52 had no effect when adaptive was 62.
-      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 55), 65);
-      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 55);
+      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 54), 65);
+      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 54);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
 

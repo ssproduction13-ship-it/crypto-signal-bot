@@ -58,9 +58,9 @@ test("legacy strategy×direction rows cannot be recreated or persisted", () => {
 });
 
 test("trade quality floors stay above bootstrap noise", () => {
-  assert.match(schedulerSource, /export const MIN_FINAL_SCORE = 20/);
+  assert.match(schedulerSource, /export const MIN_FINAL_SCORE = 8/);
   assert.match(schedulerSource, /sig\.score\.total < minScore/);
-  assert.match(schedulerSource, /const BASE_MIN = 55/);
-  assert.match(schedulerSource, /Math\.max\(Math\.min\(cachedMinScore, userCeil\), 55\)/);
+  assert.match(schedulerSource, /const BASE_MIN = 54/);
+  assert.match(schedulerSource, /Math\.max\(Math\.min\(cachedMinScore, userCeil\), 54\)/);
   assert.match(schedulerSource, /sig\.confidence\.score < 30/);
 });
