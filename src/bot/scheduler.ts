@@ -14,14 +14,16 @@ import type { TradeSignal } from "./signals.js";
     getClosedTradeCount, runAdaptationCycle, generateLearningReport, snapshotStrategyVersion,
     selectBestStrategy, recordLossReason, classifyLossReason, getAllEntityStatuses,
     generateWeeklyRanking, runDecayCycle, canRunDriftAdaptation, markDriftAdaptationRun,
-    type StrategySignalInput, type StrategySelectionResult,
+    type StrategySignalInput, type StrategySelectionResult, getStrategyDirectionStatus,
   } from "./learning-engine.js";
   import { isTimeRestricted } from "./time-analytics.js";
   import { getInstrumentPriority, getInstrumentStatus, updateAllInstrumentStatuses } from "./instrument-analytics.js";
   import { getInstrumentRegimeModifier } from "./instrument-regime-stats.js";
   import { isEntitySymbolOnCooldown } from "./entity-cooldown.js";
 import { generateDailyReport } from "./report-generator.js";
-  import { checkShadowPositions, openEntityShadowPosition } from "./shadow-testing.js";
+  import {
+    checkShadowPositions, openEntityShadowPosition, openCoreFilterShadowPosition,
+  } from "./shadow-testing.js";
   import { saveTradeFeatures, type TradeFeatures } from "./similar-trades.js";
   import { calcFeatureImportance, applyFeatureWeightAdjustments, formatFeatureImportance } from "./feature-importance.js";
   import { runAIResearch } from "./ai-researcher.js";
@@ -50,6 +52,7 @@ import { getActiveEconomicBlackout, formatEconomicBlackout } from "./economic-ca
 import { captureOrderFlowSnapshots } from "./order-flow.js";
 import { computeLlmAgreement } from "./llm-hook.js";
 import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
+import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } from "./strategy-regime-fit.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 20; // v3.0 quality floor: block weak bootstrap selections
@@ -64,6 +67,7 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
     stratFScore: number;
     stratTrust: number;
     entityWeight: number;
+    strategyDirectionWeight: number;
     entityStatus: { trades: number; trustScore: number; profitFactor: number; status: string; weight: number } | undefined;
     stratRanking: Array<{ strategy: string; finalScore: number; trustScore: number; weight: number }>;
     isExploration: boolean;
@@ -79,6 +83,13 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
   let _lastAdaptationTrades = 0; // for 12h time-based adaptation guard
   // ТЗ Feature 3: minimum gap between drift-triggered unscheduled adaptation cycles
   const DRIFT_ADAPTATION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+  const ATR_SHADOW_CEILING_PCT = 1.2;
+  const ATR_SHADOW_SIZE_MULTIPLIER = 0.6;
+  const CORE_SHADOW_SOURCE_BY_CHECK: Record<string, "core_score" | "core_final_score" | "core_instrument_banned"> = {
+    Score: "core_score",
+    "FinalScore Gate": "core_final_score",
+    "Instrument Banned": "core_instrument_banned",
+  };
 
   // Restore milestone counter from DB so restarts don't re-trigger the same report
   async function initLastMilestoneTrades(): Promise<void> {
@@ -374,6 +385,11 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
       const entityTrades = entityStatus?.trades ?? 0;
       const bootstrapEntity = entityTrades < BOOTSTRAP_ENTITY_TRADES;
       const entityWeight = entityStatus?.weight ?? selectionResult.weight ?? 1;
+      const strategyDirectionStatus = await getStrategyDirectionStatus(
+        strat,
+        sig.score.direction as "LONG" | "SHORT",
+      );
+      const strategyDirectionWeight = strategyDirectionStatus?.weight ?? 1.0;
       // Load user settings early so the score gate uses the user-configured min_score.
       const settingsEarly = await loadSettings(sub.chatId).catch(() => null);
       // User setting now acts as an UPPER CAP on adaptive minScore:
@@ -386,6 +402,21 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
       const minScore = Math.max(Math.min(cachedMinScore, userCeil), 55);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
+
+      // ATR ceiling starts as a shadow experiment. Its observation is linked
+      // to a real closed trade later; it cannot affect sizing until the shared
+      // shadow policy confirms a significant positive effect.
+      if (sig.risk.atr != null && sig.risk.entryPrice > 0 && sig.score.direction !== "NEUTRAL") {
+        const atrPercent = (sig.risk.atr / sig.risk.entryPrice) * 100;
+        const atrShadowId = await recordShadowFeature("atr_ceiling", sub.symbol, {
+          withinCeiling: atrPercent <= ATR_SHADOW_CEILING_PCT,
+          atrPercent,
+          ceilingPercent: ATR_SHADOW_CEILING_PCT,
+        });
+        if (atrShadowId != null) {
+          sig.shadowFeatureIds = [...(sig.shadowFeatureIds ?? []), atrShadowId];
+        }
+      }
 
       const economicBlackout = await getActiveEconomicBlackout(now).catch(() => null);
       if (economicBlackout) {
@@ -431,6 +462,28 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         gate.pass("Score", `${sig.score.total} / мин ${minScore}`);
       }
 
+      const strategyRegimePenalty = getStrategyRegimeScorePenalty(strat, regime, entityTrades);
+      if (!gate.rejected && strategyRegimePenalty != null && sig.score.total < strategyRegimePenalty) {
+        gate.fail(
+          "Strategy×Regime Score Penalty",
+          `${strat} в режиме ${regime} требует более сильный Score`,
+          sig.score.total,
+          strategyRegimePenalty,
+        );
+      } else if (!gate.rejected && strategyRegimePenalty != null) {
+        gate.pass(
+          "Strategy×Regime Score Penalty",
+          `${strat}/${regime}: ${sig.score.total} >= ${strategyRegimePenalty}`,
+        );
+      } else if (!gate.rejected && entityTrades < MIN_STRATEGY_REGIME_PENALTY_TRADES) {
+        gate.skip(
+          "Strategy×Regime Score Penalty",
+          `bootstrap: ${entityTrades}/${MIN_STRATEGY_REGIME_PENALTY_TRADES} сделок — дополнительный порог не применяется`,
+        );
+      } else if (!gate.rejected) {
+        gate.skip("Strategy×Regime Score Penalty", "Для этой комбинации штраф не задан");
+      }
+
       if (!gate.rejected && sig.confidence.score < 30) {
         gate.fail("Confidence", "Низкая уверенность сигнала", `${sig.confidence.score}%`, "30%");
       } else if (!gate.rejected) {
@@ -443,11 +496,17 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         const atrPercent = (sig.risk.atr / sig.risk.entryPrice) * 100;
         if (atrPercent > 3.5) {
           gate.fail("ATR Filter", "Слишком высокая волатильность", `ATR ${atrPercent.toFixed(2)}%`, "макс 3.5%");
-        } else if (atrPercent >= 2.0) {
-          atrSizeMultiplier = 0.5;
-          gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — размер снижен до 50%`);
         } else {
-          gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — OK`);
+          // The old 2% live haircut was removed. The new 1.2% ceiling is
+          // evaluated only by the statistically gated shadow policy below.
+          gate.pass("ATR Filter", `ATR ${atrPercent.toFixed(2)}% — hard ceiling OK`);
+          atrSizeMultiplier = await getShadowLiveMultiplier(
+            "atr_ceiling",
+            atrPercent <= ATR_SHADOW_CEILING_PCT,
+            1.0,
+            ATR_SHADOW_SIZE_MULTIPLIER,
+            "withinCeiling",
+          );
         }
       } else if (!gate.rejected) {
         gate.pass("ATR Filter", "ATR недоступен — пропуск фильтра");
@@ -473,6 +532,34 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         }
       } else if (!gate.rejected) {
         gate.skip("Карантин", "Стратегия активна");
+      }
+
+      // ── Aggregate strategy × direction quarantine ─────────────────────────
+      // This guard is intentionally separate from the regime-aware Entity Guard.
+      if (!gate.rejected && strategyDirectionStatus?.quarantine) {
+        const highQuality = sig.score.total >= 65
+          && sig.confidence.score >= 40
+          && stratFScore >= 20;
+        if (highQuality) {
+          gate.pass(
+            "Strategy×Direction Quarantine",
+            `${strat}_${sig.score.direction} в aggregate quarantine — сильный сигнал пропущен`,
+          );
+        } else {
+          gate.fail(
+            "Strategy×Direction Quarantine",
+            `${strat}_${sig.score.direction} заблокирован aggregate quarantine`,
+            `Score=${sig.score.total} Conf=${sig.confidence.score}% FS=${stratFScore.toFixed(1)}`,
+            "Score≥65 | Conf≥40% | FS≥20",
+          );
+        }
+      } else if (!gate.rejected) {
+        gate.pass(
+          "Strategy×Direction Quarantine",
+          strategyDirectionStatus
+            ? `${strat}_${sig.score.direction}: вес ${(strategyDirectionWeight * 100).toFixed(0)}%`
+            : "нет aggregate-строки — bootstrap",
+        );
       }
 
       // ── Instrument Watchlist gate ──────────────────────────────────────────────────────────
@@ -668,6 +755,33 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
             rejectReason: gate.rejectReason || undefined,
             score: sig.score.total, confidence: sig.confidence.score,
           }).catch(() => {});
+        // Core quality filters get real virtual positions, not just a
+        // missed_trades row. Their outcomes are reported independently and
+        // never bypass the filter automatically.
+        const coreShadowSources = [...new Set(
+          gate.steps
+            .filter((step) => step.result === "FAIL")
+            .map((step) => CORE_SHADOW_SOURCE_BY_CHECK[step.check])
+            .filter((source): source is "core_score" | "core_final_score" | "core_instrument_banned" => Boolean(source)),
+        )];
+        if (coreShadowSources.length > 0 && (sig.score.direction === "LONG" || sig.score.direction === "SHORT")) {
+          loadWeights().then(async (weights) => {
+            await Promise.all(coreShadowSources.map((source) =>
+              openCoreFilterShadowPosition(
+                source,
+                sub.symbol,
+                sig.score.direction as "LONG" | "SHORT",
+                sig.risk.entryPrice,
+                sig.risk.stopLoss,
+                sig.risk.tp1,
+                sig.risk.tp2,
+                strat,
+                weights,
+                regime,
+              ),
+            ));
+          }).catch((err) => logger.debug({ err, symbol: sub.symbol, sources: coreShadowSources }, "Core filter shadow open failed"));
+        }
         // Adaptive rejections continue learning in entity-level shadow mode.
         // Safety/quality failures (chaos, neutral direction, funding, R/R,
         // score, ATR, MTF, etc.) are intentionally excluded by the policy.
@@ -757,6 +871,12 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         const safeInstr    = isFinite(instrumentSizeMultiplier) && instrumentSizeMultiplier > 0 ? instrumentSizeMultiplier : 1.0;
         const safeTime     = isFinite(timeSizeMultiplier)       && timeSizeMultiplier       > 0 ? timeSizeMultiplier       : 1.0;
         const safeEntity   = isFinite(entityWeight)             && entityWeight             > 0 ? entityWeight             : 1.0;
+        const safeStrategyDirection = isFinite(strategyDirectionWeight) && strategyDirectionWeight > 0
+          ? strategyDirectionWeight
+          : 1.0;
+        const safeRr        = isFinite(sig.risk.rrSizeMultiplier) && sig.risk.rrSizeMultiplier > 0
+          ? sig.risk.rrSizeMultiplier
+          : 1.0;
         const safeIrd      = isFinite(irdSizeMult)              && irdSizeMult              > 0 ? irdSizeMult              : 1.0;
         const safePTilt    = isFinite(portfolioTiltMult)        && portfolioTiltMult        > 0 ? portfolioTiltMult        : 1.0;
         const safeFs       = isFinite(fsMult)                   && fsMult                   > 0 ? fsMult                   : 1.0;
@@ -774,7 +894,7 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         // FIX: 10 множителей перемножаются — итог может схлопнуться до < 0.05% депозита.
         // Нижняя граница: effectiveRiskPct не ниже 30% от baseRisk.
         // Пример: baseRisk=2%, 0.30 пол → минимум 0.6% — разумный минимум для paper trading.
-        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs * safeLlm * safeBtcLead;
+        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs * safeLlm * safeBtcLead * safeStrategyDirection * safeRr;
         const flooredRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
         const effectiveRiskPct = capBootstrapRisk(baseRisk, flooredRiskPct, entityTrades);
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
@@ -787,6 +907,7 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
           instrumentSizeMult: instrumentSizeMultiplier,
           timeSizeMult: timeSizeMultiplier,
           entityWeight,
+          strategyDirectionWeight,
           irdSizeMult,
           portfolioTiltMult,
           fsMult,
@@ -800,12 +921,12 @@ import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
         gate.pass("Portfolio Tilt", `${portfolioRiskState.consecutiveLosses} убытков подряд → размер ×${(portfolioTiltMult * 100).toFixed(0)}%`);
       }
       gate.pass("FinalScore Size", `FS ${stratFScore.toFixed(1)} → размер ×${(fsMult * 100).toFixed(0)}%`);
-      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0 || llmSizeMultiplier < 1.0 || btcLeadSizeMultiplier < 1.0) {
-        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult, llmMult: llmSizeMultiplier, btcLeadMult: btcLeadSizeMultiplier }, 'Size reduced by guards');
+      if (corrRisk.sizeMultiplier < 1.0 || mtfSizeMultiplier < 1.0 || cooldown.sizeMultiplier < 1.0 || atrSizeMultiplier < 1.0 || instrumentSizeMultiplier < 1.0 || timeSizeMultiplier < 1.0 || irdSizeMult < 1.0 || llmSizeMultiplier < 1.0 || btcLeadSizeMultiplier < 1.0 || strategyDirectionWeight < 1.0 || safeRr < 1.0) {
+        logger.debug({ symbol: sub.symbol, corrMult: corrRisk.sizeMultiplier, mtfMult: mtfSizeMultiplier, cooldownMult: cooldown.sizeMultiplier, atrMult: atrSizeMultiplier, instrMult: instrumentSizeMultiplier, timeMult: timeSizeMultiplier, irdMult: irdSizeMult, llmMult: llmSizeMultiplier, btcLeadSizeMultiplier, strategyDirectionMult: strategyDirectionWeight, rrMult: safeRr }, 'Size reduced by guards');
       }
 
       return {
-        sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus,
+        sub, sig, strat, stratFScore, stratTrust, entityWeight, strategyDirectionWeight, entityStatus,
         stratRanking, isExploration, regime, minScore, effectiveRiskPct,
         gateSteps: [
           ...gate.steps,

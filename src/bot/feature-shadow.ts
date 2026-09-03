@@ -68,13 +68,14 @@ export async function compareShadowOutcomes(
   agreeField: string,
 ): Promise<ShadowComparison> {
   const { rows } = await pool.query<{ agrees: boolean | null; pnl: string }>(
-    `SELECT (sf.payload ->> $2)::boolean AS agrees, pct.pnl_percent::text AS pnl
+    `SELECT (sf.payload ->> $2)::boolean AS agrees,
+            COALESCE(pct.pnl_equity_pct, pct.pnl_percent)::text AS pnl
        FROM shadow_features sf
        JOIN paper_closed_trades pct ON pct.id = sf.trade_id
       WHERE sf.feature_name = $1
         AND sf.trade_id IS NOT NULL
         AND (sf.payload ->> $2) IN ('true', 'false')
-        AND pct.pnl_percent IS NOT NULL`,
+         AND COALESCE(pct.pnl_equity_pct, pct.pnl_percent) IS NOT NULL`,
     [featureName, agreeField],
   );
 

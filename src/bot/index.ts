@@ -45,6 +45,8 @@ import { runDataCleanup } from "./data-cleanup.js";
 import { generateDeepAnalysis, generateDeepAnalysisHtml } from "./deep-analysis.js";
 import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-snapshot.js";
 import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } from "./economic-calendar.js";
+  import { getMfeTp2Report } from "./mfe-tp2-analysis.js";
+  import { getCoreFilterShadowReport } from "./shadow-testing.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1180,6 +1182,24 @@ import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } 
       } catch (err) {
         logger.error({ err }, "/maemfe failed");
         await ctx.reply("❌ Ошибка получения MAE/MFE отчёта").catch(() => {});
+      }
+    });
+
+    bot.command("mfetp2", async (ctx) => {
+      try {
+        await ctx.reply(await getMfeTp2Report(ctx.chat.id), { parse_mode: "Markdown" });
+      } catch (err) {
+        logger.error({ err }, "/mfetp2 failed");
+        await ctx.reply("❌ Ошибка получения MFE/TP2 отчёта").catch(() => {});
+      }
+    });
+
+    bot.command("shadowcore", async (ctx) => {
+      try {
+        await ctx.reply(await getCoreFilterShadowReport(), { parse_mode: "Markdown" });
+      } catch (err) {
+        logger.error({ err }, "/shadowcore failed");
+        await ctx.reply("❌ Ошибка получения core-shadow отчёта").catch(() => {});
       }
     });
 

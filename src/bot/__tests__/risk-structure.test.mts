@@ -52,6 +52,14 @@ test("keeps legacy calcRisk calls working without levels", () => {
   assert.ok(risk.positionSize > 0);
 });
 
+test("admits structure-expanded risk at reduced size when R/R is 1.2–1.5", () => {
+  const risk = calcRisk(candles(), "LONG", 10_000, 1, levels(96.8, null));
+  assert.ok(risk.rrRatio1 >= 1.2);
+  assert.ok(risk.rrRatio1 < 1.5);
+  assert.equal(risk.isRRViable, true);
+  assert.equal(risk.rrSizeMultiplier, 0.75);
+});
+
 test("widens take-profit targets in a trend without changing the ATR stop", () => {
   const base = calcRisk(candles(), "LONG", 10_000, 1, undefined, "unknown");
   const trend = calcRisk(candles(), "LONG", 10_000, 1, undefined, "trend_up");

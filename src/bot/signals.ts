@@ -87,7 +87,7 @@ export async function generateSignal(
   } else if (score.direction === "NEUTRAL") {
     filtered = true; filterReason = "⚪ Нет чёткого направления рынка";
   } else if (!risk.isRRViable) {
-    filtered = true; filterReason = `⚠️ R/R ${risk.rrRatio1.toFixed(1)} — ниже мин. 1:1.5`;
+    filtered = true; filterReason = `⚠️ R/R ${risk.rrRatio1.toFixed(1)} — ниже мин. 1:1.2`;
   } else if (fundingRate != null && Math.abs(fundingRate) >= 0.0015) {
     filtered = true;
     filterReason = `💰 Фандинг ${(fundingRate * 100).toFixed(4)}% — экстремальная перегруженность рынка`;

@@ -71,6 +71,8 @@ import { pool } from "../lib/db.js";
     mfeR?: number;
     /** Stop-loss price at trade open — used by MAE-aware max-drawdown (BUG-07 fix) */
     stopLoss?: number;
+    /** TP2 price at trade open — used for MFE/TP2 distribution analysis. */
+    tp2?: number;
     /** Forward-looking LLM/news fields retained for experiment analysis. */
     llmNewsSentiment?: string;
     llmRiskLevel?: string;
@@ -177,6 +179,7 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
       maeR:r["mae_r"]!=null?Number(r["mae_r"]):undefined,
       mfeR:r["mfe_r"]!=null?Number(r["mfe_r"]):undefined,
       stopLoss:r["stop_loss"]!=null?Number(r["stop_loss"]):undefined,
+       tp2:r["tp2"]!=null?Number(r["tp2"]):undefined,
       llmNewsSentiment:(r["llm_news_sentiment"] as string|null)??undefined,
       llmRiskLevel:(r["llm_risk_level"] as string|null)??undefined,
       llmAgreed:r["llm_agreed"]!=null ? Boolean(r["llm_agreed"]) : null,
@@ -553,10 +556,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
   }
   export async function insertClosedTrade(chatId: number, t: ClosedPaperTrade): Promise<void> {
     await pool.query(
-      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
+      `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,stop_loss,tp2,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) ON CONFLICT(id) DO NOTHING`,
       [t.id,chatId,t.symbol,t.direction,t.entryPrice,t.closePrice,
-       t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
+       t.stopLoss??null,t.tp2??null,t.size,t.pnl,t.pnlPercent,t.outcome,t.strategy??'TREND',t.openedAt,t.closedAt,
        t.llmSentiment??null,t.llmRisk??null,t.llmConfidence??null,
        t.commission??0,t.slippage??0,t.pnlEquityPct??null,
         t.entity??`${t.strategy??'TREND'}_${t.direction}_${t.marketRegime??'unknown'}`,
@@ -625,10 +628,10 @@ const DEF_S: UserSettings  = {noTradeMode:false,minScore:58,riskPercent:2,accoun
         return false; // Another cycle already claimed this position
       }
       await client.query(
-        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT(id) DO NOTHING`,
+        `INSERT INTO paper_closed_trades(id,chat_id,symbol,direction,entry_price,close_price,stop_loss,tp2,size,pnl,pnl_percent,outcome,strategy,opened_at,closed_at,llm_sentiment,llm_risk,llm_confidence,commission,slippage,pnl_equity_pct,entity,market_regime,mae_r,mfe_r,llm_news_sentiment,llm_risk_level,llm_agreed)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) ON CONFLICT(id) DO NOTHING`,
         [trade.id,chatId,trade.symbol,trade.direction,trade.entryPrice,trade.closePrice,
-         trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
+         trade.stopLoss??null,trade.tp2??null,trade.size,trade.pnl,trade.pnlPercent,trade.outcome,trade.strategy??'TREND',trade.openedAt,trade.closedAt,
          trade.llmSentiment??null,trade.llmRisk??null,trade.llmConfidence??null,
          trade.commission??0,trade.slippage??0,trade.pnlEquityPct??null,
          trade.entity??`${trade.strategy??'TREND'}_${trade.direction}_${trade.marketRegime??'unknown'}`,

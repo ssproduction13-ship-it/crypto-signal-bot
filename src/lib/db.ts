@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
 CREATE TABLE IF NOT EXISTS paper_closed_trades (
   id TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, symbol TEXT NOT NULL,
   direction TEXT NOT NULL, entry_price NUMERIC(20,8) NOT NULL,
-  close_price NUMERIC(20,8) NOT NULL, size NUMERIC(20,8) NOT NULL,
+  close_price NUMERIC(20,8) NOT NULL, stop_loss NUMERIC(20,8), tp2 NUMERIC(20,8),
+  size NUMERIC(20,8) NOT NULL,
   pnl NUMERIC(20,8) NOT NULL, pnl_percent NUMERIC(20,8) NOT NULL,
   outcome TEXT NOT NULL, strategy TEXT NOT NULL DEFAULT 'TREND',
   opened_at TEXT NOT NULL, closed_at TEXT NOT NULL
@@ -254,6 +255,9 @@ const MIGRATIONS = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   "CREATE INDEX IF NOT EXISTS idx_shadow_features_name ON shadow_features(feature_name, created_at)",
+  "ALTER TABLE shadow_positions ADD COLUMN IF NOT EXISTS shadow_source TEXT",
+  "ALTER TABLE shadow_closed_trades ADD COLUMN IF NOT EXISTS shadow_source TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_shadow_source ON shadow_closed_trades(shadow_source, closed_at)",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS shadow_feature_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_news_sentiment TEXT",
   "ALTER TABLE paper_closed_trades ADD COLUMN IF NOT EXISTS llm_risk_level TEXT",
@@ -267,6 +271,30 @@ const MIGRATIONS = [
     min_win_rate DOUBLE PRECISION NOT NULL DEFAULT 0.38,
     PRIMARY KEY (strategy, regime)
   )`,
+  // Aggregate strategy × direction guard. This is deliberately separate from
+  // the 48 strategy × direction × regime entity table.
+  `CREATE TABLE IF NOT EXISTS strategy_direction_weights (
+    strategy TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+    weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    quarantine BOOLEAN NOT NULL DEFAULT false,
+    trades INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    win_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    loss_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cycles_below_threshold INTEGER NOT NULL DEFAULT 0,
+    quarantine_since TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (strategy, direction)
+  )`,
+  `INSERT INTO strategy_direction_weights(strategy, direction)
+   SELECT s.strategy, d.direction
+   FROM (VALUES
+     ('TREND'), ('BREAKOUT'), ('VOLUME_IMPULSE'), ('MEAN_REVERSION')
+   ) AS s(strategy)
+   CROSS JOIN (VALUES ('LONG'), ('SHORT')) AS d(direction)
+   ON CONFLICT (strategy, direction) DO NOTHING`,
   `INSERT INTO strategy_regime_limits
     (strategy, regime, enabled, min_interval_trades, min_aggregate_trades, min_profit_factor, min_win_rate)
    SELECT s.strategy, r.regime, true, 5, 10, 0.70, 0.38
@@ -501,6 +529,8 @@ const MIGRATIONS = [
   "ALTER TABLE paper_positions        ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION",
   "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION",
   "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION",
+  "ALTER TABLE paper_closed_trades    ADD COLUMN IF NOT EXISTS tp2 DOUBLE PRECISION",
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT '1h'",
   // ── Partial entry (pending_entry) columns ────────────────────────────────
   "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS pending_entry_size    DOUBLE PRECISION",

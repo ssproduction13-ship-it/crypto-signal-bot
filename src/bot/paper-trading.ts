@@ -63,6 +63,10 @@ function buildCloseRecord(
   const commissionPct = size > 0 ? (commission / (pos.entryPrice * size)) * 100 : 0;
   const pnlPct = grossPnlPct - commissionPct;
   const pnlEquityPct = equityAtOpen > 0 ? (pnl / equityAtOpen) * 100 : 0;
+  const initialStopDistance = pos.initialStopDistance ?? Math.abs(pos.stopLoss - pos.entryPrice);
+  const initialStopLoss = pos.direction === "LONG"
+    ? pos.entryPrice - initialStopDistance
+    : pos.entryPrice + initialStopDistance;
 
   const trade: ClosedPaperTrade = {
     id: genId(), symbol: pos.symbol, direction: pos.direction,
@@ -70,6 +74,8 @@ function buildCloseRecord(
     pnl, pnlPercent: pnlPct, outcome,
     strategy: pos.strategy ?? "UNKNOWN",
     openedAt: pos.openedAt, closedAt: new Date().toISOString(),
+    stopLoss: initialStopLoss,
+    tp2: pos.tp2,
     commission, slippage, pnlEquityPct,
     entity: `${pos.strategy ?? "UNKNOWN"}_${pos.direction}_${pos.marketRegime ?? "unknown"}`,
     marketRegime: pos.marketRegime ?? "sideways",

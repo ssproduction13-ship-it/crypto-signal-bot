@@ -32,6 +32,100 @@ export const BASE_ENTITY_KEYS = [
 ] as const;
 export const ALL_REGIMES: MarketRegime[] = ["trend_up","trend_down","sideways","high_vol","low_vol","unknown"];
 export const ALL_ENTITIES_48: StrategyEntity[] = [...BASE_ENTITY_KEYS].flatMap(e => ALL_REGIMES.map(r => `${e}_${r}`));
+export const ALL_STRATEGIES: StrategyName[] = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
+
+export interface StrategyDirectionDecision {
+  strategy: StrategyName;
+  direction: "LONG" | "SHORT";
+  trades: number;
+  wins: number;
+  winPnl: number;
+  lossPnl: number;
+  totalPnl: number;
+  profitFactor: number;
+  quarantine: boolean;
+  weight: number;
+}
+
+/** Pure policy function so aggregate quarantine thresholds stay testable. */
+export function evaluateStrategyDirectionDecision(input: {
+  strategy: StrategyName;
+  direction: "LONG" | "SHORT";
+  trades: number;
+  wins: number;
+  winPnl: number;
+  lossPnl: number;
+  totalPnl: number;
+  currentQuarantine?: boolean;
+  currentWeight?: number;
+}): StrategyDirectionDecision {
+  const profitFactor = input.lossPnl > 0
+    ? input.winPnl / input.lossPnl
+    : input.winPnl > 0 ? 99 : 0;
+  const wasQuarantined = Boolean(input.currentQuarantine);
+  const currentWeight = Number.isFinite(input.currentWeight) ? input.currentWeight! : 1.0;
+  const negativeReturn = input.totalPnl < 0;
+  let quarantine = wasQuarantined;
+  let weight = currentWeight;
+
+  if (input.trades >= 50 && profitFactor < 0.5 && negativeReturn) {
+    quarantine = true;
+    weight = 0.25;
+  } else if (wasQuarantined && profitFactor >= 0.9 && !negativeReturn) {
+    quarantine = false;
+    weight = 0.60;
+  } else if (!quarantine && input.trades >= 50) {
+    // Keep aggregate weights bounded even after a manually edited row.
+    weight = Math.max(0.25, Math.min(1.0, weight));
+  }
+
+  return {
+    strategy: input.strategy,
+    direction: input.direction,
+    trades: input.trades,
+    wins: input.wins,
+    winPnl: input.winPnl,
+    lossPnl: input.lossPnl,
+    totalPnl: input.totalPnl,
+    profitFactor,
+    quarantine,
+    weight,
+  };
+}
+
+export async function getStrategyDirectionStatus(
+  strategy: StrategyName,
+  direction: "LONG" | "SHORT",
+): Promise<StrategyDirectionDecision | null> {
+  try {
+    const { rows } = await pool.query(
+      `SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl,
+              quarantine, weight
+         FROM strategy_direction_weights
+        WHERE strategy = $1 AND direction = $2`,
+      [strategy, direction],
+    );
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const winPnl = Number(row["win_pnl"]) || 0;
+    const lossPnl = Number(row["loss_pnl"]) || 0;
+    return {
+      strategy,
+      direction,
+      trades: Number(row["trades"]) || 0,
+      wins: Number(row["wins"]) || 0,
+      winPnl,
+      lossPnl,
+      totalPnl: Number(row["total_pnl"]) || winPnl - lossPnl,
+      profitFactor: lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 99 : 0,
+      quarantine: Boolean(row["quarantine"]),
+      weight: Number(row["weight"]) || 1,
+    };
+  } catch (err) {
+    logger.warn({ err, strategy, direction }, "Strategy×direction status unavailable");
+    return null;
+  }
+}
 
 /** Parse regime-aware entity key back into its three components */
 export function parseEntity(entity: string): { strategy: StrategyName; direction: "LONG"|"SHORT"; regime: MarketRegime } {
@@ -844,6 +938,96 @@ function pfToTargetWeight(pf: number): number {
       [upd.entity, upd.newWeight, upd.newQuarantine, upd.trustScore, new Date().toISOString(),
        upd.trades, upd.wins, upd.winPnl, upd.lossPnl]
     );
+  }
+
+  // ── Aggregate strategy × direction quarantine (FEATURE-05) ───────────────
+  // This intentionally aggregates all six regimes. It does not replace the
+  // entity layer above; it is a second, broader safety guard.
+  const { rows: directionPnlRows } = await pool.query(
+    `SELECT strategy, direction, COALESCE(pnl_equity_pct, pnl_percent) AS pnl
+       FROM paper_closed_trades
+      WHERE strategy = ANY($1::text[])
+        AND direction IN ('LONG', 'SHORT')
+        AND outcome IS NOT NULL
+      ORDER BY closed_at DESC`,
+    [ALL_STRATEGIES],
+  ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const { rows: directionWeightRows } = await pool.query(
+    `SELECT strategy, direction, weight, quarantine
+       FROM strategy_direction_weights
+      WHERE strategy = ANY($1::text[])`,
+    [ALL_STRATEGIES],
+  ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const currentDirectionRows = new Map(
+    (directionWeightRows as Record<string, unknown>[]).map((row) => [
+      `${row["strategy"]}:${row["direction"]}`,
+      row,
+    ]),
+  );
+  const directionPnls = new Map<string, number[]>();
+  for (const row of directionPnlRows as Record<string, unknown>[]) {
+    const key = `${row["strategy"]}:${row["direction"]}`;
+    const pnl = Number(row["pnl"]);
+    if (Number.isFinite(pnl)) directionPnls.set(key, [...(directionPnls.get(key) ?? []), pnl]);
+  }
+
+  for (const strategy of ALL_STRATEGIES) {
+    for (const direction of ["LONG", "SHORT"] as const) {
+      const key = `${strategy}:${direction}`;
+      const pnls = directionPnls.get(key) ?? [];
+      const wins = pnls.filter((pnl) => pnl > 0);
+      const losses = pnls.filter((pnl) => pnl < 0);
+      const winPnl = wins.reduce((sum, pnl) => sum + pnl, 0);
+      const lossPnl = Math.abs(losses.reduce((sum, pnl) => sum + pnl, 0));
+      const totalPnl = pnls.reduce((sum, pnl) => sum + pnl, 0);
+      const previous = currentDirectionRows.get(key);
+      const decision = evaluateStrategyDirectionDecision({
+        strategy,
+        direction,
+        trades: pnls.length,
+        wins: wins.length,
+        winPnl,
+        lossPnl,
+        totalPnl,
+        currentQuarantine: Boolean(previous?.["quarantine"]),
+        currentWeight: Number(previous?.["weight"] ?? 1),
+      });
+      const weakCycle = decision.trades >= 50 && decision.profitFactor < 0.5 && totalPnl < 0;
+      const cycles = weakCycle ? Number(previous?.["cycles_below_threshold"] ?? 0) + 1 : 0;
+      await pool.query(
+        `INSERT INTO strategy_direction_weights
+          (strategy, direction, weight, quarantine, trades, wins, win_pnl,
+           loss_pnl, total_pnl, cycles_below_threshold, quarantine_since, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                 CASE WHEN $4 THEN NOW() ELSE NULL END, NOW())
+         ON CONFLICT (strategy, direction) DO UPDATE SET
+           weight = EXCLUDED.weight,
+           quarantine = EXCLUDED.quarantine,
+           trades = EXCLUDED.trades,
+           wins = EXCLUDED.wins,
+           win_pnl = EXCLUDED.win_pnl,
+           loss_pnl = EXCLUDED.loss_pnl,
+           total_pnl = EXCLUDED.total_pnl,
+           cycles_below_threshold = EXCLUDED.cycles_below_threshold,
+           quarantine_since = CASE
+             WHEN EXCLUDED.quarantine
+               THEN COALESCE(strategy_direction_weights.quarantine_since, EXCLUDED.quarantine_since)
+             ELSE NULL
+           END,
+           updated_at = NOW()`,
+        [strategy, direction, decision.weight, decision.quarantine, decision.trades,
+          decision.wins, decision.winPnl, decision.lossPnl, decision.totalPnl, cycles],
+      );
+      const prevQuarantine = Boolean(previous?.["quarantine"]);
+      const prevWeight = Number(previous?.["weight"] ?? 1);
+      if (prevQuarantine !== decision.quarantine || Math.abs(prevWeight - decision.weight) > 0.005) {
+        changes.push(
+          `${decision.quarantine ? "⚠️" : "✅"} ${strategy}_${direction}: ` +
+          `${decision.quarantine ? "aggregate quarantine" : "active"} ` +
+          `(PF ${decision.profitFactor.toFixed(2)}, n=${decision.trades}, weight ${(decision.weight * 100).toFixed(0)}%)`,
+        );
+      }
+    }
   }
 
   // ── Keep strategy_weights in sync for backward compat (readiness-index, reports) ──

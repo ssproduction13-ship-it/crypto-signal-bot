@@ -9,6 +9,7 @@ import { pool } from "../lib/db.js";
     entryPrice: number; size: number; stopLoss: number;
     tp1: number; tp2: number; strategy: StrategyName;
     challengerWeights: FactorWeights; marketRegime: string; openedAt: string;
+    shadowSource?: string;
   }
 
   export async function openShadowPosition(
@@ -71,9 +72,9 @@ import { pool } from "../lib/db.js";
           const SHADOW_REF_EQUITY = 10000;
           const pnlEquityPct = (pnl / SHADOW_REF_EQUITY) * 100;
           await pool.query(
-          `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,pnl_equity_pct,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow,entity)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-          [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"]),pos["entity"] ?? null]
+          `INSERT INTO shadow_closed_trades(id,symbol,direction,entry_price,close_price,pnl_percent,pnl_equity_pct,outcome,strategy,opened_at,closed_at,is_win,is_direction_shadow,entity,shadow_source)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          [genId(),pos["symbol"],dir,entry,closePrice,pnlPct,pnlEquityPct,closeReason,pos["strategy"],pos["opened_at"],new Date().toISOString(),pnl>0,Boolean(pos["is_direction_shadow"]),pos["entity"] ?? null,pos["shadow_source"] ?? null]
           );
           await pool.query("DELETE FROM shadow_positions WHERE id=$1",[pos["id"]]);
         }
@@ -132,6 +133,97 @@ import { pool } from "../lib/db.js";
 
   export interface EntityShadowStats {
     trades: number; wins: number; winRate: number; pf: number; totalPnl: number;
+  }
+
+  export async function openCoreFilterShadowPosition(
+    source: "core_score" | "core_final_score" | "core_instrument_banned",
+    symbol: string,
+    direction: "LONG" | "SHORT",
+    entryPrice: number,
+    stopLoss: number,
+    tp1: number,
+    tp2: number,
+    strategy: StrategyName,
+    challengerWeights: FactorWeights,
+    marketRegime: string,
+  ): Promise<void> {
+    const stopDist = Math.abs(entryPrice - stopLoss);
+    if (stopDist <= 0) return;
+    const { rows: existing } = await pool.query(
+      `SELECT 1 FROM shadow_positions
+        WHERE shadow_source=$1 AND symbol=$2 AND direction=$3
+        LIMIT 1`,
+      [source, symbol, direction],
+    );
+    if (existing.length > 0) return;
+    const size = 100 / stopDist;
+    await pool.query(
+      `INSERT INTO shadow_positions
+        (id,symbol,direction,entry_price,size,stop_loss,tp1,tp2,strategy,
+         challenger_weights,market_regime,opened_at,is_direction_shadow,shadow_source)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13)
+       ON CONFLICT DO NOTHING`,
+      [genId(), symbol, direction, entryPrice, size, stopLoss, tp1, tp2,
+        strategy, JSON.stringify(challengerWeights), marketRegime,
+        new Date().toISOString(), source],
+    );
+  }
+
+  export interface CoreFilterShadowStats {
+    source: string;
+    trades: number;
+    wins: number;
+    winRate: number;
+    profitFactor: number;
+    totalPnl: number;
+  }
+
+  export async function getCoreFilterShadowStats(
+    source: "core_score" | "core_final_score" | "core_instrument_banned",
+  ): Promise<CoreFilterShadowStats> {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(pnl_equity_pct, pnl_percent) AS pnl, is_win
+         FROM shadow_closed_trades
+        WHERE shadow_source=$1
+        ORDER BY closed_at DESC
+        LIMIT 200`,
+      [source],
+    );
+    const data = rows as Record<string, unknown>[];
+    const wins = data.filter((row) => Boolean(row["is_win"]));
+    const losses = data.filter((row) => !Boolean(row["is_win"]));
+    const winPnl = wins.reduce((sum, row) => sum + Number(row["pnl"]), 0);
+    const lossPnl = Math.abs(losses.reduce((sum, row) => sum + Number(row["pnl"]), 0));
+    return {
+      source,
+      trades: data.length,
+      wins: wins.length,
+      winRate: data.length ? wins.length / data.length : 0,
+      profitFactor: lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? 99 : 0,
+      totalPnl: data.reduce((sum, row) => sum + Number(row["pnl"]), 0),
+    };
+  }
+
+  export async function getCoreFilterShadowReport(): Promise<string> {
+    const labels: Record<string, string> = {
+      core_score: "Score",
+      core_final_score: "FinalScore",
+      core_instrument_banned: "Instrument Banned",
+    };
+    const stats = await Promise.all(
+      (Object.keys(labels) as Array<"core_score" | "core_final_score" | "core_instrument_banned">)
+        .map((source) => getCoreFilterShadowStats(source)),
+    );
+    return [
+      "🧪 *Core-фильтры — shadow-позиции*",
+      "",
+      ...stats.map((stat) =>
+        `*${labels[stat.source]}*: n=${stat.trades} | WR ${(stat.winRate * 100).toFixed(1)}% | ` +
+        `PF ${stat.profitFactor.toFixed(2)} | PnL ${stat.totalPnl >= 0 ? "+" : ""}${stat.totalPnl.toFixed(2)}%`,
+      ),
+      "",
+      "Shadow-результаты не меняют live-торговлю автоматически.",
+    ].join("\n");
   }
 
   export async function getEntityShadowStats(entity: string): Promise<EntityShadowStats> {

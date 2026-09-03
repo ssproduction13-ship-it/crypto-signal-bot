@@ -17,6 +17,31 @@ export const DEFAULT_REGIME_FIT: Record<StrategyName, Partial<Record<MarketRegim
   UNKNOWN: { unknown: true },
 };
 
+/** Minimum signal Score for strategy × regime combinations that need extra evidence. */
+export const STRATEGY_REGIME_SCORE_PENALTY: Record<
+  StrategyName,
+  Partial<Record<MarketRegime, number>>
+> = {
+  TREND: { sideways: 72 },
+  BREAKOUT: { low_vol: 70 },
+  VOLUME_IMPULSE: { low_vol: 70 },
+  MEAN_REVERSION: { trend_up: 68, trend_down: 68 },
+  UNKNOWN: {},
+};
+
+export const MIN_STRATEGY_REGIME_PENALTY_TRADES = 20;
+
+export function getStrategyRegimeScorePenalty(
+  strategy: StrategyName,
+  regime: MarketRegime,
+  entityTrades = MIN_STRATEGY_REGIME_PENALTY_TRADES,
+): number | null {
+  // During bootstrap, the base Score and safety filters remain active, but
+  // this extra strategy/regime restriction does not reduce evidence flow.
+  if (entityTrades < MIN_STRATEGY_REGIME_PENALTY_TRADES) return null;
+  return STRATEGY_REGIME_SCORE_PENALTY[strategy]?.[regime] ?? null;
+}
+
 export function isDefaultRegimeFit(strategy: StrategyName, regime: MarketRegime): boolean {
   return DEFAULT_REGIME_FIT[strategy]?.[regime] ?? true;
 }

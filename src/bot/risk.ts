@@ -13,6 +13,7 @@ export interface RiskParams {
   stopDistancePct: number;
   rrRatio1: number;
   rrRatio2: number;
+  rrSizeMultiplier: number;
   positionSize: number;
   maxLossAmount: number;
   isRRViable: boolean;
@@ -103,7 +104,15 @@ export function calcRisk(
   const COMMISSION_RT = 0.002; // 0.1% entry + 0.1% exit (KuCoin standard)
   const positionSize = maxLossAmount / (Math.abs(entryPrice - stopLoss) + entryPrice * COMMISSION_RT);
 
-  const isRRViable = rrRatio1 >= 1.5;
+  // Keep a hard floor at 1:1.2 to avoid starving the strategy when a
+  // structure-aware stop expands risk. Signals below the floor remain
+  // rejected; the 1.2–1.5 band is admitted with reduced size.
+  const isRRViable = rrRatio1 >= MIN_RR_RATIO;
+  const rrSizeMultiplier = rrRatio1 >= FULL_RISK_RR_RATIO
+    ? 1.0
+    : isRRViable
+      ? REDUCED_RR_SIZE_MULTIPLIER
+      : 1.0;
 
   return {
     entryPrice,
@@ -115,11 +124,16 @@ export function calcRisk(
     stopDistancePct,
     rrRatio1,
     rrRatio2,
+    rrSizeMultiplier,
     positionSize,
     maxLossAmount,
     isRRViable,
   };
 }
+
+export const MIN_RR_RATIO = 1.2;
+export const FULL_RISK_RR_RATIO = 1.5;
+export const REDUCED_RR_SIZE_MULTIPLIER = 0.75;
 
 export function formatPrice(price: number): string {
   if (price >= 1000) return price.toFixed(2);
