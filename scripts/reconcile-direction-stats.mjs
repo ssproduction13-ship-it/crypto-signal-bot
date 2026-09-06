@@ -44,10 +44,8 @@ try {
   // Freeze both the source and the denormalized target while rebuilding them.
   // This prevents a concurrent position close from being overwritten between
   // the aggregate read and the target update.
-  await client.query(`
-    LOCK TABLE paper_closed_trades IN SHARE MODE,
-               strategy_direction_stats IN ACCESS EXCLUSIVE MODE
-  `);
+  await client.query("LOCK TABLE paper_closed_trades IN SHARE MODE");
+  await client.query("LOCK TABLE strategy_direction_stats IN ACCESS EXCLUSIVE MODE");
 
   const [{ rows: actualRows }, { rows: storedRows }] = await Promise.all([
     client.query(aggregateSql),
