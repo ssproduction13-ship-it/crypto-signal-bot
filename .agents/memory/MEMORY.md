@@ -1,2 +1,3 @@
 - [Audit fixes completed](audit-fixes.md) — 16 bugs fixed across 4 commits; remaining known issues documented
 - [BUG-13 R/R filter mismatch](bug-13-rr-filter.md) — live 74.5% rejections caused by stale Railway deploy; text fixed to match 1.5 threshold
+- [BUG-15/16 direction stats and silent-catch policy](bug-15-direction-stats.md) — direction aggregates reconcile from `paper_closed_trades`; close-time metric failures must be logged, never silently discarded

@@ -193,17 +193,21 @@ export async function recordRegimeTrade(
 export async function recordDirectionTrade(
   strategy: StrategyName, direction: string, pnlPercent: number, isWin: boolean
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO strategy_direction_stats(strategy,direction,trades,wins,win_pnl,loss_pnl,total_pnl)
-     VALUES($1,$2,1,$3,$4,$5,$6)
-     ON CONFLICT(strategy,direction) DO UPDATE SET
-       trades=strategy_direction_stats.trades+1,
-       wins=strategy_direction_stats.wins+$3,
-       win_pnl=strategy_direction_stats.win_pnl+$4,
-       loss_pnl=strategy_direction_stats.loss_pnl+$5,
-       total_pnl=strategy_direction_stats.total_pnl+$6`,
-    [strategy, direction, isWin?1:0, isWin?Math.abs(pnlPercent):0, isWin?0:Math.abs(pnlPercent), pnlPercent]
-  ).catch(()=>{});
+  try {
+    await pool.query(
+      `INSERT INTO strategy_direction_stats(strategy,direction,trades,wins,win_pnl,loss_pnl,total_pnl)
+       VALUES($1,$2,1,$3,$4,$5,$6)
+       ON CONFLICT(strategy,direction) DO UPDATE SET
+         trades=strategy_direction_stats.trades+1,
+         wins=strategy_direction_stats.wins+$3,
+         win_pnl=strategy_direction_stats.win_pnl+$4,
+         loss_pnl=strategy_direction_stats.loss_pnl+$5,
+         total_pnl=strategy_direction_stats.total_pnl+$6`,
+      [strategy, direction, isWin ? 1 : 0, isWin ? Math.abs(pnlPercent) : 0, isWin ? 0 : Math.abs(pnlPercent), pnlPercent]
+    );
+  } catch (err) {
+    logger.error({ err, strategy, direction }, "recordDirectionTrade failed — direction stats drift");
+  }
 }
 
 export async function isStrategyBlockedInRegime(

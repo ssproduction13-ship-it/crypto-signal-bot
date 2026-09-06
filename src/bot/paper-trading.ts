@@ -21,6 +21,29 @@ import { recordEntitySymbolResult } from "./entity-cooldown.js";
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
 // Stores TP1 PnL per posId so the final close records ONE stat entry (signal = 1 trade).
 
+function recordCloseMetric(
+  metric: string,
+  operation: Promise<void>,
+  pos: PaperPosition,
+  phase: "TP1" | "FINAL_CLOSE",
+): void {
+  void operation.catch((err: unknown) => {
+    logger.error(
+      {
+        err,
+        metric,
+        phase,
+        posId: pos.id,
+        chatId: pos.chatId,
+        symbol: pos.symbol,
+        direction: pos.direction,
+        strategy: pos.strategy,
+      },
+      "paper-trading close metric recording failed",
+    );
+  });
+}
+
 // ── Realistic execution constants ──────────────────────────────────────────
 /** Commission per side (0.1% — KuCoin taker fee) */
 const COMMISSION_RATE = 0.001;
@@ -416,14 +439,14 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Full close at TP1: record all stats immediately (same as SL/TP2 path)
-        recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+        recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "TP1");
         const tp1Regime = pos.marketRegime ?? "sideways";
-        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
-        recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
-        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
-        recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-        recordInstrumentRegimeTrade(pos.symbol, pos.direction, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
-        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0).catch(() => {});
+        recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "TP1");
+        void recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0);
+        recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "TP1");
+        recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "TP1");
+        recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0), pos, "TP1");
+        recordCloseMetric("recordEntitySymbolResult", recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0), pos, "TP1");
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TP1", pnlPct, pos.id).catch(() => {});
         updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TP1").catch(() => {});
 
@@ -481,14 +504,14 @@ export async function checkPaperPositions(
         account.closedTrades.unshift(trade);
         addAccountCosts(chatId, commission, slippage).catch(() => {});
         // Final close: 1 stat entry per signal (TP1 partial excluded by design)
-        recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+        recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
         const regime = pos.marketRegime ?? "sideways";
-        recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
-        recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0).catch(() => {});
-        recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
-        recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-        recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
-        recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0).catch(() => {});
+        recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "FINAL_CLOSE");
+        void recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0);
+        recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
+        recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
+        recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
+        recordCloseMetric("recordEntitySymbolResult", recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0), pos, "FINAL_CLOSE");
         updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, closeReason, pnlPct, pos.id).catch(() => {});
         if (pnl <= 0 && (closeReason === "SL" || closeReason === "BE")) {
           const lossReason = classifyLossReason((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, closeReason);

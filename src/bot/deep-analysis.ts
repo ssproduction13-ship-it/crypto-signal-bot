@@ -243,14 +243,46 @@ async function blockFilterTrust(): Promise<string> {
 // ═══════════════════════════════════════════════════════════════════════════
 // БЛОК 4 — Strategy Diagnostics: где стратегия сильна/слаба
 // ═══════════════════════════════════════════════════════════════════════════
+const DEEP_ANALYSIS_STRATEGIES = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
+
+async function loadDirectionStatsFromTrades(): Promise<{ rows: Row[] }> {
+  const result = await pool.query(
+    `SELECT
+       strategy,
+       direction,
+       COUNT(*)::int AS trades,
+       COUNT(*) FILTER (
+         WHERE COALESCE(pnl_equity_pct, pnl_percent) > 0
+       )::int AS wins,
+       COALESCE(SUM(CASE
+         WHEN COALESCE(pnl_equity_pct, pnl_percent) > 0
+         THEN COALESCE(pnl_equity_pct, pnl_percent)
+         ELSE 0
+       END), 0) AS win_pnl,
+       COALESCE(SUM(CASE
+         WHEN COALESCE(pnl_equity_pct, pnl_percent) <= 0
+         THEN ABS(COALESCE(pnl_equity_pct, pnl_percent))
+         ELSE 0
+       END), 0) AS loss_pnl,
+       COALESCE(SUM(COALESCE(pnl_equity_pct, pnl_percent)), 0) AS total_pnl
+     FROM paper_closed_trades
+     WHERE strategy = ANY($1::text[])
+       AND direction IN ('LONG', 'SHORT')
+     GROUP BY strategy, direction
+     ORDER BY strategy, direction`,
+    [DEEP_ANALYSIS_STRATEGIES],
+  );
+  return { rows: result.rows as Row[] };
+}
+
 async function blockStrategyDiagnostics(): Promise<string> {
   const [{ rows: regimeRows }, { rows: dirRows }] = await Promise.all([
     pool.query(`SELECT strategy, regime, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_regime_stats`),
-    pool.query(`SELECT strategy, direction, trades, wins, win_pnl, loss_pnl, total_pnl FROM strategy_direction_stats`),
+    loadDirectionStatsFromTrades(),
   ]);
 
   const lines = ["*Блок 4 — Strategy Diagnostics*", ""];
-  const strategies = ["TREND", "BREAKOUT", "VOLUME_IMPULSE", "MEAN_REVERSION"];
+  const strategies = DEEP_ANALYSIS_STRATEGIES;
 
   for (const strat of strategies) {
     const dirs = (dirRows as Row[]).filter(r => r["strategy"] === strat);
@@ -416,7 +448,7 @@ async function blockEquityAnalysis(): Promise<string> {
 // ═══════════════════════════════════════════════════════════════════════════
 async function blockRecommendations(): Promise<string> {
   const [{ rows: dirRows }, { rows: regimeRows }] = await Promise.all([
-    pool.query(`SELECT strategy, direction, trades, win_pnl, loss_pnl FROM strategy_direction_stats`),
+    loadDirectionStatsFromTrades(),
     pool.query(`SELECT strategy, regime, trades, win_pnl, loss_pnl FROM strategy_regime_stats`),
   ]);
 
