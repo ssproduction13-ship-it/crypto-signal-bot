@@ -20,17 +20,17 @@ const aggregateSql = `
     COUNT(*) FILTER (
       WHERE COALESCE(pnl_equity_pct, pnl_percent) > 0
     )::int AS wins,
-    COALESCE(SUM(CASE
+    ROUND(COALESCE(SUM(CASE
       WHEN COALESCE(pnl_equity_pct, pnl_percent) > 0
       THEN COALESCE(pnl_equity_pct, pnl_percent)
       ELSE 0
-    END), 0) AS win_pnl,
-    COALESCE(SUM(CASE
+    END), 0)::numeric, 8) AS win_pnl,
+    ROUND(COALESCE(SUM(CASE
       WHEN COALESCE(pnl_equity_pct, pnl_percent) <= 0
       THEN ABS(COALESCE(pnl_equity_pct, pnl_percent))
       ELSE 0
-    END), 0) AS loss_pnl,
-    COALESCE(SUM(COALESCE(pnl_equity_pct, pnl_percent)), 0) AS total_pnl
+    END), 0)::numeric, 8) AS loss_pnl,
+    ROUND(COALESCE(SUM(COALESCE(pnl_equity_pct, pnl_percent)), 0)::numeric, 8) AS total_pnl
   FROM paper_closed_trades
   WHERE direction IN ('LONG', 'SHORT')
   GROUP BY strategy, direction
