@@ -85,9 +85,9 @@ export async function checkMTFAlignment(
       mtfCache.set(cacheKey, { result: finalResult, expiresAt: Date.now() + MTF_CACHE_TTL_MS });
       return finalResult;
     } catch (err) {
-      logger.warn({ err, symbol }, "MTF filter: failed to fetch 4H candles, allowing trade");
-      return { allowed: true, trend4h: "NEUTRAL", sizeMultiplier: 1.0,
-               reason: "Ошибка 4H данных — фильтр пропущен", ema20_4h: null, ema50_4h: null };
+      logger.error({ err, symbol, direction }, "MTF filter: failed to fetch 4H candles — trade blocked");
+      return { allowed: false, trend4h: "NEUTRAL", sizeMultiplier: 0,
+               reason: "Ошибка 4H данных — сделка заблокирована", ema20_4h: null, ema50_4h: null };
     }
   }
   

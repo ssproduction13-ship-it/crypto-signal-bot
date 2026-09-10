@@ -296,7 +296,7 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   }
 
   async function evaluateTradeCandidate(sub: Sub): Promise<TradeCandidate | null> {
-    const debounceKey = `${sub.chatId}:${sub.symbol}`;
+    const debounceKey = `${sub.chatId}:${sub.symbol}:${sub.interval}`;
     const lastRun = recentlyProcessed.get(debounceKey) ?? 0;
     if (Date.now() - lastRun < DEBOUNCE_MS) return null;
     recentlyProcessed.set(debounceKey, Date.now());
@@ -379,9 +379,12 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       const stratRanking = selectionResult.ranking ?? [];
       const isExploration = selectionResult.isExploration ?? false;
 
-      const entityStatuses = await getAllEntityStatuses(regime).catch(
-        () => [] as Awaited<ReturnType<typeof getAllEntityStatuses>>,
-      );
+      let entityStatusesQueryFailed = false;
+      const entityStatuses = await getAllEntityStatuses(regime).catch((err) => {
+        entityStatusesQueryFailed = true;
+        logger.error({ err, symbol: sub.symbol, regime }, "Entity status query failed — trade blocked");
+        return [] as Awaited<ReturnType<typeof getAllEntityStatuses>>;
+      });
       const entityKey = `${strat}_${sig.score.direction}_${regime}`;
       const entityStatus = entityStatuses.find(s => s.entity === entityKey);
       const entityTrades = entityStatus?.trades ?? 0;
@@ -404,6 +407,9 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       const minScore = Math.max(Math.min(cachedMinScore, userCeil), 54);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
+      if (entityStatusesQueryFailed) {
+        gate.fail("Entity Stats", "Не удалось загрузить entity-статистику — сделка заблокирована");
+      }
 
       // ATR ceiling starts as a shadow experiment. Its observation is linked
       // to a real closed trade later; it cannot affect sizing until the shared
@@ -420,7 +426,10 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         }
       }
 
-      const economicBlackout = await getActiveEconomicBlackout(now).catch(() => null);
+      const economicBlackout = await getActiveEconomicBlackout(now).catch((err) => {
+        logger.error({ err, symbol: sub.symbol }, "Economic calendar query failed");
+        return null;
+      });
       if (economicBlackout) {
         gate.fail(
           "Economic Calendar",
@@ -568,7 +577,10 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       // Shadow-карантин на уровне символа: слабые сигналы по монетам с устойчиво плохим PF
       // блокируются, но монета не выключается полностью — обучение и feature-логирование продолжаются.
       let instrumentSizeMultiplier = 1.0;
-      const instrumentStatus = await getInstrumentStatus(sub.symbol).catch(() => "normal" as const);
+      const instrumentStatus = await getInstrumentStatus(sub.symbol).catch((err) => {
+        logger.error({ err, symbol: sub.symbol }, "Instrument status query failed — instrument banned");
+        return "banned" as const;
+      });
       if (!gate.rejected && instrumentStatus === "watchlist") {
         if (sig.score.total < (bootstrapEntity ? 60 : 65) || sig.confidence.score < (bootstrapEntity ? 45 : 55) || stratFScore < (bootstrapEntity ? 20 : 30)) {
           gate.fail(
@@ -640,13 +652,24 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       }
 
       // ── Entity Guard — независимый карантин/вес по strategy+direction+regime ──
-      const { rows: entityWeightRows } = await pool.query(
-        "SELECT weight, quarantine FROM strategy_entity_weights WHERE entity=$1",
-        [entityKey]
-      ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      let entityQueryFailed = false;
+      let entityWeightRows: Record<string, unknown>[] = [];
+      try {
+        const result = await pool.query(
+          "SELECT weight, quarantine FROM strategy_entity_weights WHERE entity=$1",
+          [entityKey],
+        );
+        entityWeightRows = result.rows as Record<string, unknown>[];
+      } catch (err) {
+        entityQueryFailed = true;
+        logger.error({ err, entity: entityKey, symbol: sub.symbol }, "Entity weight query failed — trade blocked");
+      }
       const entityRow = entityWeightRows[0] as Record<string, unknown> | undefined;
       const persistedEntityWeight = entityRow ? Number(entityRow["weight"]) : 1.0;
       const entityQuarantine = entityRow ? Boolean(entityRow["quarantine"]) : false;
+      if (entityQueryFailed) {
+        gate.fail("Entity Guard", "Не удалось загрузить entity-вес — сделка заблокирована");
+      }
       if (!gate.rejected && entityQuarantine) {
         const highQuality = sig.score.total >= 65
           && sig.confidence.score >= 40
@@ -668,7 +691,10 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       // ── Entity × Symbol Cooldown — серийные убытки по одной монете ──────────
       let irdSizeMult = 1.0;
       const { blocked: cooldownBlocked, until: cooldownUntil, consecutiveLosses } =
-        await isEntitySymbolOnCooldown(entityKey, sub.symbol).catch(() => ({ blocked: false, until: null, consecutiveLosses: 0 }));
+        await isEntitySymbolOnCooldown(entityKey, sub.symbol).catch((err) => {
+          logger.error({ err, entity: entityKey, symbol: sub.symbol }, "Entity cooldown check failed — trade blocked");
+          return { blocked: true, until: null, consecutiveLosses: 0 };
+        });
       if (!gate.rejected && cooldownBlocked) {
         const untilStr = cooldownUntil ? new Date(cooldownUntil).toISOString().slice(0, 16) : "?";
         gate.fail("Entity Cooldown", `${entityKey}/${sub.symbol}: ${consecutiveLosses} убытков подряд`, `до ${untilStr} UTC`, "");
@@ -679,7 +705,14 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       // ── Instrument × Direction × Regime — размер по комбо-статистике ─────────
       const { blocked: irdBlocked, sizeMultiplier: _irdMult, reason: irdReason } =
         await getInstrumentRegimeModifier(sub.symbol, sig.score.direction, regime)
-          .catch(() => ({ blocked: false, sizeMultiplier: 1.0, reason: "" }));
+          .catch((err) => {
+            logger.error({ err, symbol: sub.symbol, direction: sig.score.direction, regime }, "Instrument regime guard failed — trade blocked");
+            return {
+              blocked: true,
+              sizeMultiplier: 0,
+              reason: "Ошибка проверки instrument×regime — сделка заблокирована",
+            };
+          });
       irdSizeMult = _irdMult;
       if (!gate.rejected && irdBlocked) {
         gate.fail("IRD Filter", `${sub.symbol} заблокирован в режиме ${regime}`, irdReason, "PF<0.6");
@@ -696,7 +729,10 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
       // UTC to match recordTimeTrade which stores UTC buckets
       const { restricted: timeBlocked, reason: timeReason, sizeMultiplier: timeSizeMultiplier } = await isTimeRestricted(
         now.getUTCHours(), (now.getUTCDay() + 6) % 7
-      ).catch(() => ({ restricted: false, reason: '', sizeMultiplier: 1.0 }));
+      ).catch((err) => {
+        logger.error({ err, symbol: sub.symbol }, "Time restriction query failed — trade blocked");
+        return { restricted: true, reason: "Ошибка проверки временного фильтра — сделка заблокирована", sizeMultiplier: 0 };
+      });
       if (!gate.rejected && timeBlocked) {
         gate.fail("Временной слот", timeReason);
       } else if (!gate.rejected) {
@@ -705,7 +741,17 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
 
       let mtfSizeMultiplier = 1.0;
       if (!gate.rejected) {
-        const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch(() => ({ allowed: true, trend4h: 'NEUTRAL' as const, reason: 'MTF ошибка — пропуск', ema20_4h: null, ema50_4h: null, sizeMultiplier: 1.0 }));
+        const mtf = await checkMTFAlignment(sub.symbol, sig.score.direction as 'LONG'|'SHORT').catch((err) => {
+          logger.error({ err, symbol: sub.symbol }, "MTF check failed — trade blocked");
+          return {
+            allowed: false,
+            trend4h: 'NEUTRAL' as const,
+            reason: 'Ошибка MTF-проверки — сделка заблокирована',
+            ema20_4h: null,
+            ema50_4h: null,
+            sizeMultiplier: 0,
+          };
+        });
         mtfSizeMultiplier = mtf.sizeMultiplier ?? 1.0;
         if (!mtf.allowed) {
           gate.fail('MTF фильтр (4H)', mtf.reason, `4H: ${mtf.trend4h}`);
@@ -833,7 +879,18 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         sub.chatId, sub.symbol,
         sig.score.direction as 'LONG'|'SHORT',
         settings.riskPercent
-      ).catch(() => ({ allowed: true, sizeMultiplier: 1.0, reason: '', portfolioRisk: 0, correlatedRisk: 0, maxAllowedRisk: 5, message: '' }));
+      ).catch((err) => {
+        logger.error({ err, symbol: sub.symbol, chatId: sub.chatId }, "Correlation risk check failed — trade blocked");
+        return {
+          allowed: false,
+          sizeMultiplier: 0,
+          reason: "Ошибка проверки корреляционного риска — сделка заблокирована",
+          portfolioRisk: 0,
+          correlatedRisk: 0,
+          maxAllowedRisk: 8,
+          message: "",
+        };
+      });
 
       if (!corrRisk.allowed) {
         logger.debug({ symbol: sub.symbol, reason: corrRisk.reason }, 'Correlation Guard: REJECT');

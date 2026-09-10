@@ -25,7 +25,7 @@ function recordCloseMetric(
   metric: string,
   operation: Promise<void>,
   pos: PaperPosition,
-  phase: "TP1" | "FINAL_CLOSE",
+  phase: "TP1" | "FINAL_CLOSE" | "TIMEOUT" | "TIMEOUT_STALE",
 ): void {
   void operation.catch((err: unknown) => {
     logger.error(
@@ -294,17 +294,19 @@ export async function checkPaperPositions(
               const trade = _toTrade; const pnl = _toPnl;
               account.balance += pnl;
               await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
-              recordBalanceLedger(chatId, pnl, `close_partial_tp1:${pos.symbol}`).catch(() => {});
+              recordCloseMetric("recordBalanceLedger", recordBalanceLedger(chatId, pnl, `close_timeout:${pos.symbol}`), pos, "TIMEOUT");
               account.closedTrades.unshift(trade);
-              addAccountCosts(chatId, commission, slippage).catch(() => {});
-              recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+              recordCloseMetric("addAccountCosts", addAccountCosts(chatId, commission, slippage), pos, "TIMEOUT");
+              recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "TIMEOUT");
               const regime = pos.marketRegime ?? "sideways";
-              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
-              recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
-              recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-              recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
-              updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT").catch(() => {});
-              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct, pos.id).catch(() => {});
+              recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "TIMEOUT");
+              recordCloseMetric("recordDirectionTrade", recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0), pos, "TIMEOUT");
+              recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "TIMEOUT");
+              recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "TIMEOUT");
+              recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0), pos, "TIMEOUT");
+              recordCloseMetric("recordEntitySymbolResult", recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0), pos, "TIMEOUT");
+              recordCloseMetric("updateTradeResult", updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT"), pos, "TIMEOUT");
+              recordCloseMetric("updateJournalClose", updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT", pnlPct, pos.id), pos, "TIMEOUT");
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
               const timeoutMsg =
                 `⏱ *Позиция закрыта по таймауту — ${pos.symbol} ${pos.direction}*\n` +
@@ -357,15 +359,17 @@ export async function checkPaperPositions(
               account.balance += pnl;
               await addBalance(chatId, pnl); // FIX balance-race: atomic DB update
               account.closedTrades.unshift(trade);
-              addAccountCosts(chatId, commission, slippage).catch(() => {});
-              recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0).catch(() => {});
+              recordCloseMetric("addAccountCosts", addAccountCosts(chatId, commission, slippage), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "TIMEOUT_STALE");
               const regimeStale = pos.marketRegime ?? "sideways";
-              recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL").catch(() => {});
-              recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0).catch(() => {});
-              recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0).catch(() => {});
-              recordInstrumentRegimeTrade(pos.symbol, pos.direction, regimeStale as MarketRegime, pnlEquityPct, pnl > 0).catch(() => {});
-              updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE").catch(() => {});
-              updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct, pos.id).catch(() => {});
+              recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regimeStale as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordDirectionTrade", recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, regimeStale as MarketRegime, pnlEquityPct, pnl > 0), pos, "TIMEOUT_STALE");
+              recordCloseMetric("recordEntitySymbolResult", recordEntitySymbolResult(`${pos.strategy ?? "UNKNOWN"}_${pos.direction}`, pos.symbol, pnl > 0), pos, "TIMEOUT_STALE");
+              recordCloseMetric("updateTradeResult", updateTradeResult(pos.id, pnlEquityPct, pnl > 0, "TIMEOUT_STALE"), pos, "TIMEOUT_STALE");
+              recordCloseMetric("updateJournalClose", updateJournalClose(chatId, pos.symbol, pos.direction, realisticPrice, "TIMEOUT_STALE", pnlPct, pos.id), pos, "TIMEOUT_STALE");
               if (account.balance > (account.peakBalance ?? 0)) account.peakBalance = account.balance;
               const staleMsg =
                 `⏱ *Позиция закрыта — нет движения ${pos.symbol} ${pos.direction} (${Math.floor(hoursOpenStale)}ч)*\n`
@@ -442,7 +446,7 @@ export async function checkPaperPositions(
         recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "TP1");
         const tp1Regime = pos.marketRegime ?? "sideways";
         recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "TP1");
-        void recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0);
+        recordCloseMetric("recordDirectionTrade", recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0), pos, "TP1");
         recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "TP1");
         recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "TP1");
         recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, tp1Regime as MarketRegime, pnlEquityPct, pnl > 0), pos, "TP1");
@@ -507,7 +511,7 @@ export async function checkPaperPositions(
         recordCloseMetric("recordStrategyTrade", recordStrategyTrade(pos.strategy ?? "UNKNOWN", pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
         const regime = pos.marketRegime ?? "sideways";
         recordCloseMetric("recordRegimeTrade", recordRegimeTrade((pos.strategy ?? "UNKNOWN") as StrategyName, regime as MarketRegime, pnlEquityPct, pnl > 0, pos.interval ?? "ALL"), pos, "FINAL_CLOSE");
-        void recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0);
+        recordCloseMetric("recordDirectionTrade", recordDirectionTrade((pos.strategy ?? "UNKNOWN") as StrategyName, pos.direction, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
         recordCloseMetric("recordTimeTrade", recordTimeTrade(pos.openedAt, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
         recordCloseMetric("recordInstrumentTrade", recordInstrumentTrade(pos.symbol, (pos.strategy ?? "UNKNOWN") as StrategyName, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");
         recordCloseMetric("recordInstrumentRegimeTrade", recordInstrumentRegimeTrade(pos.symbol, pos.direction, regime as MarketRegime, pnlEquityPct, pnl > 0), pos, "FINAL_CLOSE");

@@ -101,8 +101,8 @@ export async function isEntitySymbolOnCooldown(
     }
     return { blocked: false, until: null, consecutiveLosses: consecutive };
   } catch (err) {
-    logger.debug({ err }, "isEntitySymbolOnCooldown failed");
-    return { blocked: false, until: null, consecutiveLosses: 0 };
+    logger.error({ err, entity, symbol }, "isEntitySymbolOnCooldown failed — trade blocked");
+    return { blocked: true, until: null, consecutiveLosses: 0 };
   }
 }
 

@@ -6,15 +6,21 @@ import app from "./app.js";
   import { syncPositionsCount } from "./bot/risk-manager.js";
   import { migrateGeminiColumns } from "./bot/storage.js";
 
-  // ── Month-long unattended operation: a single uncaught error/rejection in any
-  // of the many cron jobs, WS handlers, or Telegram callbacks must NEVER take
-  // down the whole process — otherwise training-data collection just stops
-  // until someone notices and manually restarts on Railway. Log and keep running.
+  // An uncaught exception or unhandled rejection can leave Node in an undefined
+  // state. Log it and let Railway restart the process cleanly.
+  let fatalSignalSeen = false;
+  function exitAfterFatal(message: string, err?: unknown): void {
+    if (fatalSignalSeen) return;
+    fatalSignalSeen = true;
+    logger.fatal({ err }, message);
+    setTimeout(() => process.exit(1), 100);
+  }
+
   process.on("uncaughtException", (err) => {
-    logger.error({ err }, "uncaughtException — bot continues running");
+    exitAfterFatal("uncaughtException — restarting process");
   });
   process.on("unhandledRejection", (reason) => {
-    logger.error({ err: reason }, "unhandledRejection — bot continues running");
+    exitAfterFatal("unhandledRejection — restarting process", reason);
   });
 
   const rawPort = process.env["PORT"];
