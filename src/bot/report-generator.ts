@@ -319,12 +319,14 @@ function buildStrategyDetails(
       .map(t => (new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime()) / 60000);
     const avgDur = durs.length ? durs.reduce((a, b) => a + b, 0) / durs.length : 0;
 
-    let peak = 0, maxDd = 0, bal = 0;
-    for (const t of [...st].reverse()) {
-      bal += t.pnl; if (bal > peak) peak = bal;
-      const dd = peak > 0 ? (peak - bal) / peak * 100 : 0;
-      if (dd > maxDd) maxDd = dd;
-    }
+    // Max DD must use the same compounded equity-curve calculation as the
+    // other report sections. The old additive dollar-P&L formula started at
+    // zero, so a small accumulated profit could become the denominator and
+    // produce impossible values such as 118% or 4,945%.
+    // `st` is DESC (newest first), while the equity curve is chronological.
+    const maxDd = computeMaxDrawdown(
+      [...st].reverse().map(t => t.pnlEquityPct ?? t.pnlPercent ?? 0),
+    );
 
     const last30 = st.filter(t => now - new Date(t.closedAt).getTime() < 30 * 86400000).length;
     const ss = stats.find(s => (s.strategy as string) === spec.baseStrategy);
