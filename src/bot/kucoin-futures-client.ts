@@ -52,6 +52,43 @@ export interface KucoinOrderResponse {
   clientOid?: string;
 }
 
+export interface KucoinOrder {
+  id?: string;
+  orderId?: string;
+  clientOid?: string;
+  symbol?: string;
+  status?: string;
+  isActive?: boolean;
+  cancelExist?: boolean;
+  dealSize?: number | string;
+  filledSize?: number | string;
+  size?: number | string;
+  avgDealPrice?: number | string;
+  price?: number | string;
+  side?: "buy" | "sell";
+  updatedAt?: number;
+  orderTime?: number;
+}
+
+export interface KucoinOrderPage {
+  currentPage?: number;
+  pageSize?: number;
+  totalNum?: number;
+  totalPage?: number;
+  items: KucoinOrder[];
+}
+
+export interface KucoinPrivateToken {
+  token: string;
+  instanceServers: Array<{
+    endpoint: string;
+    encrypt?: boolean;
+    protocol?: string;
+    pingInterval: number;
+    pingTimeout?: number;
+  }>;
+}
+
 export interface KucoinPosition {
   symbol: string;
   currentQty: number;
@@ -165,8 +202,38 @@ export async function cancelSandboxOrder(
 export async function getSandboxOrder(
   orderId: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<unknown> {
-  return authedRequest("GET", `/api/v1/orders/${encodeURIComponent(orderId)}`, undefined, env);
+): Promise<KucoinOrder> {
+  return authedRequest<KucoinOrder>(
+    "GET",
+    `/api/v1/orders/${encodeURIComponent(orderId)}`,
+    undefined,
+    env,
+  );
+}
+
+export async function getActiveSandboxOrders(
+  symbol?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<KucoinOrderPage> {
+  const query = new URLSearchParams({ status: "active" });
+  if (symbol) query.set("symbol", symbol);
+  return authedRequest<KucoinOrderPage>(
+    "GET",
+    `/api/v1/orders?${query.toString()}`,
+    undefined,
+    env,
+  );
+}
+
+export async function getSandboxPrivateToken(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<KucoinPrivateToken> {
+  return authedRequest<KucoinPrivateToken>(
+    "POST",
+    "/api/v1/bullet-private",
+    {},
+    env,
+  );
 }
 
 export async function getSandboxPositions(

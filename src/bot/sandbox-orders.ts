@@ -136,6 +136,35 @@ export async function markSandboxOrderRejected(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function markSandboxOrderFilled(
+  clientOid: string,
+  response: Record<string, unknown>,
+): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE sandbox_orders
+        SET status = 'filled', response_json = $2,
+            updated_at = NOW(), filled_at = NOW()
+      WHERE client_oid = $1
+        AND status IN ('pending', 'submitted')`,
+    [clientOid, JSON.stringify(response)],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markSandboxOrderCancelled(
+  clientOid: string,
+  response: Record<string, unknown>,
+): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE sandbox_orders
+        SET status = 'cancelled', response_json = $2, updated_at = NOW()
+      WHERE client_oid = $1
+        AND status IN ('pending', 'submitted')`,
+    [clientOid, JSON.stringify(response)],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function listPendingSandboxOrders(
   limit = 100,
 ): Promise<SandboxOrderRecord[]> {
