@@ -26,6 +26,8 @@ export interface OpenSandboxPositionInput {
   direction: "LONG" | "SHORT";
   entryPrice: number;
   stopLoss: number;
+  tp1: number;
+  tp2: number;
   riskPercent: number;
   strategy: string;
   interval: string;
@@ -106,6 +108,8 @@ export async function openSandboxPosition(
         strategy: input.strategy,
         interval: input.interval,
         stopLoss: input.stopLoss,
+        tp1: input.tp1,
+        tp2: input.tp2,
         riskPercent: input.riskPercent,
       },
     });

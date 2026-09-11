@@ -35,6 +35,7 @@ export interface SandboxOrderRecord {
   orderType: "market" | "limit";
   size: number;
   entryPrice: number | null;
+  payload: Record<string, unknown>;
   status: SandboxOrderStatus;
   rejectReason: string | null;
   response: Record<string, unknown> | null;
@@ -57,6 +58,7 @@ function toRecord(row: Record<string, unknown>): SandboxOrderRecord {
     orderType: String(row["order_type"]) as "market" | "limit",
     size: Number(row["size"]),
     entryPrice: row["entry_price"] == null ? null : Number(row["entry_price"]),
+    payload: (row["payload_json"] as Record<string, unknown> | null) ?? {},
     status: String(row["status"]) as SandboxOrderStatus,
     rejectReason: row["reject_reason"] == null ? null : String(row["reject_reason"]),
     response: (row["response_json"] as Record<string, unknown> | null) ?? null,

@@ -8,6 +8,9 @@ export interface LocalSandboxPosition {
   direction: "LONG" | "SHORT";
   size: number;
   entryPrice: number;
+  stopLoss: number;
+  tp1: number;
+  tp2: number;
   orderId: string | null;
   updatedAt: string;
 }
@@ -21,6 +24,9 @@ function toPosition(row: Record<string, unknown>): LocalSandboxPosition {
     direction: String(row["direction"]) as "LONG" | "SHORT",
     size: Number(row["size"]),
     entryPrice: Number(row["entry_price"]),
+    stopLoss: Number(row["stop_loss"]),
+    tp1: Number(row["tp1"]),
+    tp2: Number(row["tp2"]),
     orderId: row["order_id"] == null ? null : String(row["order_id"]),
     updatedAt: new Date(String(row["updated_at"])).toISOString(),
   };
@@ -42,12 +48,15 @@ export async function upsertLocalSandboxPosition(
   await pool.query(
     `INSERT INTO sandbox_positions(
        id, chat_id, symbol, futures_symbol, direction, size,
-       entry_price, order_id, status, updated_at
+       entry_price, stop_loss, tp1, tp2, order_id, status, updated_at
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'open',NOW())
      ON CONFLICT (id) DO UPDATE SET
        size = EXCLUDED.size,
        entry_price = EXCLUDED.entry_price,
+       stop_loss = EXCLUDED.stop_loss,
+       tp1 = EXCLUDED.tp1,
+       tp2 = EXCLUDED.tp2,
        order_id = EXCLUDED.order_id,
        status = 'open',
        updated_at = NOW()`,
@@ -59,6 +68,9 @@ export async function upsertLocalSandboxPosition(
       position.direction,
       position.size,
       position.entryPrice,
+      position.stopLoss,
+      position.tp1,
+      position.tp2,
       position.orderId,
     ],
   );

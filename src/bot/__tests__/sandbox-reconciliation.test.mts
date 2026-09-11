@@ -13,6 +13,9 @@ const local = {
   direction: "LONG" as const,
   size: 3,
   entryPrice: 90_000,
+  stopLoss: 89_000,
+  tp1: 92_000,
+  tp2: 95_000,
   orderId: "order-1",
   updatedAt: new Date(0).toISOString(),
 };

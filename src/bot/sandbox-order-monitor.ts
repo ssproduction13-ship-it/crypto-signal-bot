@@ -12,6 +12,7 @@ import {
   markSandboxOrderFilled,
   markSandboxOrderSubmitted,
 } from "./sandbox-orders.js";
+import { upsertLocalSandboxPosition } from "./sandbox-position-storage.js";
 import {
   normalizeSandboxOrderUpdate,
   type SandboxOrderUpdate,
@@ -30,6 +31,38 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
 
   if (update.status === "filled") {
     await markSandboxOrderFilled(local.clientOid, update.raw);
+    const filledSize = Number(
+      update.raw["dealSize"] ?? update.raw["filledSize"] ?? local.size,
+    );
+    const filledPrice = Number(
+      update.raw["avgDealPrice"] ?? update.raw["price"] ?? local.entryPrice,
+    );
+    const stopLoss = Number(local.payload["stopLoss"]);
+    const tp1 = Number(local.payload["tp1"]);
+    const tp2 = Number(local.payload["tp2"]);
+    if (
+      Number.isFinite(filledSize) &&
+      filledSize > 0 &&
+      Number.isFinite(filledPrice) &&
+      filledPrice > 0 &&
+      Number.isFinite(stopLoss) &&
+      Number.isFinite(tp1) &&
+      Number.isFinite(tp2)
+    ) {
+      await upsertLocalSandboxPosition({
+        id: local.clientOid,
+        chatId: local.chatId,
+        symbol: local.symbol,
+        futuresSymbol: local.futuresSymbol,
+        direction: local.direction,
+        size: filledSize,
+        entryPrice: filledPrice,
+        stopLoss,
+        tp1,
+        tp2,
+        orderId: update.orderId ?? local.orderId,
+      });
+    }
   } else if (update.status === "cancelled") {
     await markSandboxOrderCancelled(local.clientOid, update.raw);
   } else if (

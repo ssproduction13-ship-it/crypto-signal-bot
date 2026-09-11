@@ -1029,6 +1029,8 @@ import { openSandboxPosition } from "./sandbox-execution.js";
         direction: sig.score.direction as "LONG" | "SHORT",
         entryPrice: sig.risk.entryPrice,
         stopLoss: sig.risk.stopLoss,
+        tp1: sig.risk.tp1,
+        tp2: sig.risk.tp2,
         riskPercent: effectiveRiskPct,
         strategy: strat,
         interval: sub.interval,
