@@ -53,6 +53,10 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
 import { computeLlmAgreement } from "./llm-hook.js";
 import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
 import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } from "./strategy-regime-fit.js";
+import { parseExecutionMode, type ExecutionMode } from "../lib/execution-mode.js";
+import { SandboxOrderMonitor } from "./sandbox-order-monitor.js";
+import { reconcileSandboxStartup } from "./sandbox-startup.js";
+import { openSandboxPosition } from "./sandbox-execution.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 8; // mature-entity quality floor; bootstrap remains at 5
@@ -79,6 +83,8 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   const subs    = new Map<string, Sub>();
   const chatIds = new Set<number>();
   let _bot: Telegraf | null = null;
+  let _executionMode: ExecutionMode = "simulated";
+  let _sandboxOrderMonitor: SandboxOrderMonitor | null = null;
   let _lastMilestoneTrades  = 0;
   let _lastAdaptationTrades = 0; // for 12h time-based adaptation guard
   // ТЗ Feature 3: minimum gap between drift-triggered unscheduled adaptation cycles
@@ -1009,6 +1015,43 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
+    if (_executionMode === "sandbox") {
+      const sandboxResult = await openSandboxPosition({
+        internalSignalId: [
+          sub.chatId,
+          sub.symbol,
+          sub.interval,
+          sig.score.direction,
+          sig.timestamp.toISOString(),
+        ].join(":"),
+        chatId: sub.chatId,
+        symbol: sub.symbol,
+        direction: sig.score.direction as "LONG" | "SHORT",
+        entryPrice: sig.risk.entryPrice,
+        stopLoss: sig.risk.stopLoss,
+        riskPercent: effectiveRiskPct,
+        strategy: strat,
+        interval: sub.interval,
+      });
+      logger.info(
+        {
+          symbol: sub.symbol,
+          direction: sig.score.direction,
+          status: sandboxResult.status,
+          clientOid: sandboxResult.clientOid,
+        },
+        "Sandbox trade execution result",
+      );
+      await safeSend(
+        sub.chatId,
+        sandboxResult.success
+          ? `🧪 Sandbox ордер отправлен: ${sig.score.direction} ${sub.symbol}\n` +
+            `Размер: ${sandboxResult.size ?? "—"} контрактов\n` +
+            `ClientOid: \`${sandboxResult.clientOid}\``
+          : `⚠️ Sandbox ордер не открыт: ${sandboxResult.message}`,
+      );
+      return sandboxResult.success;
+    }
     const res = await openPaperPosition(
       sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
       sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
@@ -1368,6 +1411,22 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
 
   export async function startScheduler(bot: Telegraf): Promise<void> {
     _bot = bot;
+    try {
+      _executionMode = parseExecutionMode();
+    } catch (err) {
+      logger.error({ err }, "Invalid execution mode — scheduler disabled");
+      return;
+    }
+    if (_executionMode === "sandbox") {
+      try {
+        await reconcileSandboxStartup();
+        _sandboxOrderMonitor = new SandboxOrderMonitor();
+        await _sandboxOrderMonitor.start();
+      } catch (err) {
+        logger.error({ err }, "Sandbox startup blocked — no new trades will be opened");
+        return;
+      }
+    }
     if (process.env["RESET_DATA"] === "true") {
       const resetChatIds = await resetAllData();
       const resetMsg = "♻️ База данных сброшена. Виртуальный счёт и вся статистика обнулены. Бот начинает обучение с нуля.";

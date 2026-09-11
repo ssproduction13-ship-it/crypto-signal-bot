@@ -45,6 +45,8 @@ export interface ActiveContract {
   multiplier: number;
   status?: string;
   maxLeverage?: number;
+  maxOrderQty?: number;
+  isInverse?: boolean;
 }
 
 export interface KucoinOrderResponse {
