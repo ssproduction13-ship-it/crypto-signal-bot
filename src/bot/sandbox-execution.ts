@@ -4,10 +4,12 @@ import {
   getKucoinSandboxConfig,
   getSandboxAccountOverview,
   placeSandboxOrder,
+  KucoinApiError,
   type ActiveContract,
 } from "./kucoin-futures-client.js";
 import { buildSandboxClientOid } from "../lib/sandbox-order-identity.js";
 import {
+  markSandboxOrderRejected,
   markSandboxOrderSubmitted,
   reserveSandboxOrder,
 } from "./sandbox-orders.js";
@@ -150,6 +152,22 @@ export async function openSandboxPosition(
         message: `Sandbox ${input.direction} order submitted for ${size} contracts`,
       };
     } catch (err) {
+      if (err instanceof KucoinApiError) {
+        const reason = `${err.code}: ${err.message}`;
+        await markSandboxOrderRejected(
+          clientOid,
+          reason,
+          err.responseBody as unknown as Record<string, unknown>,
+        );
+        return {
+          success: false,
+          status: "rejected",
+          clientOid,
+          futuresSymbol: contract.symbol,
+          size,
+          message: `KuCoin rejected the sandbox order (${err.code})`,
+        };
+      }
       // Do not mark an uncertain network failure as rejected. The reservation
       // remains pending and polling/reconciliation can safely investigate it
       // without creating a duplicate order.

@@ -16,6 +16,28 @@ export interface KucoinApiResponse<T> {
   msg?: string;
 }
 
+export class KucoinApiError extends Error {
+  readonly code: string;
+  readonly endpoint: string;
+  readonly responseBody: KucoinApiResponse<unknown>;
+
+  constructor(
+    code: string,
+    endpoint: string,
+    responseBody: KucoinApiResponse<unknown>,
+  ) {
+    super(
+      `KuCoin request failed (${code}) ${endpoint}${
+        responseBody.msg ? `: ${responseBody.msg}` : ""
+      }`,
+    );
+    this.name = "KucoinApiError";
+    this.code = code;
+    this.endpoint = endpoint;
+    this.responseBody = responseBody;
+  }
+}
+
 export interface PlaceOrderParams {
   clientOid: string;
   symbol: string;
@@ -144,10 +166,7 @@ function kucoinError(
   endpoint: string,
   response: KucoinApiResponse<unknown>,
 ): Error {
-  const suffix = response.msg ? `: ${response.msg}` : "";
-  return new Error(
-    `KuCoin request failed (${response.code}) ${endpoint}${suffix}`,
-  );
+  return new KucoinApiError(response.code, endpoint, response);
 }
 
 async function authedRequest<T>(
