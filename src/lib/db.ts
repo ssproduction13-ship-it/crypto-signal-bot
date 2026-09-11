@@ -771,6 +771,20 @@ const MIGRATIONS = [
      )`,
     "CREATE INDEX IF NOT EXISTS idx_sandbox_orders_pending ON sandbox_orders(status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_sandbox_orders_order_id ON sandbox_orders(order_id)",
+    `CREATE TABLE IF NOT EXISTS sandbox_positions (
+       id TEXT PRIMARY KEY,
+       chat_id BIGINT NOT NULL,
+       symbol TEXT NOT NULL,
+       futures_symbol TEXT NOT NULL,
+       direction TEXT NOT NULL CHECK (direction IN ('LONG','SHORT')),
+       size NUMERIC(20,8) NOT NULL,
+       entry_price NUMERIC(20,8) NOT NULL,
+       order_id TEXT,
+       status TEXT NOT NULL DEFAULT 'open'
+         CHECK (status IN ('open','closed')),
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    "CREATE INDEX IF NOT EXISTS idx_sandbox_positions_open ON sandbox_positions(status, updated_at)",
     "ALTER TABLE decision_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
     "ALTER TABLE walk_forward_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
     `INSERT INTO strategy_entity_weights (entity,strategy,direction,weight,quarantine,trust_score,trades,wins,win_pnl,loss_pnl,cycles_below_threshold,updated_at)
