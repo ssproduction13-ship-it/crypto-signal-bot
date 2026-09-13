@@ -15,11 +15,13 @@ import {
 } from "./sandbox-orders.js";
 import {
   closeLocalSandboxPosition,
+  getLocalSandboxPosition,
   reduceLocalSandboxPosition,
   upsertLocalSandboxPosition,
   type LocalSandboxPosition,
 } from "./sandbox-position-storage.js";
 import { placeSandboxProtectionOrders } from "./sandbox-protection.js";
+import { recordSandboxTradeClose } from "./sandbox-trade-storage.js";
 import {
   normalizeSandboxOrderUpdate,
   type SandboxOrderUpdate,
@@ -37,13 +39,42 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
   if (!local) return;
 
   if (update.status === "filled") {
-    await markSandboxOrderFilled(local.clientOid, update.raw);
+    const markedFilled = await markSandboxOrderFilled(local.clientOid, update.raw);
+    if (!markedFilled) return;
     const kind = String(local.payload["kind"] ?? "entry");
     if (kind !== "entry") {
       const positionId = String(local.payload["positionId"] ?? "");
       const filledSize = Number(
         update.raw["dealSize"] ?? update.raw["filledSize"] ?? local.size,
       );
+      const position = positionId
+        ? await getLocalSandboxPosition(positionId)
+        : null;
+      const exitPrice = Number(
+        update.raw["avgDealPrice"] ??
+          update.raw["price"] ??
+          local.payload["triggerPrice"] ??
+          local.entryPrice,
+      );
+      const closeSize = Math.min(filledSize, position?.size ?? filledSize);
+      if (position && closeSize > 0 && Number.isFinite(exitPrice) && exitPrice > 0) {
+        const pnlPerUnit =
+          position.direction === "LONG"
+            ? exitPrice - position.entryPrice
+            : position.entryPrice - exitPrice;
+        await recordSandboxTradeClose({
+          positionId: position.id,
+          chatId: position.chatId,
+          symbol: position.symbol,
+          direction: position.direction,
+          size: closeSize,
+          entryPrice: position.entryPrice,
+          exitPrice,
+          multiplier: position.multiplier,
+          realizedPnl: pnlPerUnit * closeSize * position.multiplier,
+          exitReason: kind as "stop_loss" | "tp1" | "tp2",
+        });
+      }
       const originalPositionSize = Number(local.payload["positionSize"]);
       const fullyClosed =
         kind === "stop_loss" ||
@@ -92,6 +123,7 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
         stopLoss,
         tp1,
         tp2,
+        multiplier: Number(local.payload["multiplier"] ?? 1),
         orderId: update.orderId ?? local.orderId,
         updatedAt: new Date().toISOString(),
       };

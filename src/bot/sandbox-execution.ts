@@ -110,6 +110,7 @@ export async function openSandboxPosition(
         stopLoss: input.stopLoss,
         tp1: input.tp1,
         tp2: input.tp2,
+        multiplier: Number(contract.multiplier),
         riskPercent: input.riskPercent,
       },
     });

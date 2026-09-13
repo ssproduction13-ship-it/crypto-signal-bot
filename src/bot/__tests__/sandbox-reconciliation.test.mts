@@ -16,6 +16,7 @@ const local = {
   stopLoss: 89_000,
   tp1: 92_000,
   tp2: 95_000,
+  multiplier: 0.001,
   orderId: "order-1",
   updatedAt: new Date(0).toISOString(),
 };
