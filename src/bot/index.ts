@@ -47,6 +47,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } from "./economic-calendar.js";
   import { getMfeTp2Report } from "./mfe-tp2-analysis.js";
   import { getCoreFilterShadowReport } from "./shadow-testing.js";
+import { getSandboxReport } from "./sandbox-trade-storage.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1430,6 +1431,25 @@ import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } 
     try { await ctx.telegram.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
   });
 
+  bot.command("sandboxreport", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    try {
+      const report = await getSandboxReport(chatId);
+      await ctx.reply(
+        `🧪 *Sandbox / mock отчёт*\n\n` +
+        `Закрытых частей сделок: *${report.trades}*\n` +
+        `Побед: *${report.wins}* | Убыточных: *${report.losses}*\n` +
+        `Win rate: *${report.winRate.toFixed(1)}%*\n` +
+        `Realized PnL: *${report.realizedPnl.toFixed(4)}*`,
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      logger.error({ err, chatId }, "/sandboxreport command failed");
+      await ctx.reply("❌ Ошибка sandbox-отчёта").catch(() => {});
+    }
+  });
+
   // ── /summary ─────────────────────────────────────────────────────────────
     bot.command("summary", async (ctx) => {
       const loading = await ctx.reply("⏳");
@@ -1563,6 +1583,7 @@ import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } 
     // Register commands so Telegram shows the ☰ Menu button automatically
     bot.telegram.setMyCommands([
       { command: "report",     description: "📋 Полный отчёт" },
+      { command: "sandboxreport", description: "🧪 Sandbox/mock отчёт" },
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },
