@@ -1,4 +1,4 @@
-export type ExecutionMode = "simulated" | "sandbox";
+export type ExecutionMode = "simulated" | "sandbox" | "mock";
 
 export const DEFAULT_EXECUTION_MODE: ExecutionMode = "simulated";
 
@@ -14,9 +14,9 @@ export function parseExecutionMode(
   const value = rawValue?.trim().toLowerCase();
 
   if (!value) return DEFAULT_EXECUTION_MODE;
-  if (value === "simulated" || value === "sandbox") return value;
+  if (value === "simulated" || value === "sandbox" || value === "mock") return value;
 
   throw new Error(
-    `Invalid EXECUTION_MODE "${rawValue}". Expected "simulated" or "sandbox".`,
+    `Invalid EXECUTION_MODE "${rawValue}". Expected "simulated", "sandbox" or "mock".`,
   );
 }

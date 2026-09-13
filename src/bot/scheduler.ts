@@ -57,6 +57,7 @@ import { parseExecutionMode, type ExecutionMode } from "../lib/execution-mode.js
 import { SandboxOrderMonitor } from "./sandbox-order-monitor.js";
 import { reconcileSandboxStartup } from "./sandbox-startup.js";
 import { openSandboxPosition } from "./sandbox-execution.js";
+import { LocalFuturesMock } from "./local-futures-mock.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 8; // mature-entity quality floor; bootstrap remains at 5
@@ -85,6 +86,7 @@ import { openSandboxPosition } from "./sandbox-execution.js";
   let _bot: Telegraf | null = null;
   let _executionMode: ExecutionMode = "simulated";
   let _sandboxOrderMonitor: SandboxOrderMonitor | null = null;
+  const _localFuturesMock = new LocalFuturesMock();
   let _lastMilestoneTrades  = 0;
   let _lastAdaptationTrades = 0; // for 12h time-based adaptation guard
   // ТЗ Feature 3: minimum gap between drift-triggered unscheduled adaptation cycles
@@ -1015,6 +1017,34 @@ import { openSandboxPosition } from "./sandbox-execution.js";
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
+    if (_executionMode === "mock") {
+      const result = _localFuturesMock.open({
+        internalSignalId: [
+          sub.chatId,
+          sub.symbol,
+          sub.interval,
+          sig.score.direction,
+          sig.timestamp.toISOString(),
+        ].join(":"),
+        chatId: sub.chatId,
+        symbol: sub.symbol,
+        direction: sig.score.direction as "LONG" | "SHORT",
+        entryPrice: sig.risk.entryPrice,
+        stopLoss: sig.risk.stopLoss,
+        tp1: sig.risk.tp1,
+        tp2: sig.risk.tp2,
+        riskPercent: effectiveRiskPct,
+        accountBalance: Number(process.env["MOCK_FUTURES_BALANCE"] ?? 10_000),
+      });
+      await safeSend(
+        sub.chatId,
+        result.success
+          ? `🧪 Mock futures fill: ${sig.score.direction} ${sub.symbol}\n` +
+            `SL/TP1/TP2: ${sig.risk.stopLoss} / ${sig.risk.tp1} / ${sig.risk.tp2}`
+          : `⚠️ Mock futures entry rejected: ${result.message}`,
+      );
+      return result.success;
+    }
     if (_executionMode === "sandbox") {
       const sandboxResult = await openSandboxPosition({
         internalSignalId: [
