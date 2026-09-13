@@ -86,3 +86,20 @@ export async function closeLocalSandboxPosition(id: string): Promise<boolean> {
   );
   return (result.rowCount ?? 0) > 0;
 }
+
+export async function reduceLocalSandboxPosition(
+  id: string,
+  size: number,
+): Promise<boolean> {
+  if (!Number.isFinite(size) || size <= 0) return false;
+  const result = await pool.query(
+    `UPDATE sandbox_positions
+        SET size = size - $2, updated_at = NOW()
+      WHERE id = $1
+        AND status = 'open'
+        AND size > $2`,
+    [id, size],
+  );
+  if ((result.rowCount ?? 0) > 0) return true;
+  return closeLocalSandboxPosition(id);
+}

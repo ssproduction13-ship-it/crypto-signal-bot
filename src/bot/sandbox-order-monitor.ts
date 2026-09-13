@@ -2,6 +2,7 @@ import WS from "ws";
 import { logger } from "../lib/logger.js";
 import {
   getActiveSandboxOrders,
+  cancelSandboxOrder,
   getSandboxOrder,
   getSandboxPrivateToken,
   type KucoinOrder,
@@ -12,7 +13,13 @@ import {
   markSandboxOrderFilled,
   markSandboxOrderSubmitted,
 } from "./sandbox-orders.js";
-import { upsertLocalSandboxPosition } from "./sandbox-position-storage.js";
+import {
+  closeLocalSandboxPosition,
+  reduceLocalSandboxPosition,
+  upsertLocalSandboxPosition,
+  type LocalSandboxPosition,
+} from "./sandbox-position-storage.js";
+import { placeSandboxProtectionOrders } from "./sandbox-protection.js";
 import {
   normalizeSandboxOrderUpdate,
   type SandboxOrderUpdate,
@@ -31,6 +38,31 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
 
   if (update.status === "filled") {
     await markSandboxOrderFilled(local.clientOid, update.raw);
+    const kind = String(local.payload["kind"] ?? "entry");
+    if (kind !== "entry") {
+      const positionId = String(local.payload["positionId"] ?? "");
+      const filledSize = Number(
+        update.raw["dealSize"] ?? update.raw["filledSize"] ?? local.size,
+      );
+      const originalPositionSize = Number(local.payload["positionSize"]);
+      const fullyClosed =
+        kind === "stop_loss" ||
+        kind === "tp2" ||
+        (kind === "tp1" &&
+          Number.isFinite(originalPositionSize) &&
+          filledSize >= originalPositionSize);
+      if (positionId) {
+        if (fullyClosed) {
+          await closeLocalSandboxPosition(positionId);
+        } else {
+          await reduceLocalSandboxPosition(positionId, filledSize);
+        }
+      }
+      if (fullyClosed && positionId) {
+        await cancelSiblingProtectionOrders(positionId, local.clientOid);
+      }
+      return;
+    }
     const filledSize = Number(
       update.raw["dealSize"] ?? update.raw["filledSize"] ?? local.size,
     );
@@ -49,7 +81,7 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
       Number.isFinite(tp1) &&
       Number.isFinite(tp2)
     ) {
-      await upsertLocalSandboxPosition({
+      const position: LocalSandboxPosition = {
         id: local.clientOid,
         chatId: local.chatId,
         symbol: local.symbol,
@@ -61,7 +93,10 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
         tp1,
         tp2,
         orderId: update.orderId ?? local.orderId,
-      });
+        updatedAt: new Date().toISOString(),
+      };
+      await upsertLocalSandboxPosition(position);
+      await placeSandboxProtectionOrders(position);
     }
   } else if (update.status === "cancelled") {
     await markSandboxOrderCancelled(local.clientOid, update.raw);
@@ -70,6 +105,34 @@ async function applyOrderUpdate(update: SandboxOrderUpdate): Promise<void> {
     update.orderId
   ) {
     await markSandboxOrderSubmitted(local.clientOid, update.orderId, update.raw);
+  }
+}
+
+async function cancelSiblingProtectionOrders(
+  positionId: string,
+  filledClientOid: string,
+): Promise<void> {
+  const pending = await listPendingSandboxOrders(1000);
+  for (const order of pending) {
+    if (
+      order.clientOid === filledClientOid ||
+      String(order.payload["positionId"] ?? "") !== positionId ||
+      !order.orderId
+    ) {
+      continue;
+    }
+    try {
+      const response = await cancelSandboxOrder(order.orderId);
+      await markSandboxOrderCancelled(
+        order.clientOid,
+        response as Record<string, unknown>,
+      );
+    } catch (err) {
+      logger.warn(
+        { err, clientOid: order.clientOid, orderId: order.orderId },
+        "Failed to cancel sibling sandbox protection order",
+      );
+    }
   }
 }
 
