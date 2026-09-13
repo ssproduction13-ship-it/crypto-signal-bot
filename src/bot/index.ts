@@ -1437,7 +1437,7 @@ import { getSandboxReport } from "./sandbox-trade-storage.js";
     try {
       const report = await getSandboxReport(chatId);
       await ctx.reply(
-        `🧪 *Sandbox / mock отчёт*\n\n` +
+        `🧪 *Sandbox отчёт*\n\n` +
         `Закрытых частей сделок: *${report.trades}*\n` +
         `Побед: *${report.wins}* | Убыточных: *${report.losses}*\n` +
         `Win rate: *${report.winRate.toFixed(1)}%*\n` +
@@ -1583,7 +1583,7 @@ import { getSandboxReport } from "./sandbox-trade-storage.js";
     // Register commands so Telegram shows the ☰ Menu button automatically
     bot.telegram.setMyCommands([
       { command: "report",     description: "📋 Полный отчёт" },
-      { command: "sandboxreport", description: "🧪 Sandbox/mock отчёт" },
+      { command: "sandboxreport", description: "🧪 Sandbox отчёт" },
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },
