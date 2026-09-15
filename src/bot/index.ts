@@ -1184,6 +1184,16 @@ import { getEmulatorSummary } from "./market-emulator.js";
       await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode:"Markdown", ...mainMenu() });
     });
 
+    bot.command("risk_resume", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
+      await resumeTrading();
+      await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode: "Markdown", ...mainMenu() });
+    });
+
     bot.command("emergency_stop", async (ctx) => {
       const chatId = ctx.chat?.id;
       if (chatId == null || !isWhitelistedAdmin(chatId)) {
@@ -1670,6 +1680,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
       { command: "settings",   description: "⚙️ Настройки" },
        { command: "mode",       description: "🔁 Текущий режим торговли" },
        { command: "emergency_stop", description: "🛑 Аварийно остановить торговлю" },
+       { command: "risk_resume", description: "▶️ Возобновить торговлю" },
        { command: "set_mode",   description: "🔁 Переключить режим торговли" },
     ]).catch(err => logger.warn({ err }, "setMyCommands failed"));
     logger.info("Telegram bot started");
