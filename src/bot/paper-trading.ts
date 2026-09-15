@@ -16,6 +16,7 @@ import { recordInstrumentTrade } from "./instrument-analytics.js";
 import { updateTradeResult } from "./similar-trades.js";
 import { recordInstrumentRegimeTrade } from "./instrument-regime-stats.js";
 import { recordEntitySymbolResult } from "./entity-cooldown.js";
+import { capPositionSizeByNotional, getMaxPositionSizeUsd } from "./position-sizing.js";
 
 
 // ── Per-signal PnL accumulator for combined win rate (Variant B) ─────────────
@@ -188,11 +189,18 @@ export async function openPaperPosition(
   let size       = stopDist > 0 ? maxLoss / stopDist : 0;
   if (size <= 0) return {success:false,message:"❌ Ошибка расчёта размера позиции"};
 
-  const maxNotional = account.balance * MAX_POSITION_NOTIONAL_PCT;
+   const maxNotional = Math.min(account.balance * MAX_POSITION_NOTIONAL_PCT, getMaxPositionSizeUsd());
   const rawNotional = size * entryPrice;
   if (rawNotional > maxNotional) {
+     logger.warn({
+       symbol,
+       calculatedPositionSizeUsd: rawNotional,
+       cappedPositionSizeUsd: maxNotional,
+     }, "Position size capped by MAX_POSITION_SIZE_USD");
     size = maxNotional / entryPrice;
   }
+   const absoluteCap = capPositionSizeByNotional(entryPrice, size, getMaxPositionSizeUsd());
+   size = absoluteCap.size;
 
   let pendingEntrySize: number | undefined;
   let pendingEntryTrigger: number | undefined;

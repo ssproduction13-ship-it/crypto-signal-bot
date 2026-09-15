@@ -54,6 +54,8 @@ import { captureOrderFlowSnapshots } from "./order-flow.js";
 import { computeLlmAgreement } from "./llm-hook.js";
 import { getShadowLiveMultiplier } from "./shadow-live-policy.js";
 import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } from "./strategy-regime-fit.js";
+import { getCurrentExecutionMode } from "./execution-mode.js";
+import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizing.js";
 
   // M5: exported so tests and external monitors can reference the same threshold
   export const MIN_FINAL_SCORE = 8; // mature-entity quality floor; bootstrap remains at 5
@@ -954,9 +956,24 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         // FIX: 10 множителей перемножаются — итог может схлопнуться до < 0.05% депозита.
         // Нижняя граница: effectiveRiskPct не ниже 30% от baseRisk.
         // Пример: baseRisk=2%, 0.30 пол → минимум 0.6% — разумный минимум для paper trading.
-        const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs * safeLlm * safeBtcLead * safeStrategyDirection * safeRr;
+      const rawEffectiveRiskPct = baseRisk * safeCorr * safeMtf * safeCooldown * safeAtr * safeInstr * safeTime * safeEntity * safeIrd * safePTilt * safeFs * safeLlm * safeBtcLead * safeStrategyDirection * safeRr;
         const flooredRiskPct = Math.max(rawEffectiveRiskPct, baseRisk * 0.30);
-        const effectiveRiskPct = capBootstrapRisk(baseRisk, flooredRiskPct, entityTrades);
+      let effectiveRiskPct = capBootstrapRisk(baseRisk, flooredRiskPct, entityTrades);
+      const positionCap = capRiskPercentByNotional({
+        balance: account.balance,
+        entryPrice: sig.risk.entryPrice,
+        stopLoss: sig.risk.stopLoss,
+        riskPercent: effectiveRiskPct,
+        maxNotional: getMaxPositionSizeUsd(),
+      });
+      if (positionCap.capped) {
+        logger.warn({
+          symbol: sub.symbol,
+          calculatedPositionSizeUsd: positionCap.calculatedNotional,
+          cappedPositionSizeUsd: getMaxPositionSizeUsd(),
+        }, "Position size capped by MAX_POSITION_SIZE_USD");
+        effectiveRiskPct = positionCap.riskPercent;
+      }
       if (!isFinite(effectiveRiskPct) || effectiveRiskPct <= 0) {
         logger.warn({
           baseRisk,
@@ -1010,7 +1027,7 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
-    const executionMode = process.env["EXECUTION_MODE"] ?? "paper";
+    const executionMode = await getCurrentExecutionMode();
     const res = executionMode === "emulator"
       ? await openEmulatorPosition(
         sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
@@ -1259,7 +1276,7 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         // Iterating the returned array and calling safeSend again causes duplicate notifications.
         await checkPaperPositions(chatId, sendFn).catch(() => {});
       }
-      if (process.env["EXECUTION_MODE"] === "emulator") {
+      if (await getCurrentExecutionMode() === "emulator") {
         await checkEmulatorPositions(async (message) => {
           for (const chatId of chatIds) await safeSend(chatId, message);
         }).catch((err) => logger.warn({ err }, "Emulator position monitor failed"));
@@ -1403,7 +1420,7 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
     // Funding is checked hourly, but accrueEmulatorFunding is idempotent and
     // charges only completed 8-hour intervals. Paper trading is untouched.
     cron.schedule("0 * * * *", async () => {
-      if (process.env["EXECUTION_MODE"] !== "emulator") return;
+      if (await getCurrentExecutionMode() !== "emulator") return;
       await accrueEmulatorFunding().catch((err) =>
         logger.warn({ err }, "Emulator funding accrual failed"),
       );

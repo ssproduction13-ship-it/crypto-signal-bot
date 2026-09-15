@@ -4,6 +4,8 @@ import { pool } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
 import { getFundingRate } from "./binance.js";
 import { calculateRealisticFill, type BookLevel, type FillResult } from "./market-emulator-math.js";
+import { recordPositionClosed, recordPositionOpened } from "./risk-manager.js";
+import { getMaxPositionSizeUsd } from "./position-sizing.js";
 
 export type EmulatorDirection = "LONG" | "SHORT";
 
@@ -232,14 +234,14 @@ export async function openEmulatorPosition(
   const balance = toNumber(accountResult.rows[0]?.["balance"], DEFAULT_INITIAL_BALANCE);
   const maxLoss = balance * (Math.max(0, riskPercent) / 100);
   let size = maxLoss / stopDistance;
-  const maxNotional = balance * MAX_POSITION_NOTIONAL_PCT;
+   const maxNotional = Math.min(balance * MAX_POSITION_NOTIONAL_PCT, getMaxPositionSizeUsd());
   if (size * signalEntryPrice > maxNotional) size = maxNotional / signalEntryPrice;
   if (!Number.isFinite(size) || size <= 0) {
     return { success: false, message: "❌ Эмулятор: размер позиции не положительный" };
   }
 
   let fill = await getFill(symbol, direction, size);
-  if (fill.fillPrice * size > maxNotional) {
+   if (fill.fillPrice * size > maxNotional) {
     size = maxNotional / fill.fillPrice;
     fill = await getFill(symbol, direction, size);
   }
@@ -298,6 +300,7 @@ export async function openEmulatorPosition(
     { id, symbol, direction, size, fillPrice: fill.fillPrice, slippagePct: fill.slippagePct },
     "Emulator position opened",
   );
+  await recordPositionOpened();
   return {
     success: true,
     position: { id },
@@ -390,7 +393,9 @@ async function executeEmulatorClose(
     );
     await client.query("DELETE FROM emulator_positions WHERE id=$1", [current.id]);
     await client.query("COMMIT");
-    return `✅ Эмулятор: ${outcome} ${current.symbol} ${current.direction}, P&L ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} (${pnlEquityPct.toFixed(2)}%)`;
+     const riskAlert = await recordPositionClosed(pnlEquityPct, totalPnl > 0, current.openedAt);
+     return `✅ Эмулятор: ${outcome} ${current.symbol} ${current.direction}, P&L ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} (${pnlEquityPct.toFixed(2)}%)`
+       + (riskAlert ? `\n🛑 ${riskAlert}` : "");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;

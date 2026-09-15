@@ -10,7 +10,8 @@ import { Telegraf, Markup } from "telegraf";
     loadSettings, saveSettings, loadPaperAccount, loadWeights,
   } from "./storage.js";
   import { buildSelfAnalysis } from "./self-analysis.js";
-  import { resumeTrading } from "./risk-manager.js";
+  import { loadRiskState, resumeTrading, saveRiskState } from "./risk-manager.js";
+import { getCurrentExecutionMode, setExecutionMode } from "./execution-mode.js";
   import { loadStrategyStats, formatStrategyStats } from "./strategies.js";
   import { calcMarketRating, formatMarketRating } from "./market-rating.js";
   import { formatPrice } from "./risk.js";
@@ -1172,7 +1173,69 @@ import { getEmulatorSummary } from "./market-emulator.js";
     });
     bot.action("sub_add",   async (ctx) => { await ctx.answerCbQuery(); await ctx.reply("Выбери монету:", pairsMenu("subpair","menu_subs")); });
     bot.action("unsub_all", async (ctx) => { await ctx.answerCbQuery(); unsubscribeAll(ctx.chat!.id); await ctx.reply("✅ Все подписки удалены.", mainMenu()); });
-    bot.action("risk_resume", async (ctx) => { await ctx.answerCbQuery(); await resumeTrading(); await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode:"Markdown", ...mainMenu() }); });
+    bot.action("risk_resume", async (ctx) => {
+      await ctx.answerCbQuery();
+      const chatId = ctx.chat?.id;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
+      await resumeTrading();
+      await ctx.reply("✅ *Торговля возобновлена.*", { parse_mode:"Markdown", ...mainMenu() });
+    });
+
+    bot.command("emergency_stop", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
+      const state = await loadRiskState();
+      state.tradingEnabled = false;
+      state.stopReason = `Ручная остановка администратором (chatId=${chatId})`;
+      await saveRiskState(state);
+      logger.warn({ chatId }, "EMERGENCY STOP triggered manually");
+      await ctx.reply(
+        "🛑 *Торговля немедленно остановлена.* Возобновление — командой /risk_resume.",
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.command("set_mode", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
+      const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+      const parts = text.split(/\s+/);
+      const requestedMode = parts[1]?.trim().toLowerCase();
+      const confirmed = parts[2]?.trim().toLowerCase() === "confirm";
+
+      if (requestedMode !== "paper" && requestedMode !== "emulator") {
+        await ctx.reply(
+          "Использование: `/set_mode paper` или `/set_mode emulator confirm`",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      if (!confirmed) {
+        const current = await getCurrentExecutionMode();
+        await ctx.reply(
+          `⚠️ Текущий режим: *${current}*.\nДля перехода на *${requestedMode}* подтверди командой:\n` +
+          `\`/set_mode ${requestedMode} confirm\``,
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      await setExecutionMode(requestedMode, chatId);
+      await ctx.reply(`✅ Режим торговли переключён на *${requestedMode}*.`, { parse_mode: "Markdown" });
+    });
+
+    bot.command("mode", async (ctx) => {
+      const current = await getCurrentExecutionMode();
+      await ctx.reply(`Текущий режим торговли: *${current}*`, { parse_mode: "Markdown" });
+    });
 
     // ── /maemfe ────────────────────────────────────────────────────────────
     bot.command("maemfe", async (ctx) => {
@@ -1285,7 +1348,10 @@ import { getEmulatorSummary } from "./market-emulator.js";
     // /adapt — manually trigger strategy weight adaptation
     bot.command("adapt", async (ctx) => {
       const chatId = ctx.chat?.id;
-      if (!chatId) return;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
       const loading = await ctx.reply("⚙️ Запускаю адаптацию весов стратегий...");
       try {
         const chatIds = new Set([chatId]);
@@ -1343,7 +1409,10 @@ import { getEmulatorSummary } from "./market-emulator.js";
     // cleandata — dedup phantom trades and recalculate balance
     bot.command("cleandata", async (ctx) => {
       const chatId = ctx.chat?.id;
-      if (!chatId) return;
+      if (chatId == null || !isWhitelistedAdmin(chatId)) {
+        await ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+        return;
+      }
       const loading = await ctx.reply("🧹 Запускаю очистку данных... (~10 сек)");
       try {
         const result = await runDataCleanup(chatId);
@@ -1393,6 +1462,10 @@ import { getEmulatorSummary } from "./market-emulator.js";
           return ctx.reply(`✅ Снапшот #${id} сохранён вручную.`);
         }
         if (arg === "restore") {
+          const chatId = ctx.chat?.id;
+          if (chatId == null || !isWhitelistedAdmin(chatId)) {
+            return ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+          }
           const meta = await restoreFromSnapshot();
           return ctx.reply(
             `✅ <b>Аналитика восстановлена из последнего снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
@@ -1401,6 +1474,10 @@ import { getEmulatorSummary } from "./market-emulator.js";
         }
         const id = parseInt(arg);
         if (!isNaN(id)) {
+          const chatId = ctx.chat?.id;
+          if (chatId == null || !isWhitelistedAdmin(chatId)) {
+            return ctx.reply("⛔ Команда доступна только администраторам из whitelist.");
+          }
           const meta = await restoreFromSnapshot(id);
           return ctx.reply(
             `✅ <b>Аналитика восстановлена из снапшота #${meta.id}</b>\n\n📅 Дата: ${new Date(meta.created_at).toISOString().slice(0, 16).replace('T', ' ')}\n📊 Монет: ${meta.instrument_count} | ⏰ Часов: ${meta.time_rows} | 🎯 Стратегий: ${meta.strategy_rows}`,
@@ -1439,7 +1516,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
         : 0;
       await ctx.reply(
         `🧪 *Отчёт эмулятора исполнения*\n\n` +
-        `Режим: \`${process.env["EXECUTION_MODE"] ?? "paper"}\`\n` +
+        `Режим: \`${await getCurrentExecutionMode()}\`\n` +
         `Баланс: *$${summary.balance.toFixed(2)}*\n` +
         `Начальный баланс: $${summary.initialBalance.toFixed(2)}\n` +
         `Доходность счёта: *${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%*\n` +
@@ -1591,6 +1668,9 @@ import { getEmulatorSummary } from "./market-emulator.js";
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },
+       { command: "mode",       description: "🔁 Текущий режим торговли" },
+       { command: "emergency_stop", description: "🛑 Аварийно остановить торговлю" },
+       { command: "set_mode",   description: "🔁 Переключить режим торговли" },
     ]).catch(err => logger.warn({ err }, "setMyCommands failed"));
     logger.info("Telegram bot started");
   }

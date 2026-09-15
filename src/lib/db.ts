@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS risk_state (
   trading_enabled BOOLEAN NOT NULL DEFAULT true,
   stop_reason TEXT,
   last_reset_date TEXT NOT NULL DEFAULT '2000-01-01',
-  last_week_reset_date TEXT NOT NULL DEFAULT '2000-W01'
+  last_week_reset_date TEXT NOT NULL DEFAULT '2000-W01',
+  daily_start_balance NUMERIC(20,8) NOT NULL DEFAULT 0,
+  weekly_start_balance NUMERIC(20,8) NOT NULL DEFAULT 0
 );
 INSERT INTO risk_state (id) VALUES (1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS missed_trades (
@@ -245,6 +247,14 @@ CREATE TABLE IF NOT EXISTS notification_state (
 `;
 
 const MIGRATIONS = [
+  `CREATE TABLE IF NOT EXISTS trading_mode_override (
+     id SERIAL PRIMARY KEY,
+     mode TEXT NOT NULL CHECK (mode IN ('paper', 'emulator')),
+     updated_by BIGINT,
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
+  "ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS daily_start_balance NUMERIC(20,8) NOT NULL DEFAULT 0",
+  "ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS weekly_start_balance NUMERIC(20,8) NOT NULL DEFAULT 0",
   // Forward-looking feature experiments and LLM outcome metadata.
   `CREATE TABLE IF NOT EXISTS shadow_features (
     id SERIAL PRIMARY KEY,
