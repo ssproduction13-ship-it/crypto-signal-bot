@@ -128,7 +128,8 @@ function pnlPctFrom(pnl: number, startingBalance: number): number {
     export async function saveRiskState(s: RiskState): Promise<void> {
       await pool.query(
         `INSERT INTO risk_state(id,daily_pnl_percent,weekly_pnl_percent,consecutive_losses,
-           open_positions_count,trading_enabled,stop_reason,last_reset_date,last_week_reset_date)
+           open_positions_count,trading_enabled,stop_reason,last_reset_date,last_week_reset_date,
+           daily_start_balance,weekly_start_balance)
          VALUES(1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT(id) DO UPDATE SET
            daily_pnl_percent=EXCLUDED.daily_pnl_percent,
