@@ -237,6 +237,13 @@ import { getEmulatorSummary } from "./market-emulator.js";
       await ctx.reply("Главное меню:", mainMenu());
     });
 
+  // Read-only diagnostic helper: the numeric ID is required by ADMIN_CHAT_IDS.
+  bot.command("myid", async (ctx) => {
+    await ctx.reply(`Твой Telegram ID: \`${ctx.from?.id ?? "не определён"}\``, {
+      parse_mode: "Markdown",
+    });
+  });
+
   // Permanent instrument exclusions are intentionally operator-only. Keep the
   // whitelist in an environment variable rather than trusting Telegram roles.
   function isWhitelistedAdmin(chatId: number): boolean {
@@ -1678,6 +1685,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },
+       { command: "myid",       description: "🆔 Показать Telegram ID" },
        { command: "mode",       description: "🔁 Текущий режим торговли" },
        { command: "emergency_stop", description: "🛑 Аварийно остановить торговлю" },
        { command: "risk_resume", description: "▶️ Возобновить торговлю" },
