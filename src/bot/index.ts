@@ -47,6 +47,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } from "./economic-calendar.js";
   import { getMfeTp2Report } from "./mfe-tp2-analysis.js";
   import { getCoreFilterShadowReport } from "./shadow-testing.js";
+import { getEmulatorSummary } from "./market-emulator.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -1430,6 +1431,29 @@ import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } 
     try { await ctx.telegram.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
   });
 
+  bot.command("emulator_report", async (ctx) => {
+    try {
+      const summary = await getEmulatorSummary();
+      const returnPct = summary.initialBalance > 0
+        ? ((summary.balance - summary.initialBalance) / summary.initialBalance) * 100
+        : 0;
+      await ctx.reply(
+        `🧪 *Отчёт эмулятора исполнения*\n\n` +
+        `Режим: \`${process.env["EXECUTION_MODE"] ?? "paper"}\`\n` +
+        `Баланс: *$${summary.balance.toFixed(2)}*\n` +
+        `Начальный баланс: $${summary.initialBalance.toFixed(2)}\n` +
+        `Доходность счёта: *${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%*\n` +
+        `Открытых позиций: ${summary.openPositions}\n` +
+        `Закрытых сделок: ${summary.closedTrades}\n` +
+        `Суммарный P&L: *${summary.totalPnl >= 0 ? "+" : ""}$${summary.totalPnl.toFixed(2)}*`,
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      logger.error({ err }, "/emulator_report command failed");
+      await ctx.reply("❌ Ошибка загрузки отчёта эмулятора.");
+    }
+  });
+
   // ── /summary ─────────────────────────────────────────────────────────────
     bot.command("summary", async (ctx) => {
       const loading = await ctx.reply("⏳");
@@ -1563,6 +1587,7 @@ import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } 
     // Register commands so Telegram shows the ☰ Menu button automatically
     bot.telegram.setMyCommands([
       { command: "report",     description: "📋 Полный отчёт" },
+      { command: "emulator_report", description: "🧪 Отчёт эмулятора" },
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
       { command: "settings",   description: "⚙️ Настройки" },

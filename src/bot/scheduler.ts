@@ -3,6 +3,7 @@ import cron from "node-cron";
   import { generateSignal } from "./signals.js";
 import type { TradeSignal } from "./signals.js";
   import { checkPaperPositions, openPaperPosition, getPaperStats } from "./paper-trading.js";
+  import { openEmulatorPosition, checkEmulatorPositions, accrueEmulatorFunding } from "./market-emulator.js";
   import { canOpenTrade, checkConcentrationLimits, getPortfolioTiltMultiplier, loadRiskState } from "./risk-manager.js";
   import { loadSettings, loadPaperAccount, loadWeights, linkJournalToPosition } from "./storage.js";
   import { kuCoinWs } from "./websocket.js";
@@ -1009,17 +1010,24 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
       isExploration, regime, minScore, effectiveRiskPct } = candidate;
-    const res = await openPaperPosition(
-      sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
-      sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
-      effectiveRiskPct, sig.risk.atr,
-      strat, regime, sub.interval,
-      stratFScore,
-      sig.llmAnalysis?.newsSentiment,
-      sig.llmAnalysis?.riskLevel,
-      sig.llmAnalysis?.confidence,
-      sig.shadowFeatureIds,
-    );
+    const executionMode = process.env["EXECUTION_MODE"] ?? "paper";
+    const res = executionMode === "emulator"
+      ? await openEmulatorPosition(
+        sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
+        sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+        effectiveRiskPct, sig.risk.atr, strat, regime, sub.interval,
+      )
+      : await openPaperPosition(
+        sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
+        sig.risk.entryPrice, sig.risk.stopLoss, sig.risk.tp1, sig.risk.tp2,
+        effectiveRiskPct, sig.risk.atr,
+        strat, regime, sub.interval,
+        stratFScore,
+        sig.llmAnalysis?.newsSentiment,
+        sig.llmAnalysis?.riskLevel,
+        sig.llmAnalysis?.confidence,
+        sig.shadowFeatureIds,
+      );
 
     if (res.success) {
       if (res.position) {
@@ -1251,6 +1259,11 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
         // Iterating the returned array and calling safeSend again causes duplicate notifications.
         await checkPaperPositions(chatId, sendFn).catch(() => {});
       }
+      if (process.env["EXECUTION_MODE"] === "emulator") {
+        await checkEmulatorPositions(async (message) => {
+          for (const chatId of chatIds) await safeSend(chatId, message);
+        }).catch((err) => logger.warn({ err }, "Emulator position monitor failed"));
+      }
 
       // Self Learning: every 100 trades → adapt weights, snapshot version, send report
       try {
@@ -1386,6 +1399,15 @@ import { getStrategyRegimeScorePenalty, MIN_STRATEGY_REGIME_PENALTY_TRADES } fro
 
     // Position monitor every 30 seconds — guarded by _checkPositionsRunning to prevent overlap
     setInterval(() => { void checkPositions(); }, 30_000);
+
+    // Funding is checked hourly, but accrueEmulatorFunding is idempotent and
+    // charges only completed 8-hour intervals. Paper trading is untouched.
+    cron.schedule("0 * * * *", async () => {
+      if (process.env["EXECUTION_MODE"] !== "emulator") return;
+      await accrueEmulatorFunding().catch((err) =>
+        logger.warn({ err }, "Emulator funding accrual failed"),
+      );
+    });
 
     cron.schedule("*/5 * * * *", async () => {
       checkShadowPositions().catch(() => {});

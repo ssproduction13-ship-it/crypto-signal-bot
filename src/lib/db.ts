@@ -722,6 +722,79 @@ const MIGRATIONS = [
        captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
      )`,
      "CREATE INDEX IF NOT EXISTS idx_order_flow_symbol_time ON order_flow_snapshots(symbol, captured_at DESC)",
+     `CREATE TABLE IF NOT EXISTS emulator_account (
+       id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+       balance NUMERIC(20,8) NOT NULL DEFAULT 10000,
+       initial_balance NUMERIC(20,8) NOT NULL DEFAULT 10000,
+       peak_balance NUMERIC(20,8) NOT NULL DEFAULT 10000,
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+     `INSERT INTO emulator_account (id, balance, initial_balance, peak_balance)
+      VALUES (1, 10000, 10000, 10000)
+      ON CONFLICT (id) DO NOTHING`,
+     `CREATE TABLE IF NOT EXISTS emulator_positions (
+       id TEXT PRIMARY KEY,
+       symbol TEXT NOT NULL,
+       direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+       strategy TEXT NOT NULL,
+       entry_price NUMERIC(20,8) NOT NULL,
+       size NUMERIC(20,8) NOT NULL,
+       remaining_size NUMERIC(20,8) NOT NULL,
+       stop_loss NUMERIC(20,8) NOT NULL,
+       tp1 NUMERIC(20,8) NOT NULL,
+       tp2 NUMERIC(20,8) NOT NULL,
+       opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       regime TEXT,
+       interval TEXT NOT NULL DEFAULT '1h',
+       risk_percent DOUBLE PRECISION,
+       equity_at_open NUMERIC(20,8) NOT NULL DEFAULT 10000,
+       entry_commission NUMERIC(20,8) NOT NULL DEFAULT 0,
+       entry_slippage_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+       entry_slippage_cost NUMERIC(20,8) NOT NULL DEFAULT 0,
+       realized_pnl NUMERIC(20,8) NOT NULL DEFAULT 0,
+       realized_size NUMERIC(20,8) NOT NULL DEFAULT 0,
+       exit_notional NUMERIC(20,8) NOT NULL DEFAULT 0,
+       total_commission NUMERIC(20,8) NOT NULL DEFAULT 0,
+       total_slippage_cost NUMERIC(20,8) NOT NULL DEFAULT 0,
+       funding_cost NUMERIC(20,8) NOT NULL DEFAULT 0,
+       last_funding_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       tp1_executed BOOLEAN NOT NULL DEFAULT false,
+       breakeven_moved BOOLEAN NOT NULL DEFAULT false
+     )`,
+     `CREATE INDEX IF NOT EXISTS idx_emulator_positions_symbol
+      ON emulator_positions(symbol)`,
+     `CREATE TABLE IF NOT EXISTS emulator_closed_trades (
+       id TEXT PRIMARY KEY,
+       symbol TEXT NOT NULL,
+       direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+       strategy TEXT NOT NULL,
+       entry_price NUMERIC(20,8) NOT NULL,
+       exit_price NUMERIC(20,8) NOT NULL,
+       size NUMERIC(20,8) NOT NULL,
+       pnl NUMERIC(20,8) NOT NULL,
+       pnl_percent DOUBLE PRECISION NOT NULL,
+       pnl_equity_pct DOUBLE PRECISION NOT NULL,
+       outcome TEXT NOT NULL,
+       total_commission NUMERIC(20,8) NOT NULL DEFAULT 0,
+       total_slippage_cost NUMERIC(20,8) NOT NULL DEFAULT 0,
+       funding_cost NUMERIC(20,8) NOT NULL DEFAULT 0,
+       opened_at TIMESTAMPTZ NOT NULL,
+       closed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+     `CREATE INDEX IF NOT EXISTS idx_emulator_closed_at
+      ON emulator_closed_trades(closed_at DESC)`,
+     `CREATE TABLE IF NOT EXISTS emulator_funding_events (
+       id TEXT PRIMARY KEY,
+       position_id TEXT NOT NULL REFERENCES emulator_positions(id) ON DELETE CASCADE,
+       charged_at TIMESTAMPTZ NOT NULL,
+       rate DOUBLE PRECISION NOT NULL,
+       notional NUMERIC(20,8) NOT NULL,
+       cost NUMERIC(20,8) NOT NULL,
+       UNIQUE (position_id, charged_at)
+     )`,
+     `CREATE INDEX IF NOT EXISTS idx_emulator_funding_position
+      ON emulator_funding_events(position_id, charged_at DESC)`,
      `CREATE TABLE IF NOT EXISTS strategy_regime_fit (
        strategy TEXT NOT NULL,
        regime TEXT NOT NULL,
@@ -749,6 +822,18 @@ const MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS chaos_filter_state (id INTEGER PRIMARY KEY DEFAULT 1, is_chaos BOOLEAN NOT NULL DEFAULT false, atr_percent DOUBLE PRECISION, reason TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
     "ALTER TABLE decision_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
     "ALTER TABLE walk_forward_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS remaining_size NUMERIC(20,8)",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS interval TEXT NOT NULL DEFAULT '1h'",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS equity_at_open NUMERIC(20,8) NOT NULL DEFAULT 10000",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS realized_pnl NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS realized_size NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS exit_notional NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS total_commission NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS total_slippage_cost NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS funding_cost NUMERIC(20,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS last_funding_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS tp1_executed BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE emulator_positions ADD COLUMN IF NOT EXISTS breakeven_moved BOOLEAN NOT NULL DEFAULT false",
     `INSERT INTO strategy_entity_weights (entity,strategy,direction,weight,quarantine,trust_score,trades,wins,win_pnl,loss_pnl,cycles_below_threshold,updated_at)
      SELECT q.entity,q.strategy,q.direction,1.0,false,0,0,0,0.0,0.0,0,NOW()
        FROM (
@@ -781,6 +866,7 @@ export async function resetAllData(): Promise<number[]> {
   // Truncate each table individually — skip if table does not exist yet
   const tables = [
     "paper_positions", "paper_closed_trades", "journal_entries",
+    "emulator_positions", "emulator_closed_trades", "emulator_funding_events",
     "trade_features", "strategy_stats", "strategy_regime_stats",
     "strategy_weights", "strategy_history", "strategy_versions",
     "factor_weights", "paper_accounts", "risk_state", "cooldown_state",
@@ -814,6 +900,13 @@ export async function resetAllData(): Promise<number[]> {
         [chatId]
       ).catch(() => {});
     }
+    await client.query(
+      `INSERT INTO emulator_account (id, balance, initial_balance, peak_balance)
+       VALUES (1, 10000, 10000, 10000)
+       ON CONFLICT (id) DO UPDATE SET
+         balance = 10000, initial_balance = 10000, peak_balance = 10000,
+         updated_at = NOW()`
+    ).catch(() => {});
     logger.info({ tables: tables.length }, "resetAllData: all tables truncated");
   } finally { client.release(); }
   return chatIdList;
