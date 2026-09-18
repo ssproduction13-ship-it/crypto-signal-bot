@@ -473,21 +473,41 @@ import { getEmulatorSummary } from "./market-emulator.js";
         ].join("\n");
       }
 
+      /**
+       * Telegram rejects the whole message when one dynamic value makes the
+       * legacy Markdown invalid. The dashboard is still useful as plain text,
+       * so retry without parse_mode instead of turning a formatting problem
+       * into "Ошибка загрузки обзора".
+       */
+      async function replyDashboard(
+        ctx: any,
+        text: string,
+        extra: any,
+      ): Promise<void> {
+        try {
+          await ctx.reply(text, { parse_mode: "Markdown", ...extra });
+        } catch (err) {
+          logger.warn(
+            { err, chatId: ctx.chat?.id },
+            "Dashboard Markdown reply failed; retrying as plain text",
+          );
+          const plainText = text.replace(/[*_`]/g, "");
+          await ctx.reply(plainText, extra);
+        }
+      }
+
       bot.action("menu_dashboard", async (ctx) => {
         await ctx.answerCbQuery();
         const loading = await ctx.reply("⏳");
         try {
           const text = await buildDashboardMessage(ctx.chat!.id);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-          await ctx.reply(text, {
-            parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
-               Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
-              [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
-              [Markup.button.callback("◀️ Меню",         "menu_main")],
-            ]),
-          });
+          await replyDashboard(ctx, text, Markup.inlineKeyboard([
+            [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
+             Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
+            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",         "menu_main")],
+          ]));
         } catch (err) {
           logger.error({ err }, "[menu_dashboard] buildDashboardMessage failed");
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
@@ -502,15 +522,13 @@ import { getEmulatorSummary } from "./market-emulator.js";
         try {
           const text = await buildDashboardMessage(ctx.chat!.id);
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-          await ctx.reply(text, {
-            parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-               Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
-              [Markup.button.callback("◀️ Меню",         "menu_main")],
-            ]),
-          });
-        } catch {
+          await replyDashboard(ctx, text, Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("◀️ Меню",         "menu_main")],
+          ]));
+        } catch (err) {
+          logger.error({ err }, "[menu_earnings] buildDashboardMessage failed");
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await ctx.reply("⚠️ Ошибка.", backMenu());
         }
@@ -524,15 +542,12 @@ import { getEmulatorSummary } from "./market-emulator.js";
       try {
         const text = await buildDashboardMessage(ctx.chat!.id);
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
-        await ctx.reply(text, {
-          parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([
+          await replyDashboard(ctx, text, Markup.inlineKeyboard([
             [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
              Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
             [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
-          ]),
-        });
+          ]));
       } catch {
         await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
         await ctx.reply("⚠️ Ошибка.", backMenu());
@@ -1554,14 +1569,11 @@ import { getEmulatorSummary } from "./market-emulator.js";
       try {
         const text = await buildDashboardMessage(ctx.chat.id);
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
-        await ctx.reply(text, {
-          parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
-            [Markup.button.callback("◀️ Меню",         "menu_main")],
-          ]),
-        });
+        await replyDashboard(ctx, text, Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
+           Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+          [Markup.button.callback("◀️ Меню",         "menu_main")],
+        ]));
       } catch (err) {
         logger.error({ err }, "[/summary] buildDashboardMessage failed");
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
