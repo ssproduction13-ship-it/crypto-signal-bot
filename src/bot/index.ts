@@ -1316,7 +1316,9 @@ import { getEmulatorSummary } from "./market-emulator.js";
         if (!settings.autoPaperTrade) { await ctx.reply("⚠️ Авто-торговля выключена! Зайди в ⚙️ Настройки.", { parse_mode:"Markdown" }); return; }
         const msg = await ctx.reply(`🔍 Сканирую ${AUTO_PAIRS.length} монет... (~30 сек)`, { parse_mode:"Markdown" });
         const results: string[] = [];
-        let tradeable = 0;
+        let candidates = 0;
+        const executionMode = await getCurrentExecutionMode();
+        const previewMinScore = executionMode === "emulator" ? 52 : 54;
         for (const { symbol, interval } of AUTO_PAIRS.slice(0, 10)) {
           try {
             const sig = await generateSignal(symbol, interval, chatId);
@@ -1324,15 +1326,15 @@ import { getEmulatorSummary } from "./market-emulator.js";
             let status: string;
             if (sig.market.isChaotic)  status = "🌪 Хаос";
             else if (dir === "NEUTRAL") status = "⚪ Нейтраль";
-            else if (score < 45)       status = `📉 Score ${score}<45`;
-            else if (conf < 20)        status = `🔴 Conf ${conf}%<20`;
-            else { status = `✅ ${dir} Score ${score} Conf ${conf}%`; tradeable++; }
+            else if (score < previewMinScore) status = `📉 Score ${score}<${previewMinScore}`;
+            else if (conf < 30)        status = `🔴 Conf ${conf}%<30`;
+            else { status = `🟡 Кандидат ${dir} Score ${score} Conf ${conf}%`; candidates++; }
             results.push(`${symbol}: ${status}`);
           } catch { results.push(`${symbol}: ❌ ошибка`); }
         }
         await ctx.telegram.editMessageText(chatId, msg.message_id, undefined,
           `🔍 *Скан рынка (топ-10 монет)*\n\n` + results.join("\n") +
-          `\n\n✅ Готовы к сделке: *${tradeable}*\n_Сделка откроется при закрытии следующей свечи_`,
+          `\n\n🟡 Базовых кандидатов: *${candidates}*\n_Финальные гейты scheduler проверят FinalScore, watchlist, MTF, ATR, риск и другие ограничения_`,
           { parse_mode:"Markdown" });
       } catch (err) {
         logger.error({ err }, "/scan handler error");

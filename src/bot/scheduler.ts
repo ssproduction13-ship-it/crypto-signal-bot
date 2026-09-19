@@ -66,6 +66,7 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
   interface TradeCandidate {
     sub: Sub;
     sig: TradeSignal;
+    executionMode: "paper" | "emulator";
     strat: StrategyName;
     stratFScore: number;
     stratTrust: number;
@@ -328,6 +329,7 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
         }
       }
       const now = new Date();
+      const executionMode = await getCurrentExecutionMode();
       const regime = detectMarketRegime(sig.market, sig.marketRating);
 
       // fix: при NEUTRAL direction каст "NEUTRAL" as "LONG"|"SHORT" давал неверный entity-ключ
@@ -403,11 +405,18 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
       // User setting now acts as an UPPER CAP on adaptive minScore:
       //   minScore = clamp(adaptive, floor=54, ceil=userSetting)
       // This means: if the user sets 58, adaptive cannot exceed 58 even when the
-      // loss-streak logic pushes it higher. Adaptive can still lower it toward 55
+      // loss-streak logic pushes it higher. Adaptive can still lower it toward
+      // the mode-specific evidence-collection floor.
       // during good periods. Previously max() was used, making user setting a floor
       // instead — so setting 52 had no effect when adaptive was 62.
-      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, 54), 65);
-      const minScore = Math.max(Math.min(cachedMinScore, userCeil), 54);
+      // Emulator gets a modestly wider evidence-collection window without
+      // changing paper trading. All other quality and safety gates remain active.
+      const scoreFloor = executionMode === "emulator" ? 52 : 54;
+      const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, scoreFloor), 65);
+      const adaptiveScore = executionMode === "emulator"
+        ? Math.min(cachedMinScore, scoreFloor)
+        : cachedMinScore;
+      const minScore = Math.max(Math.min(adaptiveScore, userCeil), scoreFloor);
 
       const gate = makeTrace(sub.symbol, sig.score.direction, regime, strat);
       if (entityStatusesQueryFailed) {
@@ -769,7 +778,7 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
       // ── FinalScore Gate (Decision Engine v1.1) ────────────────────────────────────────────
       // Bootstrap entities get a bounded evidence-collection allowance.
       // Mature entities keep the original quality floor.
-      const effectiveFinalScoreMinimum = finalScoreMinimum(entityTrades);
+      const effectiveFinalScoreMinimum = finalScoreMinimum(entityTrades, executionMode);
       if (!gate.rejected && stratFScore < effectiveFinalScoreMinimum) {
         gate.fail("FinalScore Gate", "FinalScore ниже минимального порога", stratFScore.toFixed(1), effectiveFinalScoreMinimum);
         logger.warn({ symbol: sub.symbol, strat, finalScore: stratFScore, min: effectiveFinalScoreMinimum, entityTrades, bootstrapEntity, reason: 'FINAL_SCORE_TOO_LOW' },
@@ -1003,7 +1012,7 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
       }
 
       return {
-        sub, sig, strat, stratFScore, stratTrust, entityWeight, strategyDirectionWeight, entityStatus,
+        sub, sig, executionMode, strat, stratFScore, stratTrust, entityWeight, strategyDirectionWeight, entityStatus,
         stratRanking, isExploration, regime, minScore, effectiveRiskPct,
         gateSteps: [
           ...gate.steps,
@@ -1026,8 +1035,7 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
   // ── Execute trade candidate: open position + notification ─────────────────────────
   async function executeTradeCandidate(candidate: TradeCandidate): Promise<boolean> {
     const { sub, sig, strat, stratFScore, stratTrust, entityWeight, entityStatus, stratRanking,
-      isExploration, regime, minScore, effectiveRiskPct } = candidate;
-    const executionMode = await getCurrentExecutionMode();
+      isExploration, regime, minScore, effectiveRiskPct, executionMode } = candidate;
     const res = executionMode === "emulator"
       ? await openEmulatorPosition(
         sub.chatId, sub.symbol, sig.score.direction as "LONG"|"SHORT",
