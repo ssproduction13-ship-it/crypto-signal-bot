@@ -48,7 +48,7 @@ import { saveStatsSnapshot, restoreFromSnapshot, listSnapshots } from "./stats-s
 import { addEconomicEvent, defaultBlackoutMinutes, listUpcomingEconomicEvents } from "./economic-calendar.js";
   import { getMfeTp2Report } from "./mfe-tp2-analysis.js";
   import { getCoreFilterShadowReport } from "./shadow-testing.js";
-import { getEmulatorSummary } from "./market-emulator.js";
+import { generateEmulatorReport } from "./emulator-report.js";
 
   const AUTO_PAIRS: Array<{ symbol: string; interval: Interval }> = [
     // ── Tier 1: Крупные ликвидные пары ───────────────────────────────────────
@@ -94,7 +94,8 @@ import { getEmulatorSummary } from "./market-emulator.js";
   function mainMenu() {
     return Markup.inlineKeyboard([
       [Markup.button.callback("📊 Обзор",        "menu_dashboard"),
-       Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+       Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
+      [Markup.button.callback("🤖 Emulator отчёт", "menu_emulatorreport")],
       [Markup.button.callback("🧠 AI Deep Analysis", "menu_deep_analysis")],
       [Markup.button.callback("⚙️ Настройки",    "menu_settings")],
     ]);
@@ -505,7 +506,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
           await replyDashboard(ctx, text, Markup.inlineKeyboard([
             [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
              Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
-            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]));
         } catch (err) {
@@ -524,7 +525,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
           await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
           await replyDashboard(ctx, text, Markup.inlineKeyboard([
             [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-             Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+             Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]));
         } catch (err) {
@@ -545,7 +546,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
           await replyDashboard(ctx, text, Markup.inlineKeyboard([
             [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
              Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
-            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]));
       } catch {
@@ -650,7 +651,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🎯 Стратегии",    "menu_strategies"),
              Markup.button.callback("🔄 Обновить",     "menu_dashboard")],
-            [Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+            [Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",         "menu_main")],
           ]),
         });
@@ -1142,7 +1143,8 @@ import { getEmulatorSummary } from "./market-emulator.js";
         await ctx.telegram.sendDocument(chatId, { source: html, filename }, {
           caption: "📄 HTML-отчёт — открой в браузере для полного просмотра",
           reply_markup: Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Обновить", "menu_fullreport")],
+            [Markup.button.callback("🤖 Emulator отчёт", "menu_emulatorreport"),
+             Markup.button.callback("🔄 Обновить", "menu_fullreport")],
             [Markup.button.callback("◀️ Меню",     "menu_main")],
           ]).reply_markup,
         });
@@ -1150,6 +1152,28 @@ import { getEmulatorSummary } from "./market-emulator.js";
         await ctx.telegram.deleteMessage(chatId, loading.message_id).catch(() => {});
         logger.error({ err }, "full report error");
         await ctx.reply("❌ Ошибка при формировании отчёта: " + String(err).slice(0,200), backMenu());
+      }
+    });
+
+    bot.action("menu_emulatorreport", async (ctx) => {
+      await ctx.answerCbQuery();
+      const chatId = ctx.chat!.id;
+      const loading = await ctx.reply("⏳ Генерирую emulator HTML-отчёт...");
+      try {
+        const { html, filename } = await generateEmulatorReport();
+        await ctx.telegram.deleteMessage(chatId, loading.message_id).catch(() => {});
+        await ctx.telegram.sendDocument(chatId, { source: html, filename }, {
+          caption: "📄 Emulator HTML-отчёт — только данные виртуального эмулятора",
+          reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback("📋 Paper отчёт", "menu_fullreport"),
+             Markup.button.callback("🔄 Обновить", "menu_emulatorreport")],
+            [Markup.button.callback("◀️ Меню", "menu_main")],
+          ]).reply_markup,
+        });
+      } catch (err) {
+        await ctx.telegram.deleteMessage(chatId, loading.message_id).catch(() => {});
+        logger.error({ err }, "emulator report error");
+        await ctx.reply("❌ Ошибка при формировании emulator-отчёта: " + String(err).slice(0, 200), backMenu());
       }
     });
 
@@ -1543,25 +1567,22 @@ import { getEmulatorSummary } from "./market-emulator.js";
   });
 
   bot.command("emulator_report", async (ctx) => {
+    const loading = await ctx.reply("⏳ Генерирую подробный emulator HTML-отчёт...");
     try {
-      const summary = await getEmulatorSummary();
-      const returnPct = summary.initialBalance > 0
-        ? ((summary.balance - summary.initialBalance) / summary.initialBalance) * 100
-        : 0;
-      await ctx.reply(
-        `🧪 *Отчёт эмулятора исполнения*\n\n` +
-        `Режим: \`${await getCurrentExecutionMode()}\`\n` +
-        `Баланс: *$${summary.balance.toFixed(2)}*\n` +
-        `Начальный баланс: $${summary.initialBalance.toFixed(2)}\n` +
-        `Доходность счёта: *${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%*\n` +
-        `Открытых позиций: ${summary.openPositions}\n` +
-        `Закрытых сделок: ${summary.closedTrades}\n` +
-        `Суммарный P&L: *${summary.totalPnl >= 0 ? "+" : ""}$${summary.totalPnl.toFixed(2)}*`,
-        { parse_mode: "Markdown" },
-      );
+      const { html, filename } = await generateEmulatorReport();
+      await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
+      await ctx.telegram.sendDocument(ctx.chat!.id, { source: html, filename }, {
+        caption: "📄 Emulator HTML-отчёт — только данные виртуального эмулятора",
+        reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback("📋 Paper отчёт", "menu_fullreport"),
+           Markup.button.callback("🔄 Обновить", "menu_emulatorreport")],
+          [Markup.button.callback("◀️ Меню", "menu_main")],
+        ]).reply_markup,
+      });
     } catch (err) {
+      await ctx.telegram.deleteMessage(ctx.chat!.id, loading.message_id).catch(() => {});
       logger.error({ err }, "/emulator_report command failed");
-      await ctx.reply("❌ Ошибка загрузки отчёта эмулятора.");
+      await ctx.reply("❌ Ошибка формирования подробного отчёта эмулятора.");
     }
   });
 
@@ -1573,7 +1594,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
         await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id).catch(() => {});
         await replyDashboard(ctx, text, Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Обновить",     "menu_dashboard"),
-           Markup.button.callback("📋 Полный отчёт", "menu_fullreport")],
+           Markup.button.callback("📋 Paper отчёт", "menu_fullreport")],
           [Markup.button.callback("◀️ Меню",         "menu_main")],
         ]));
       } catch (err) {
@@ -1694,7 +1715,7 @@ import { getEmulatorSummary } from "./market-emulator.js";
     bot.launch().catch(err => logger.error({ err }, "Bot launch error"));
     // Register commands so Telegram shows the ☰ Menu button automatically
     bot.telegram.setMyCommands([
-      { command: "report",     description: "📋 Полный отчёт" },
+      { command: "report",     description: "📋 Paper отчёт" },
       { command: "emulator_report", description: "🧪 Отчёт эмулятора" },
       { command: "summary",    description: "🤖 AI анализ текущего положения" },
       { command: "whynotrade", description: "🤔 Почему нет сделок" },
