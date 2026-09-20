@@ -1342,7 +1342,7 @@ import { generateEmulatorReport } from "./emulator-report.js";
         const results: string[] = [];
         let candidates = 0;
         const executionMode = await getCurrentExecutionMode();
-        const previewMinScore = executionMode === "emulator" ? 52 : 54;
+        const previewMinScore = executionMode === "emulator" ? 53 : 54;
         for (const { symbol, interval } of AUTO_PAIRS.slice(0, 10)) {
           try {
             const sig = await generateSignal(symbol, interval, chatId);

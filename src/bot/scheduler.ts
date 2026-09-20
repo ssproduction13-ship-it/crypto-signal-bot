@@ -162,8 +162,23 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
   }
 
   async function safeSend(chatId: number, text: string) {
-    try { await _bot?.telegram.sendMessage(chatId, text, { parse_mode: "Markdown" }); }
-    catch (err) { logger.error({ err, chatId }, "safeSend failed"); }
+    if (!_bot) {
+      logger.warn({ chatId }, "safeSend skipped because bot is not initialized");
+      return;
+    }
+    try {
+      await _bot.telegram.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    } catch (err) {
+      // Strategy names such as VOLUME_IMPULSE can contain underscores that
+      // make Telegram reject legacy Markdown. Never lose a trade notification
+      // just because formatting failed.
+      logger.warn({ err, chatId }, "safeSend Markdown failed; retrying as plain text");
+      try {
+        await _bot.telegram.sendMessage(chatId, text.replace(/[*_`]/g, ""));
+      } catch (fallbackErr) {
+        logger.error({ err: fallbackErr, chatId }, "safeSend plain-text fallback failed");
+      }
+    }
   }
 
   async function safeSendHtmlDocument(chatId: number, html: string, filename: string, caption: string) {
@@ -408,10 +423,10 @@ import { capRiskPercentByNotional, getMaxPositionSizeUsd } from "./position-sizi
       // loss-streak logic pushes it higher. Adaptive can still lower it toward
       // the mode-specific evidence-collection floor.
       // during good periods. Previously max() was used, making user setting a floor
-      // instead — so setting 52 had no effect when adaptive was 62.
+      // instead — settings below the mode floor cannot bypass the safety floor.
       // Emulator gets a modestly wider evidence-collection window without
       // changing paper trading. All other quality and safety gates remain active.
-      const scoreFloor = executionMode === "emulator" ? 52 : 54;
+      const scoreFloor = executionMode === "emulator" ? 53 : 54;
       const userCeil = Math.min(Math.max(settingsEarly?.minScore ?? 65, scoreFloor), 65);
       const adaptiveScore = executionMode === "emulator"
         ? Math.min(cachedMinScore, scoreFloor)

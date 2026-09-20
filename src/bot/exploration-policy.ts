@@ -5,7 +5,7 @@
 export const BOOTSTRAP_ENTITY_TRADES = 20;
 export const BOOTSTRAP_FINAL_SCORE_MIN = 5;
 export const MATURE_FINAL_SCORE_MIN = 8;
-export const EMULATOR_MATURE_FINAL_SCORE_MIN = 6;
+export const EMULATOR_MATURE_FINAL_SCORE_MIN = 7;
 export const BOOTSTRAP_RISK_CAP_MULTIPLIER = 0.5;
 
 export function finalScoreMinimum(entityTrades: number, executionMode: "paper" | "emulator" = "paper"): number {
