@@ -393,9 +393,12 @@ async function executeEmulatorClose(
     );
     await client.query("DELETE FROM emulator_positions WHERE id=$1", [current.id]);
     await client.query("COMMIT");
-     const riskAlert = await recordPositionClosed(pnlEquityPct, totalPnl > 0, current.openedAt);
-     return `✅ Эмулятор: ${outcome} ${current.symbol} ${current.direction}, P&L ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} (${pnlEquityPct.toFixed(2)}%)`
-       + (riskAlert ? `\n🛑 ${riskAlert}` : "");
+    const riskAlert = await recordPositionClosed(pnlEquityPct, totalPnl > 0, current.openedAt);
+    const displayOutcome = outcome === "SL" && totalPnl > 0
+      ? "PROFIT_LOCK (SL)"
+      : outcome;
+    return `✅ Эмулятор: ${displayOutcome} ${current.symbol} ${current.direction}, P&L ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} (${pnlEquityPct.toFixed(2)}%)`
+      + (riskAlert ? `\n🛑 ${riskAlert}` : "");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;

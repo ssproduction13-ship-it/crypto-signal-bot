@@ -186,6 +186,13 @@ function outcomeIcon(outcome: string): string {
   return "—";
 }
 
+function displayOutcome(trade: EmulatorTrade): { icon: string; label: string } {
+  if (trade.outcome === "SL" && trade.pnl > 0) {
+    return { icon: "🔒", label: "PROFIT_LOCK (SL)" };
+  }
+  return { icon: outcomeIcon(trade.outcome), label: trade.outcome };
+}
+
 function buildHtml(args: {
   generatedAt: string;
   balance: number;
@@ -258,13 +265,16 @@ function buildHtml(args: {
     : `<tr><td colspan="5" class="empty">Пока нет закрытых сделок</td></tr>`;
 
   const tradeRows = trades.slice(0, 50).length
-    ? trades.slice(0, 50).map(t => `
+    ? trades.slice(0, 50).map(t => {
+      const display = displayOutcome(t);
+      return `
       <tr>
         <td>${fmtDate(t.closedAt)}</td><td><b>${esc(t.symbol)}</b><br><span class="muted">${t.direction} · ${esc(t.strategy)}</span></td>
-        <td>${outcomeIcon(t.outcome)} ${esc(t.outcome)}</td><td>${fmtPrice(t.entryPrice)} → ${fmtPrice(t.exitPrice)}</td>
+        <td>${display.icon} ${esc(display.label)}</td><td>${fmtPrice(t.entryPrice)} → ${fmtPrice(t.exitPrice)}</td>
         <td class="${pnlClass(t.pnl)}">${esc(fmtMoney(t.pnl))}<br><span class="muted">${esc(fmtPct(t.pnlPercent))}</span></td>
         <td>${duration(t.openedAt, t.closedAt)}</td>
-      </tr>`).join("")
+      </tr>`;
+    }).join("")
     : `<tr><td colspan="6" class="empty">Закрытых emulator-сделок пока нет</td></tr>`;
 
   return `<!doctype html>
